@@ -217,9 +217,9 @@ const folderLabels: Record<string, string> = {
   Inbox: "收件箱",
   Sent: "已发送",
   Drafts: "草稿箱",
-  Archive: "归档",
+  Archive: "已归档",
   Spam: "垃圾邮件",
-  Trash: "回收站",
+  Trash: "已删除",
 }
 
 type ComposeDraft = {
@@ -1888,7 +1888,9 @@ export function MailPage() {
         <SidebarGroup>
           {!sidebarCollapsed && (
             <div className="flex items-center justify-between px-2 py-1.5">
-              <SidebarGroupLabel className="m-0 p-0">{uiText("邮件夹")}</SidebarGroupLabel>
+              <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                {uiText("邮件")}
+              </SidebarGroupLabel>
               {canOrganizeSelectedMailbox && (
                 <Button
                   type="button"
@@ -1934,6 +1936,7 @@ export function MailPage() {
                             : mailView === "folder" && folder === item.folderName
                     }
                     className={cn(
+                      "h-auto px-3 py-2 text-sm",
                       sidebarCollapsed && "justify-center px-0",
                       item.type === "folder" &&
                         item.custom &&
@@ -1961,9 +1964,9 @@ export function MailPage() {
                       </span>
                     )}
                     {!sidebarCollapsed && item.count > 0 && (
-                      <Badge variant="secondary" className="ml-auto">
+                      <span className="ml-auto text-xs tabular-nums text-muted-foreground">
                         {uiText("{0}", [item.count])}
-                      </Badge>
+                      </span>
                     )}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -2069,7 +2072,9 @@ export function MailPage() {
           <SidebarGroup>
             {!sidebarCollapsed && (
               <div className="flex items-center justify-between px-2 py-1.5">
-                <SidebarGroupLabel className="m-0 p-0">{uiText("标签")}</SidebarGroupLabel>
+                <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                  {uiText("标签")}
+                </SidebarGroupLabel>
                 {canManageSelectedLabels && (
                   <div className="flex items-center gap-0.5">
                     <Button
@@ -2119,25 +2124,12 @@ export function MailPage() {
                             if (!labelEditMode) openLabel(label.id)
                           }}
                         >
-                          {sidebarCollapsed ? (
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                              <span
-                                className="h-2.5 w-2.5 rounded-full"
-                                style={{ backgroundColor: colors.backgroundColor }}
-                              />
-                            </span>
-                          ) : (
-                            <>
-                              <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                <span
-                                  className="h-2.5 w-2.5 rounded-full"
-                                  style={{ backgroundColor: colors.backgroundColor }}
-                                />
-                              </span>
-                              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
-                                {label.name}
-                              </span>
-                            </>
+                          <span
+                            className="h-3 w-3 shrink-0 rounded-full"
+                            style={{ backgroundColor: colors.backgroundColor }}
+                          />
+                          {!sidebarCollapsed && (
+                            <span className="min-w-0 flex-1 truncate text-sm">{label.name}</span>
                           )}
                           {!sidebarCollapsed && labelEditMode && canManageSelectedLabels && (
                             <button
@@ -2605,7 +2597,7 @@ export function MailPage() {
                     className={cn("h-4 w-4", (refreshing || autoRefreshing) && "animate-spin")}
                   />
                 </Button>
-                <div className="min-w-0 flex-1 text-sm font-semibold">
+                <div className="min-w-0 flex-1 truncate text-lg font-semibold">
                   {mailView === "label" && selectedLabel ? (
                     <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
                       <span
@@ -2917,10 +2909,10 @@ function buildMailMenuItems(
   const scheduledItem: MailMenuItem = {
     type: "scheduled",
     key: "scheduled",
-    label: "待发送",
+    label: "稍后提醒",
     icon: <Clock3 className="h-4 w-4" />,
     count: scheduledCount,
-    order: 3000,
+    order: 6000,
   }
   const sendQueueItem: MailMenuItem = {
     type: "sendQueue",
@@ -2928,7 +2920,7 @@ function buildMailMenuItems(
     label: "发送队列",
     icon: <History className="h-4 w-4" />,
     count: sendQueueCount,
-    order: 4000,
+    order: 6500,
   }
   const specialItems: MailMenuItem[] = includeStarred ? [starredItem] : []
   if (includeScheduled) specialItems.push(scheduledItem)
@@ -2995,16 +2987,16 @@ function menuAnchorOrder(name: string) {
   switch (name) {
     case "Inbox":
       return 1000
-    case "Sent":
-      return 5000
     case "Drafts":
-      return 6000
+      return 3000
+    case "Sent":
+      return 4000
     case "Archive":
+      return 5000
+    case "Trash":
       return 7000
     case "Spam":
       return 8000
-    case "Trash":
-      return 9000
     default:
       return 100000
   }
@@ -5621,7 +5613,7 @@ function MessageRow({
       onContextMenu={onContextMenu}
       data-active={active ? "true" : undefined}
       className={cn(
-        "group relative w-full cursor-pointer overflow-hidden border-b border-border/60 py-2.5 pl-4 pr-3 transition-colors hover:bg-accent/50",
+        "group relative w-full cursor-pointer overflow-hidden border-b border-border/60 px-3 py-2.5 transition-colors hover:bg-accent/50",
         active && "bg-accent shadow-[inset_2px_0_0_0_hsl(var(--foreground))]"
       )}
     >
@@ -5646,7 +5638,7 @@ function MessageRow({
             >
               {senderName}
             </span>
-            <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+            <span className="w-[62px] shrink-0 text-right text-xs tabular-nums text-muted-foreground">
               {formatListDate(message.receivedAt)}
             </span>
             {canOrganize && (
@@ -5673,7 +5665,7 @@ function MessageRow({
               </Button>
             )}
           </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[13px]">
             <span
               className={cn(
                 "min-w-0 max-w-[58%] shrink truncate",
