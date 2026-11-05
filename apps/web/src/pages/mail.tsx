@@ -1963,11 +1963,11 @@ export function MailPage() {
           </Button>
         )}
       </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
+      <SidebarContent className="gap-0">
+        <SidebarGroup className="p-0">
           {!sidebarCollapsed && (
-            <div className="flex items-center justify-between px-2 py-1.5">
-              <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+            <div className="flex items-center justify-between px-2 pb-1 pt-3">
+              <SidebarGroupLabel className="m-0 h-5 p-0 text-xs font-semibold uppercase text-muted-foreground">
                 {uiText("邮件")}
               </SidebarGroupLabel>
             </div>
@@ -1975,31 +1975,14 @@ export function MailPage() {
           <SidebarGroupContent>
             <SidebarMenu>
               {systemMenuItems.map(renderMailMenuItem)}
-              {!sidebarCollapsed && canOrganizeSelectedMailbox && (
-                <div
-                  className={cn(
-                    "mx-2 h-4 rounded-sm border border-dashed border-transparent",
-                    folderDropTarget?.edge === "end" && "border-primary bg-accent/60"
-                  )}
-                  onDragOver={(event) => {
-                    if (!draggingFolderId) return
-                    event.preventDefault()
-                    event.dataTransfer.dropEffect = "move"
-                    setFolderDropTarget({ key: "__end__", edge: "end" })
-                  }}
-                  onDragLeave={() => {
-                    if (folderDropTarget?.edge === "end") setFolderDropTarget(null)
-                  }}
-                  onDrop={handleFolderDropEnd}
-                />
-              )}
+
             </SidebarMenu>
             {folders.isLoading && <FolderSkeleton />}
           </SidebarGroupContent>
         </SidebarGroup>
-        <SidebarGroup>
+        <SidebarGroup className="p-0">
           {!sidebarCollapsed && (
-            <div className="flex items-center justify-between px-2 py-1.5">
+            <div className="flex items-center justify-between px-2 pb-1 pt-3">
               <button
                 type="button"
                 className="flex items-center gap-1 text-xs font-semibold uppercase text-muted-foreground transition-colors hover:text-foreground"
@@ -2009,7 +1992,7 @@ export function MailPage() {
                 <ChevronDown
                   className={cn("h-3.5 w-3.5 transition-transform", foldersCollapsed && "-rotate-90")}
                 />
-                <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                <SidebarGroupLabel className="m-0 h-5 p-0 text-xs font-semibold uppercase text-muted-foreground">
                   {uiText("文件夹")}
                 </SidebarGroupLabel>
               </button>
@@ -2041,7 +2024,7 @@ export function MailPage() {
           </SidebarGroupContent>
         </SidebarGroup>
         {externalAccountItems.length > 0 && (
-          <SidebarGroup>
+          <SidebarGroup className="p-0">
             {!sidebarCollapsed && <SidebarGroupLabel>{uiText("外部邮箱")}</SidebarGroupLabel>}
             <SidebarGroupContent>
               <SidebarMenu>
@@ -2116,9 +2099,9 @@ export function MailPage() {
           </SidebarGroup>
         )}
         {canReadMail && (
-          <SidebarGroup>
+          <SidebarGroup className="p-0">
             {!sidebarCollapsed && (
-              <div className="flex items-center justify-between px-2 py-1.5">
+              <div className="flex items-center justify-between px-2 pb-1 pt-3">
                 <button
                   type="button"
                   className="flex items-center gap-1 text-xs font-semibold uppercase text-muted-foreground transition-colors hover:text-foreground"
@@ -2131,7 +2114,7 @@ export function MailPage() {
                       labelsCollapsed && "-rotate-90"
                     )}
                   />
-                  <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                  <SidebarGroupLabel className="m-0 h-5 p-0 text-xs font-semibold uppercase text-muted-foreground">
                     {uiText("标签")}
                   </SidebarGroupLabel>
                 </button>

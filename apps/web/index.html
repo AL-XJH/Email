@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/x-icon" href="/api/favicon.ico" />
     <title>LanQin Email</title>
+    <script>
+      // 在首帧之前定死主题，避免深色模式刷新时先白一下再变黑
+      try {
+        if (localStorage.getItem("lanqin:theme") === "dark") {
+          document.documentElement.classList.add("dark");
+          document.documentElement.style.colorScheme = "dark";
+        }
+      } catch (error) {
+        /* localStorage 被禁用时忽略，跟随后续 React 初始化 */
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
