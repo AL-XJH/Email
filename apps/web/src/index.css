@@ -257,3 +257,29 @@ vue-devtools-anchor,
     display: block !important;
   }
 }
+
+/* 复制验证码按钮：点下去弹一下勾，给出明确的「已复制」反馈 */
+@keyframes verification-code-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.verification-code-chip[data-copied="true"] svg {
+  animation: verification-code-pop 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verification-code-chip[data-copied="true"] svg {
+    animation: none;
+  }
+}

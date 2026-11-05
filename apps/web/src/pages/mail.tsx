@@ -5435,6 +5435,34 @@ function displayNameFromAddress(value: string) {
   return localPart || text || "未知发件人"
 }
 
+// 复制到剪贴板。navigator.clipboard 只在 HTTPS / localhost 可用，
+// 局域网 http 部署（以及部分老浏览器）会拿到 undefined，这里回退到 execCommand。
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    /* 权限被拒或非安全上下文，走下面的回退 */
+  }
+  try {
+    const area = document.createElement("textarea")
+    area.value = text
+    area.setAttribute("readonly", "")
+    area.style.position = "fixed"
+    area.style.top = "-1000px"
+    area.style.opacity = "0"
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand("copy")
+    document.body.removeChild(area)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 // 从主题/摘要里识别验证码：只在「含关键词的那一行」里找数字，避免把订单号/跨行单词当成验证码。
 const VERIFICATION_KEYWORD =
   /(验证码|校验码|动态码|安全码|确认码|verification\s*code|verify\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)/i
@@ -5686,6 +5714,9 @@ function MessageRow({
   const hiddenLabelCount = Math.max((message.labels?.length || 0) - visibleLabels.length, 0)
   const senderName = senderDisplayName(message)
   const verificationCode = extractVerificationCode(message.subject, message.snippet)
+  const [codeCopied, setCodeCopied] = React.useState(false)
+  const codeCopiedTimer = React.useRef<number | undefined>(undefined)
+  React.useEffect(() => () => window.clearTimeout(codeCopiedTimer.current), [])
   return (
     <div
       onClick={onClick}
@@ -5776,23 +5807,40 @@ function MessageRow({
               {verificationCode && (
                 <button
                   type="button"
-                  className="verification-code-chip inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-transparent px-1.5 py-0.5 text-xs transition-colors hover:bg-accent"
+                  data-copied={codeCopied ? "true" : undefined}
+                  className={cn(
+                    "verification-code-chip inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-xs",
+                    "transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out",
+                    "active:scale-[0.94]",
+                    codeCopied
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/20 dark:text-emerald-400"
+                      : "border-border bg-transparent text-foreground hover:border-foreground/25 hover:bg-accent"
+                  )}
                   title={uiText("复制验证码")}
                   onClick={(event) => {
                     event.stopPropagation()
-                    void navigator.clipboard
-                      ?.writeText(verificationCode)
-                      .then(() =>
-                        toast({ title: uiText("验证码已复制"), description: verificationCode })
-                      )
-                      .catch(() => toast({ title: uiText("复制失败") }))
+                    const finish = (ok: boolean) => {
+                      if (!ok) {
+                        toast({ title: uiText("复制失败"), variant: "destructive" })
+                        return
+                      }
+                      setCodeCopied(true)
+                      window.clearTimeout(codeCopiedTimer.current)
+                      codeCopiedTimer.current = window.setTimeout(() => setCodeCopied(false), 1400)
+                    }
+                    void copyToClipboard(verificationCode).then(finish)
                   }}
                 >
-                  <span className="hidden font-medium text-foreground/80 sm:inline">
-                    {uiText("验证码")}
+                  <span
+                    className={cn(
+                      "hidden font-medium sm:inline",
+                      codeCopied ? "" : "text-foreground/80"
+                    )}
+                  >
+                    {codeCopied ? uiText("已复制") : uiText("验证码")}
                   </span>
-                  <code className="font-mono font-semibold text-foreground">{verificationCode}</code>
-                  <Copy className="h-3 w-3 text-muted-foreground" />
+                  <code className="font-mono font-semibold">{verificationCode}</code>
+                  {codeCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3 opacity-60" />}
                 </button>
               )}
               {message.snippet && <span className="min-w-0 truncate">{message.snippet}</span>}
