@@ -28,6 +28,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Rspamd 从官方仓库装。Debian bookworm 自带的是 2022 年的 3.4，而反垃圾是
 # 规则型软件，版本号本身就等于检测能力；4.x 还带原生 autolearn（Bayes 训练）。
 ARG RSPAMD_REPO=https://rspamd.com/apt-stable
+# 单容器模式把 Redis 也塞进同一个镜像，省掉一个 sidecar 容器。
+ARG REDIS_REPO=https://packages.redis.io/deb
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
   rm -f /etc/apt/apt.conf.d/docker-clean && \
@@ -36,17 +38,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   mkdir -p /etc/apt/keyrings && \
   curl -fsSL "$RSPAMD_REPO/gpg.key" | gpg --dearmor > /etc/apt/keyrings/rspamd.gpg && \
   echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ bookworm main" > /etc/apt/sources.list.d/rspamd.list && \
+  curl -fsSL "https://packages.redis.io/gpg" | gpg --dearmor > /etc/apt/keyrings/redis.gpg && \
+  echo "deb [signed-by=/etc/apt/keyrings/redis.gpg] $REDIS_REPO bookworm main" > /etc/apt/sources.list.d/redis.list && \
   apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl sqlite3 default-mysql-client postgresql-client supervisor nginx \
     postfix postfix-sqlite postfix-mysql postfix-pgsql \
     dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-sqlite dovecot-mysql dovecot-pgsql ssl-cert \
-    rspamd
+    rspamd \
+    redis-server redis-tools
 
 COPY --from=api-build /out/lanqin-api /usr/local/bin/lanqin-api
 COPY --from=web-build /src/apps/web/dist /usr/share/nginx/html
 
 COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/lanqin.conf
 COPY deploy/all-in-one/nginx.conf /etc/nginx/sites-enabled/default
+COPY deploy/all-in-one/redis.conf /etc/redis-lanqin.conf
 COPY deploy/all-in-one/entrypoint.sh /entrypoint.sh
 
 COPY deploy/postfix/main.cf /etc/postfix/main.cf
@@ -72,5 +78,6 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 \
     && postfix status >/dev/null 2>&1 \
     && doveadm service status >/dev/null 2>&1 \
     && rspamadm control stat >/dev/null 2>&1 \
+    && redis-cli ping >/dev/null 2>&1 \
     || exit 1
 CMD ["/entrypoint.sh"]

@@ -17,14 +17,17 @@ set -eu
 # Rspamd 的 DNS 解析器：必须是本地递归解析器，公共 DNS 会让 DNSBL 全部失效。
 : "${LANQIN_RSPAMD_DNS:=127.0.0.1:53}"
 # Rspamd 的后端存储（Bayes / 灰名单 / ratelimit）。留空则这些模块保持禁用。
-: "${LANQIN_REDIS_ADDR:=}"
+: "${LANQIN_REDIS_ADDR:=127.0.0.1:6379}"
 
 export LANQIN_RSPAMD_DNS LANQIN_REDIS_ADDR
 export LANQIN_DATA_DIR LANQIN_DB_PATH LANQIN_DB_DRIVER LANQIN_ADDR LANQIN_SMTP_HOST LANQIN_SMTP_PORT LANQIN_SUBMISSION_ADDR LANQIN_SUBMISSION_TLS_ADDR LANQIN_SUBMISSION_MAX_MESSAGE_MB LANQIN_MAILDIR_ROOT LANQIN_TLS_CERT_FILE LANQIN_TLS_KEY_FILE
 
 addgroup --system --gid 5000 vmail 2>/dev/null || true
 adduser --system --uid 5000 --gid 5000 --home /var/mail/vhosts --no-create-home vmail 2>/dev/null || true
-mkdir -p /data /var/mail/vhosts /var/lib/rspamd/dkim /run/rspamd /var/spool/postfix /var/run/dovecot
+mkdir -p /data /var/mail/vhosts /var/lib/rspamd/dkim /run/rspamd /var/spool/postfix /var/run/dovecot /data/redis
+if id redis >/dev/null 2>&1; then
+	chown -R redis:redis /data/redis 2>/dev/null || true
+fi
 chown -R 5000:5000 /var/mail/vhosts
 if id _rspamd >/dev/null 2>&1; then
 	chown -R _rspamd:_rspamd /run/rspamd /var/lib/rspamd 2>/dev/null || true

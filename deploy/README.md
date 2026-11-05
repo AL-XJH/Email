@@ -196,7 +196,11 @@ docker exec <container> rspamd --version
 
 `milter_headers` 之类的模块只要配置就能跑，但 Bayes、灰名单、ratelimit、reputation 都需要一个跨进程的后端存储——rspamd 是多 worker 模型，进程间不共享内存，重启即归零。
 
-compose 里带了一个 `redis` 服务（`./redis` 挂载 + `appendonly yes`，不暴露端口），rspamd 通过 `LANQIN_REDIS_ADDR=redis:6379` 连它。留空则自动摘掉相关配置，rspamd 退回纯规则匹配。
+**单容器模式**：镜像里已经装了 redis-server（官方源，8.x），由 supervisord 托管，配置在 `/etc/redis-lanqin.conf`——只 bind `127.0.0.1`、不映射端口、AOF 落在 `/data/redis`。rspamd 通过 `LANQIN_REDIS_ADDR=127.0.0.1:6379` 连它。**整个服务仍然只有一个容器。**
+
+**多容器（stack）模式**：`docker-compose.stack.yml` 里单独有一个 `redis` 服务（`./redis` 挂载 + `appendonly yes`），此时把 `LANQIN_REDIS_ADDR` 改成 `redis:6379`。
+
+`LANQIN_REDIS_ADDR` 留空则自动摘掉相关配置，rspamd 退回纯规则匹配。
 
 Bayes 的自动学习用的是 rspamd 4.x 原生 `autolearn`，不需要外部脚本跑 `rspamc learn_*`：
 
