@@ -207,7 +207,7 @@ import { hasPermission } from "@/lib/permissions"
 
 // 标签颜色优先用服务端存的值（seek.li 就是这么做的），缺失时才按名字哈希兜底。
 function labelDotColor(label: { name: string; color?: string | null }): string {
-  return label.color || labelDotColor(label)
+  return label.color || generateLabelColor(label.name).backgroundColor
 }
 
 const folderIcons: Record<string, React.ReactNode> = {
@@ -2015,7 +2015,7 @@ export function MailPage() {
               <SidebarMenu>
                 {customFolderItems.map(renderMailMenuItem)}
                 {!folders.isLoading && customFolderItems.length === 0 && (
-                  <div className="px-3 py-2 text-sm text-muted-foreground">
+                  <div className="py-2 pl-8 pr-3 text-sm text-muted-foreground">
                     {uiText("暂无自定义文件夹")}
                   </div>
                 )}
@@ -2167,10 +2167,12 @@ export function MailPage() {
                             if (!labelEditMode) openLabel(label.id)
                           }}
                         >
-                          <span
-                            className="h-3 w-3 shrink-0 rounded-full"
-                            style={{ backgroundColor: colors.backgroundColor }}
-                          />
+                          <span className="flex w-4 shrink-0 items-center justify-center">
+                            <span
+                              className="h-3 w-3 rounded-full"
+                              style={{ backgroundColor: colors.backgroundColor }}
+                            />
+                          </span>
                           {!sidebarCollapsed && (
                             <span className="min-w-0 flex-1 truncate text-sm">{label.name}</span>
                           )}
