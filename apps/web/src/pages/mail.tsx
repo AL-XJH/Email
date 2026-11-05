@@ -205,6 +205,11 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { useToast } from "@/hooks/use-toast"
 import { hasPermission } from "@/lib/permissions"
 
+// 标签颜色优先用服务端存的值（seek.li 就是这么做的），缺失时才按名字哈希兜底。
+function labelDotColor(label: { name: string; color?: string | null }): string {
+  return label.color || labelDotColor(label)
+}
+
 const folderIcons: Record<string, React.ReactNode> = {
   inbox: <Inbox className="h-4 w-4" />,
   sent: <Send className="h-4 w-4" />,
@@ -2112,7 +2117,7 @@ export function MailPage() {
               <SidebarMenu>
                 {canReadMail &&
                   labelItems.map((label) => {
-                    const colors = generateLabelColor(label.name)
+                    const colors = { backgroundColor: labelDotColor(label) }
                     return (
                       <SidebarMenuItem key={label.id}>
                         <SidebarMenuButton
@@ -2281,7 +2286,7 @@ export function MailPage() {
           <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
             <span
               className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: generateLabelColor(selectedLabel.name).backgroundColor }}
+              style={{ backgroundColor: labelDotColor(selectedLabel) }}
             />
             {selectedLabel.name}
           </Badge>
@@ -2357,45 +2362,111 @@ export function MailPage() {
     <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
       <ResizablePanel defaultSize={28} minSize={22} maxSize={38}>
         <div className="flex h-full min-h-0 flex-col">
-          <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
-            <div className="flex min-w-0 items-center gap-3">
-              {canOrganizeSelectedMailbox && (
-                <Checkbox
-                  aria-label={uiText("选择当前页邮件")}
-                  checked={
-                    compactAllSelected ? true : compactSomeSelected ? "indeterminate" : false
-                  }
-                  onCheckedChange={(value) => toggleCompactSelectAll(value === true)}
+          <div className="relative z-20 shrink-0 px-4 pb-3 pt-3">
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={uiText("搜索发件人、主题、内容...")}
+                  className="h-9 py-2 pl-9 pr-8 text-sm"
                 />
-              )}
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  {mailView === "label" && selectedLabel && (
-                    <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
-                      <span
-                        className="h-2 w-2 shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: generateLabelColor(selectedLabel.name).backgroundColor,
-                        }}
-                      />
-                      {selectedLabel.name}
-                    </Badge>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="relative inline-flex h-9 flex-none items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <SlidersHorizontal className="h-4 w-4" />
+                    <span className="hidden sm:inline">{uiText("筛选")}</span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {(Object.keys(filterLabels) as MailFilter[]).map((value) => (
+                    <DropdownMenuItem key={value} onSelect={() => setMailFilter(value)}>
+                      {uiText(filterLabels[value])}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+          <div className="shrink-0 border-b border-border p-3 md:p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                {canOrganizeSelectedMailbox && (
+                  <Checkbox
+                    aria-label={uiText("选择当前页邮件")}
+                    checked={
+                      compactAllSelected ? true : compactSomeSelected ? "indeterminate" : false
+                    }
+                    onCheckedChange={(value) => toggleCompactSelectAll(value === true)}
+                    className="h-4 w-4 flex-none"
+                  />
+                )}
+                <h1
+                  className="min-w-0 flex-1 truncate whitespace-nowrap text-lg font-semibold md:text-xl"
+                  title={mailView === "label" && selectedLabel ? selectedLabel.name : viewTitle}
+                >
+                  {mailView === "label" && selectedLabel ? selectedLabel.name : viewTitle}
+                </h1>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 flex-none text-muted-foreground"
+                  onClick={refreshMail}
+                  disabled={refreshing || autoRefreshing}
+                  title={autoRefreshing ? uiText("自动刷新中") : uiText("刷新邮件")}
+                >
+                  <RefreshCcw
+                    className={cn("h-4 w-4", (refreshing || autoRefreshing) && "animate-spin")}
+                  />
+                </Button>
+                {selectedCountOnPage > 0 && canOrganizeSelectedMailbox && (
+                  <BulkActionMenu pending={bulkPending} onAction={runBulkAction} />
+                )}
+                {canOrganizeSelectedMailbox && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 flex-none text-muted-foreground"
+                    onClick={() => markAllRead.mutate(allMessages)}
+                    disabled={!activeMailboxId || markAllRead.isPending || unreadCount === 0}
+                    title={uiText("全部已读")}
+                  >
+                    <MailCheck className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="flex flex-none overflow-hidden rounded-md border border-border">
+                <button
+                  type="button"
+                  onClick={() => setMailFilter("all")}
+                  className={cn(
+                    "whitespace-nowrap px-3 py-1 text-sm transition-colors",
+                    mailFilter === "all"
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent"
                   )}
-                  {mailView !== "label" && viewTitle}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {selectedCountOnPage > 0
-                    ? uiText("已选 {0} 封", [selectedCountOnPage])
-                    : uiText("{0} / {1} 封邮件", [
-                        visibleMessages.length,
-                        messageTotalCount ?? allMessages.length,
-                      ])}
-                </div>
+                >
+                  {uiText("全部")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMailFilter("unread")}
+                  className={cn(
+                    "whitespace-nowrap border-l border-border px-3 py-1 text-sm transition-colors",
+                    mailFilter === "unread"
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent"
+                  )}
+                >
+                  {uiText("未读")}
+                </button>
               </div>
             </div>
-            {selectedCountOnPage > 0 && canOrganizeSelectedMailbox && (
-              <BulkActionMenu pending={bulkPending} onAction={runBulkAction} />
-            )}
           </div>
           <ScrollArea key={`mail-page-${messagePageIndex}`} className="min-h-0 flex-1">
             {(mailView === "external" ? externalMessages.isLoading : messages.isLoading) && (
@@ -2447,8 +2518,11 @@ export function MailPage() {
       <ResizablePanel defaultSize={68} minSize={44}>
         <section className="h-full min-h-0">
           {!selectedId && (
-            <div className="grid h-full place-items-center text-muted-foreground">
-              {uiText("选择一封邮件阅读")}
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <div className="text-center">
+                <Mail className="mx-auto mb-3 h-12 w-12 text-muted-foreground/40" />
+                <p className="text-sm">{uiText("选择一封邮件以查看详情")}</p>
+              </div>
             </div>
           )}
           {detail.isLoading && (
@@ -2603,7 +2677,7 @@ export function MailPage() {
                       <span
                         className="h-2 w-2 shrink-0 rounded-full"
                         style={{
-                          backgroundColor: generateLabelColor(selectedLabel.name).backgroundColor,
+                          backgroundColor: labelDotColor(selectedLabel),
                         }}
                       />
                       {selectedLabel.name}
@@ -2661,95 +2735,6 @@ export function MailPage() {
             <ResizableHandle />
             <ResizablePanel defaultSize={85} minSize={60}>
               <section className="flex h-full min-h-0 flex-col">
-                <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-4">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={refreshMail}
-                      disabled={refreshing || autoRefreshing}
-                      className={cn(
-                        "transition-all",
-                        (refreshing || autoRefreshing) && "bg-primary/5 text-primary"
-                      )}
-                      title={autoRefreshing ? uiText("自动刷新中") : uiText("刷新邮件")}
-                    >
-                      <RefreshCcw
-                        className={cn("h-4 w-4", (refreshing || autoRefreshing) && "animate-spin")}
-                      />
-                    </Button>
-                    {(publicSettings.data?.mailAutoRefresh || autoRefreshing) && (
-                      <div className="hidden min-w-[118px] text-xs text-muted-foreground sm:block">
-                        {autoRefreshing
-                          ? uiText("自动刷新中...")
-                          : lastAutoRefreshAt
-                            ? uiText("已刷新 {0}", [
-                                lastAutoRefreshAt.toLocaleTimeString(getInitialLanguage(), {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                }),
-                              ])
-                            : uiText("自动刷新已开启")}
-                      </div>
-                    )}
-                    {mailView !== "scheduled" &&
-                      mailView !== "sendQueue" &&
-                      (mailView !== "external" || externalMessagesStoredLocally) && (
-                        <>
-                          {canOrganizeSelectedMailbox && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-muted-foreground hover:text-foreground"
-                              disabled={
-                                !activeMailboxId || markAllRead.isPending || unreadCount === 0
-                              }
-                              onClick={() => markAllRead.mutate(allMessages)}
-                            >
-                              <MailCheck className="h-4 w-4" />
-                              {uiText("全部已读")}
-                            </Button>
-                          )}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="text-muted-foreground hover:text-foreground"
-                              >
-                                <SlidersHorizontal className="h-4 w-4" />
-                                {uiText(filterLabels[mailFilter])}
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="start">
-                              {(Object.keys(filterLabels) as MailFilter[]).map((value) => (
-                                <DropdownMenuItem key={value} onSelect={() => setMailFilter(value)}>
-                                  {uiText(filterLabels[value])}
-                                </DropdownMenuItem>
-                              ))}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </>
-                      )}
-                  </div>
-                  {mailView !== "sendQueue" && (
-                    <div className="relative ml-auto w-full max-w-md">
-                      <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder={
-                          mailView === "external"
-                            ? uiText("搜索远端邮件")
-                            : mailView === "scheduled"
-                              ? uiText("搜索待发送")
-                              : uiText("搜索邮件")
-                        }
-                        className="pl-9"
-                      />
-                    </div>
-                  )}
-                </header>
                 {contentView}
               </section>
             </ResizablePanel>
@@ -4117,7 +4102,7 @@ function MessageContextMenu({
           <div className="max-h-44 overflow-y-auto">
             {labels.map((label) => {
               const active = (message.labels || []).some((item) => item.id === label.id)
-              const colors = generateLabelColor(label.name)
+              const colors = { backgroundColor: labelDotColor(label) }
               return (
                 <Button
                   key={label.id}
@@ -5478,7 +5463,7 @@ function MessageMetaPanel({
             <MessageMetaRow label={uiText("标签")}>
               <div className="flex flex-wrap items-center gap-1.5">
                 {labels.map((label) => {
-                  const colors = generateLabelColor(label.name)
+                  const colors = { backgroundColor: labelDotColor(label) }
                   return (
                     <Badge
                       key={label.id}
@@ -5518,7 +5503,7 @@ function MessageMetaPanel({
                     )}
                     {availableLabels.map((label) => {
                       const active = labels.some((l) => l.id === label.id)
-                      const colors = generateLabelColor(label.name)
+                      const colors = { backgroundColor: labelDotColor(label) }
                       return (
                         <DropdownMenuCheckboxItem
                           key={label.id}
@@ -5613,93 +5598,100 @@ function MessageRow({
       onContextMenu={onContextMenu}
       data-active={active ? "true" : undefined}
       className={cn(
-        "group relative w-full cursor-pointer overflow-hidden border-b border-border/60 px-3 py-2.5 transition-colors hover:bg-accent/50",
-        active && "bg-accent shadow-[inset_2px_0_0_0_hsl(var(--foreground))]"
+        "mail-list-row group relative w-full cursor-pointer px-3 py-3 transition-colors hover:bg-accent/40",
+        active && "bg-accent"
       )}
     >
-      <div className="flex items-start gap-3">
+      <div className="relative z-10 flex items-start gap-3">
         {canOrganize && (
-          <Checkbox
-            aria-label={uiText("选择邮件")}
-            checked={checked}
-            onCheckedChange={(value) => onCheckedChange(value === true)}
-            onClick={(event) => event.stopPropagation()}
-            className="mt-1 shrink-0"
-          />
+          <div className="hidden w-5 flex-shrink-0 items-center pt-1 md:flex">
+            <Checkbox
+              aria-label={uiText("选择邮件")}
+              checked={checked}
+              onCheckedChange={(value) => onCheckedChange(value === true)}
+              onClick={(event) => event.stopPropagation()}
+              className={cn(
+                "h-4 w-4 transition-opacity duration-150",
+                checked ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              )}
+            />
+          </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate text-sm",
-                message.isRead ? "text-foreground/75" : "font-semibold text-foreground"
-              )}
-              title={senderTitle(message)}
-            >
-              {senderName}
-            </span>
-            <span className="w-[62px] shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-              {formatListDate(message.receivedAt)}
-            </span>
-            {canOrganize && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={message.isStarred ? uiText("取消星标") : uiText("添加星标")}
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+              <span
                 className={cn(
-                  "-mr-1 h-6 w-6 shrink-0 text-muted-foreground hover:text-yellow-500",
-                  message.isStarred ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  "max-w-[140px] truncate text-sm font-semibold md:max-w-[180px]",
+                  message.isRead ? "text-foreground/70" : "text-foreground"
                 )}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onStar()
-                }}
+                title={senderTitle(message)}
               >
-                <Star
-                  className={cn(
-                    "h-3.5 w-3.5",
-                    message.isStarred && "fill-yellow-400 text-yellow-500"
-                  )}
-                />
-              </Button>
-            )}
-          </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[13px]">
-            <span
-              className={cn(
-                "min-w-0 max-w-[58%] shrink truncate",
-                message.isRead ? "text-foreground/75" : "text-foreground"
+                {senderName}
+              </span>
+              {message.hasAttachments && (
+                <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
               )}
-            >
-              {message.subject}
-            </span>
-            {scheduled && (
-              <Badge
-                variant="secondary"
-                className="h-4 shrink-0 rounded px-1 text-[10px] font-normal"
+            </div>
+            <div className="relative flex h-7 flex-shrink-0 items-center justify-end">
+              <span
+                className={cn(
+                  "text-xs tabular-nums text-muted-foreground transition-opacity duration-150",
+                  "md:group-hover:opacity-0"
+                )}
               >
+                {formatListDate(message.receivedAt)}
+              </span>
+              {canOrganize && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={message.isStarred ? uiText("取消星标") : uiText("添加星标")}
+                  className={cn(
+                    "absolute right-0 top-0 h-7 w-7 text-muted-foreground hover:text-yellow-500",
+                    message.isStarred
+                      ? "opacity-100"
+                      : "opacity-0 group-hover:opacity-100 md:group-hover:opacity-100"
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onStar()
+                  }}
+                >
+                  <Star
+                    className={cn(
+                      "h-3.5 w-3.5",
+                      message.isStarred && "fill-yellow-400 text-yellow-500"
+                    )}
+                  />
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="mb-1 flex items-center gap-1.5 truncate text-sm font-medium">
+            <span className="truncate">{message.subject}</span>
+            {scheduled && (
+              <Badge variant="secondary" className="h-4 shrink-0 rounded px-1 text-[10px] font-normal">
                 {uiText("已定时")}
               </Badge>
             )}
-            {visibleLabels.map((label) => (
-              <MailLabelBadge key={label.id} label={label} />
-            ))}
-            {hiddenLabelCount > 0 && (
-              <Badge
-                variant="outline"
-                className="h-4 shrink-0 rounded px-1 text-[10px] font-normal text-muted-foreground"
-              >
-                +{uiText("{0}", [hiddenLabelCount])}
-              </Badge>
-            )}
-            {message.hasAttachments && (
-              <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
-            )}
-            {message.snippet && (
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                — {message.snippet}
-              </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="mail-list-row-preview flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
+              {message.snippet && <span className="min-w-0 truncate">{message.snippet}</span>}
+            </div>
+            {(visibleLabels.length > 0 || hiddenLabelCount > 0) && (
+              <div className="ml-2 flex flex-shrink-0 items-center gap-1">
+                {visibleLabels.map((label) => (
+                  <MailLabelBadge key={label.id} label={label} />
+                ))}
+                {hiddenLabelCount > 0 && (
+                  <span className="text-[11px] text-muted-foreground">
+                    +{uiText("{0}", [hiddenLabelCount])}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -5711,7 +5703,7 @@ function MessageRow({
 function MailLabelBadge({ label }: { label: MailLabel }) {
   useUiLanguage()
 
-  const colors = generateLabelColor(label.name)
+  const colors = { backgroundColor: labelDotColor(label) }
   return (
     <Badge variant="outline" className="shrink-0 gap-1.5 rounded-md font-normal">
       <span
