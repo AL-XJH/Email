@@ -412,11 +412,132 @@ func TestTelegramRequestTimeoutAndNotificationTextLimit(t *testing.T) {
 		t.Fatalf("timeout error=%v", err)
 	}
 
-	text := telegramNotificationText("admin@example.test", "Sender <sender@example.test>", "Subject <&>", strings.Repeat("摘要 <&> ", 1000))
+	text := telegramNotificationText("admin@example.test", "Sender <sender@example.test>", "Subject <&>", strings.Repeat("摘要 <&> ", 1000), "")
 	if len([]rune(text)) > telegramNotificationTextMaxRunes || !strings.HasSuffix(text, "...") {
 		t.Fatalf("notification text length=%d suffix=%q", len([]rune(text)), text[len(text)-3:])
 	}
 	if !strings.Contains(text, "Subject <&>") || !strings.Contains(text, "摘要 <&>") {
 		t.Fatalf("notification text escaped or lost plain text content: %q", text[:200])
+	}
+}
+
+func TestTelegramNotificationTextIncludesVerificationCode(t *testing.T) {
+	text := telegramNotificationText("admin@example.test", "ChatGPT <noreply@example.test>", "您的临时 ChatGPT 验证码", "输入此临时验证码以继续：857149", "857149")
+	lines := strings.Split(text, "\n")
+	if len(lines) < 3 || lines[0] != "新邮件" || lines[1] != "验证码: 857149" {
+		t.Fatalf("验证码应出现在消息第二行，实际: %q", text)
+	}
+
+	withoutCode := telegramNotificationText("admin@example.test", "sender@example.test", "hi", "hello", "")
+	if strings.Contains(withoutCode, "验证码") {
+		t.Fatalf("没有验证码时不该出现验证码行: %q", withoutCode)
+	}
+}
+
+func TestTelegramReplyMarkup(t *testing.T) {
+	payload := telegramNotificationPayload{Text: "新邮件", URL: "https://mail.example.test/?messageId=1", Code: "857149"}
+	markup := telegramReplyMarkup(payload, true)
+	rows, _ := markup["inline_keyboard"].([][]map[string]any)
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 button rows, got %d: %#v", len(rows), markup)
+	}
+	copyButton := rows[0][0]
+	if copyButton["text"] != "复制验证码 857149" {
+		t.Fatalf("unexpected copy button text: %#v", copyButton)
+	}
+	copyText, _ := copyButton["copy_text"].(map[string]string)
+	if copyText["text"] != "857149" {
+		t.Fatalf("copy_text payload wrong: %#v", copyButton)
+	}
+	if rows[1][0]["url"] != payload.URL {
+		t.Fatalf("open button missing url: %#v", rows[1][0])
+	}
+
+	// 退化成不带 copy_text 的版本时，只保留「打开邮件」。
+	fallback := telegramReplyMarkup(payload, false)
+	fbRows, _ := fallback["inline_keyboard"].([][]map[string]any)
+	if len(fbRows) != 1 || fbRows[0][0]["url"] != payload.URL {
+		t.Fatalf("fallback markup wrong: %#v", fallback)
+	}
+
+	// 没有验证码、也没有链接时不该返回空壳 markup。
+	if markup := telegramReplyMarkup(telegramNotificationPayload{Text: "x"}, true); markup != nil {
+		t.Fatalf("expected nil markup, got %#v", markup)
+	}
+}
+
+func TestTelegramNotificationCarriesVerificationCodeButton(t *testing.T) {
+	a := newTelegramTestApp(t)
+	stopTestWorkers(a)
+
+	var mu sync.Mutex
+	delivered := map[string]any{}
+	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/getMe") {
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"username":"lanqin_test_bot"}}`)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		delivered = body
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":1}}`)
+	}))
+	defer telegram.Close()
+	a.telegramAPIBaseURL = telegram.URL
+
+	_, client := loginTelegramTestAdmin(t, a)
+	if code := client.do("POST", "/api/me/telegram", map[string]any{"botToken": testTelegramBotToken, "chatId": "424242", "enabled": true}, nil); code != http.StatusOK {
+		t.Fatalf("save Telegram settings code=%d", code)
+	}
+
+	ctx := context.Background()
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	inboxID, err := a.ensureFolder(ctx, mailbox.ID, "Inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := a.now().UTC()
+	messageID, err := a.insertMessage(ctx, storedMessage{
+		MailboxID: mailbox.ID, FolderID: inboxID, MessageUID: newID("uid"), MessageID: "<code-test@example.test>",
+		Subject: "您的临时 ChatGPT 验证码", From: "noreply@example.test", FromName: "ChatGPT", To: []string{mailbox.Address},
+		SentAt: now, ReceivedAt: now,
+		Snippet:  "输入此临时验证码以继续：857149",
+		BodyText: "输入此临时验证码以继续：857149\n如果并非你本人尝试创建帐户，请忽略此电子邮件。",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.applyRuleActions(ctx, mailbox.ID, messageID, newID("rule"), []MailRuleAction{{Type: "telegram"}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.processDueTelegramNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	text, _ := delivered["text"].(string)
+	if !strings.Contains(text, "验证码: 857149") {
+		t.Fatalf("Telegram 文本里没有验证码行: %q", text)
+	}
+	markup, ok := delivered["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing reply_markup: %#v", delivered)
+	}
+	rows, ok := markup["inline_keyboard"].([]any)
+	if !ok || len(rows) == 0 {
+		t.Fatalf("inline_keyboard=%#v", markup["inline_keyboard"])
+	}
+	firstRow, _ := rows[0].([]any)
+	if len(firstRow) == 0 {
+		t.Fatalf("first button row empty: %#v", rows)
+	}
+	button, _ := firstRow[0].(map[string]any)
+	copyText, _ := button["copy_text"].(map[string]any)
+	if copyText["text"] != "857149" {
+		t.Fatalf("copy_text button wrong: %#v", button)
 	}
 }

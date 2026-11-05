@@ -9,13 +9,14 @@ import (
 	"time"
 )
 
-const externalSchemaVersion = 12
+const externalSchemaVersion = 13
 
 var externalSchemaTables = []string{
 	"domain_collections",
 	"domain_collection_audit",
 	"local_delivery_jobs",
 	"aliases",
+	"allowed_senders",
 	"api_tokens",
 	"attachments",
 	"blocked_senders",
@@ -155,6 +156,9 @@ func initializeExternalSchema(ctx context.Context, db *sql.DB, driver string) er
 		if err := migrateExternalSchemaV12(ctx, conn, driver); err != nil {
 			return err
 		}
+		if err := migrateExternalSchemaV13(ctx, conn, driver); err != nil {
+			return err
+		}
 		pushTable := strings.Replace(mailboxPushExternalTable(driver), "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
 		if _, err := conn.ExecContext(ctx, pushTable); err != nil {
 			return err
@@ -203,7 +207,7 @@ func initializeExternalSchema(ctx context.Context, db *sql.DB, driver string) er
 	for _, migration := range []struct {
 		version int
 		name    string
-	}{{1, migrationName}, {2, "external_schema_v2_linuxdo_sso"}, {3, "external_schema_v3_registration_invites"}, {4, "external_schema_v4_telegram_notifications"}, {5, "external_schema_v5_login_rate_limits"}, {6, "external_schema_v6_queue_leases"}, {7, "external_schema_v7_message_threads"}, {8, "external_schema_v8_mailbox_quota"}, {9, "external_schema_v9_invite_groups_mailbox_rate"}, {10, "external_schema_v10_session_indexes_totp_replay"}, {11, "external_schema_v11_smtp_rate_recipients"}, {12, "external_schema_v12_domain_collection"}} {
+	}{{1, migrationName}, {2, "external_schema_v2_linuxdo_sso"}, {3, "external_schema_v3_registration_invites"}, {4, "external_schema_v4_telegram_notifications"}, {5, "external_schema_v5_login_rate_limits"}, {6, "external_schema_v6_queue_leases"}, {7, "external_schema_v7_message_threads"}, {8, "external_schema_v8_mailbox_quota"}, {9, "external_schema_v9_invite_groups_mailbox_rate"}, {10, "external_schema_v10_session_indexes_totp_replay"}, {11, "external_schema_v11_smtp_rate_recipients"}, {12, "external_schema_v12_domain_collection"}, {13, "external_schema_v13_allowed_senders"}} {
 		marker := fmt.Sprintf("INSERT INTO schema_migrations(version,name,applied_at) VALUES(%d,'%s',CURRENT_TIMESTAMP)", migration.version, migration.name)
 		if _, err := executor.ExecContext(ctx, marker); err != nil {
 			return fmt.Errorf("external schema: record v%d: %w", migration.version, err)
@@ -393,6 +397,9 @@ func validateExternalSchema(ctx context.Context, conn *sql.Conn, actual []string
 	}
 	if err := conn.QueryRowContext(ctx, "SELECT name FROM schema_migrations WHERE version=12").Scan(&name); err != nil || name != "external_schema_v12_domain_collection" {
 		return fmt.Errorf("external schema: invalid v12 migration marker")
+	}
+	if err := conn.QueryRowContext(ctx, "SELECT name FROM schema_migrations WHERE version=13").Scan(&name); err != nil || name != "external_schema_v13_allowed_senders" {
+		return fmt.Errorf("external schema: invalid v13 migration marker")
 	}
 	return nil
 }

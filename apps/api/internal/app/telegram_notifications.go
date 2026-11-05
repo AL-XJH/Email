@@ -57,6 +57,8 @@ type telegramSettingsRecord struct {
 type telegramNotificationPayload struct {
 	Text string `json:"text"`
 	URL  string `json:"url,omitempty"`
+	// Code 是识别出的验证码，仅用于给消息挂「复制验证码」按钮。
+	Code string `json:"code,omitempty"`
 }
 
 type telegramAPIResponse struct {
@@ -301,16 +303,19 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	if !configured {
 		return nil
 	}
-	var mailboxAddress, fromAddress, fromName, subject, snippet string
-	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet
+	var mailboxAddress, fromAddress, fromName, subject, snippet, bodyText string
+	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet,m.body_text
 		FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE m.id=? AND m.mailbox_id=? AND mb.user_id=?`, messageID, mailboxID, userID).
-		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet)
+		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet, &bodyText)
 	if err != nil {
 		return err
 	}
+	// 验证码常在第 2、3 才出现，摘要里没有，所以正文一起扫。
+	code := extractVerificationCode(subject, bodyText)
 	payload := telegramNotificationPayload{
-		Text: telegramNotificationText(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, snippet),
+		Text: telegramNotificationText(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, snippet, code),
 		URL:  a.telegramMessageURL(mailboxID, messageID),
+		Code: code,
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	eventKey := "telegram:" + ruleID + ":" + messageID
@@ -320,7 +325,7 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	return err
 }
 
-func telegramNotificationText(mailbox, from, subject, snippet string) string {
+func telegramNotificationText(mailbox, from, subject, snippet, code string) string {
 	clean := func(value, fallback string) string {
 		value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 		if value == "" {
@@ -328,7 +333,12 @@ func telegramNotificationText(mailbox, from, subject, snippet string) string {
 		}
 		return value
 	}
-	text := "新邮件\n收件邮箱: " + clean(mailbox, "未知") + "\n发件人: " + clean(from, "未知") + "\n主题: " + clean(subject, "(无主题)") + "\n摘要: " + clean(snippet, "(无摘要)")
+	text := "新邮件\n"
+	if code = strings.TrimSpace(code); code != "" {
+		// 放第二行：Telegram 推送预览只露前两行，验证码必须在预览里看得见。
+		text += "验证码: " + code + "\n"
+	}
+	text += "收件邮箱: " + clean(mailbox, "未知") + "\n发件人: " + clean(from, "未知") + "\n主题: " + clean(subject, "(无主题)") + "\n摘要: " + clean(snippet, "(无摘要)")
 	runes := []rune(text)
 	if len(runes) > telegramNotificationTextMaxRunes {
 		text = string(runes[:telegramNotificationTextMaxRunes-3]) + "..."
@@ -491,11 +501,50 @@ func (a *App) deliverTelegramMessage(ctx context.Context, settings telegramSetti
 		"text":                     payload.Text,
 		"disable_web_page_preview": true,
 	}
-	if payload.URL != "" {
-		body["reply_markup"] = map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "打开邮件", "url": payload.URL}}}}
+	if markup := telegramReplyMarkup(payload, true); markup != nil {
+		body["reply_markup"] = markup
 	}
 	_, err = a.callTelegramAPI(ctx, token, "sendMessage", body)
+	if err != nil && payload.Code != "" && telegramCopyButtonUnsupported(err) {
+		// Bot API 7.11 之前 / 某些第三方镜像不认 copy_text 按钮，
+		// 退化成纯文字按钮，别让整条推送因为按钮格式被丢掉。
+		if markup := telegramReplyMarkup(payload, false); markup != nil {
+			body["reply_markup"] = markup
+		} else {
+			delete(body, "reply_markup")
+		}
+		_, err = a.callTelegramAPI(ctx, token, "sendMessage", body)
+	}
 	return err
+}
+
+// telegramReplyMarkup 组装消息底部的按钮：
+// 第一行是「复制验证码」（copy_text，点一下直接进剪贴板），第二行是「打开邮件」。
+func telegramReplyMarkup(payload telegramNotificationPayload, withCopy bool) map[string]any {
+	rows := [][]map[string]any{}
+	if withCopy && payload.Code != "" {
+		rows = append(rows, []map[string]any{{
+			"text":      "复制验证码 " + payload.Code,
+			"copy_text": map[string]string{"text": payload.Code},
+		}})
+	}
+	if payload.URL != "" {
+		rows = append(rows, []map[string]any{{"text": "打开邮件", "url": payload.URL}})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return map[string]any{"inline_keyboard": rows}
+}
+
+func telegramCopyButtonUnsupported(err error) bool {
+	message := strings.ToLower(err.Error())
+	for _, hint := range []string{"copy_text", "button_type_invalid", "button_text_invalid"} {
+		if strings.Contains(message, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) callTelegramAPI(ctx context.Context, token, method string, payload any) (telegramAPIResponse, error) {
