@@ -2,9 +2,16 @@
 
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
+# Rspamd 走官方仓库（Debian bookworm 自带的是 2022 年的 3.4）。
+ARG RSPAMD_REPO=https://rspamd.com/apt-stable
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL "$RSPAMD_REPO/gpg.key" | gpg --dearmor > /etc/apt/keyrings/rspamd.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ bookworm main" > /etc/apt/sources.list.d/rspamd.list && \
     apt-get update && apt-get install -y --no-install-recommends rspamd sqlite3 ca-certificates
 COPY local.d/ /etc/rspamd/local.d/
 COPY override.d/ /etc/rspamd/override.d/

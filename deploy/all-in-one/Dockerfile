@@ -25,9 +25,17 @@ RUN pnpm --dir apps/web run build
 
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
+# Rspamd 从官方仓库装。Debian bookworm 自带的是 2022 年的 3.4，而反垃圾是
+# 规则型软件，版本号本身就等于检测能力；4.x 还带原生 autolearn（Bayes 训练）。
+ARG RSPAMD_REPO=https://rspamd.com/apt-stable
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
   rm -f /etc/apt/apt.conf.d/docker-clean && \
+  apt-get update && \
+  apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
+  mkdir -p /etc/apt/keyrings && \
+  curl -fsSL "$RSPAMD_REPO/gpg.key" | gpg --dearmor > /etc/apt/keyrings/rspamd.gpg && \
+  echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ bookworm main" > /etc/apt/sources.list.d/rspamd.list && \
   apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl sqlite3 default-mysql-client postgresql-client supervisor nginx \
     postfix postfix-sqlite postfix-mysql postfix-pgsql \

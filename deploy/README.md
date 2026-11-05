@@ -175,7 +175,50 @@ X-Spamd-Result: default: False [15.50 / 999.00]; RBL_SPAMHAUS_XBL(4.00)...
 
 想更强硬可以把 `reject` 调到 15~20，但那是 SMTP 阶段拒收，会直接产生退信，建议先观察一段时间标记效果再决定。
 
-灰名单和 Bayes 需要 Redis 后端，本分支暂未接入。
+### 5. Rspamd 从官方仓库装 4.x
+
+Debian bookworm 自带的是 2022 年的 rspamd 3.4，一路陪到发行版 EOL——而反垃圾是规则型软件，版本号本身就等于检测能力。两个 Dockerfile 都改成先加官方仓库再装：
+
+```
+deb [signed-by=/etc/apt/keyrings/rspamd.gpg] https://rspamd.com/apt-stable/ bookworm main
+```
+
+构建时可用 `--build-arg RSPAMD_REPO=...` 换仓库地址（比如内网镜像）。
+
+验版本：
+
+```bash
+docker exec <container> rspamd --version
+# Rspamd daemon version 4.2.3
+```
+
+### 6. Redis + Bayes
+
+`milter_headers` 之类的模块只要配置就能跑，但 Bayes、灰名单、ratelimit、reputation 都需要一个跨进程的后端存储——rspamd 是多 worker 模型，进程间不共享内存，重启即归零。
+
+compose 里带了一个 `redis` 服务（`./redis` 挂载 + `appendonly yes`，不暴露端口），rspamd 通过 `LANQIN_REDIS_ADDR=redis:6379` 连它。留空则自动摘掉相关配置，rspamd 退回纯规则匹配。
+
+Bayes 的自动学习用的是 rspamd 4.x 原生 `autolearn`，不需要外部脚本跑 `rspamc learn_*`：
+
+| 参数 | 值 | 含义 |
+|---|---|---|
+| `spam_threshold` | 12.0 | 分数 ≥ 12 当 spam 学 |
+| `junk_threshold` | 6.0 | 已进垃圾箱且 ≥ 6 当 spam 学 |
+| `ham_threshold` | 1.0 | 分数 ≤ 1 当 ham 学 |
+| `check_balance` | true | 保持 spam/ham 学习量平衡 |
+
+门槛刻意定得比 `add_header`(6) 高：6~12 是"不确定"区间，拿这区间去训练等于把自己的犹豫当标准答案。
+
+`min_learns = 200`，所以在攒够样本之前 Bayes 一个分都不出——**这是设计如此，不是没配上**。
+
+验证：
+
+```bash
+docker exec <container> rspamc stat | grep -E "learned|learns"
+docker exec <container> redis-cli -h redis info keyspace
+```
+
+灰名单（greylist）现在也具备条件了，但它会延迟首次通信的陌生发件人几分钟，默认仍然关着（`actions.conf` 里 `greylist = 999`）。要开就把这个值调到 4~5。
 
 ## Linux.do SSO
 
