@@ -291,6 +291,15 @@ type BlockedSender struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type AllowedSender struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"userId,omitempty"`
+	MailboxID string    `json:"mailboxId"`
+	Email     string    `json:"email"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type MailStats struct {
 	TotalMessages   int64                  `json:"totalMessages"`
 	UnreadMessages  int64                  `json:"unreadMessages"`

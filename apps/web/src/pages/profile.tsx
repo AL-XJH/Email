@@ -52,6 +52,7 @@ import {
   api,
   APIToken,
   BlockedSender,
+  AllowedSender,
   ExternalImapAccount,
   ExternalImapAccountPayload,
   ExternalImapFolder,
@@ -262,6 +263,10 @@ export function ProfilePage() {
     queryKey: ["forward-addresses"],
     queryFn: api.forwardAddresses,
     enabled: canManageRules,
+  })
+  const allowed = useQuery({
+    queryKey: ["allowed-senders"],
+    queryFn: api.allowedSenders,
   })
   const blocked = useQuery({
     queryKey: ["blocked-senders"],
@@ -572,6 +577,26 @@ export function ProfilePage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["blocked-senders"] })
       toast({ title: "拦截规则已删除" })
+    },
+  })
+  const createAllowed = useMutation({
+    mutationFn: (form: FormData) =>
+      api.createAllowedSender({
+        mailboxId: blockedMailboxId === "all" ? "" : blockedMailboxId,
+        email: String(form.get("email") || ""),
+        reason: String(form.get("reason") || ""),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["allowed-senders"] })
+      toast({ title: "白名单已添加" })
+    },
+    onError: (error) => toast({ title: "保存失败", description: errorMessage(error) }),
+  })
+  const deleteAllowed = useMutation({
+    mutationFn: api.deleteAllowedSender,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["allowed-senders"] })
+      toast({ title: "白名单已移除" })
     },
   })
   const cleanup = useMutation({
@@ -1045,11 +1070,15 @@ export function ProfilePage() {
       return (
         <BlockedSection
           items={blocked.data?.items || []}
+          allowedItems={allowed.data?.items || []}
           mailboxes={mailboxes.data?.items || []}
           mailboxId={blockedMailboxId}
           onMailboxChange={setBlockedMailboxId}
           onCreate={(form) => createBlocked.mutate(form)}
           onDelete={(id) => deleteBlocked.mutate(id)}
+          onCreateAllowed={(form) => createAllowed.mutate(form)}
+          onDeleteAllowed={(id) => deleteAllowed.mutate(id)}
+          allowedPending={createAllowed.isPending}
           pending={createBlocked.isPending}
         />
       )
@@ -3979,19 +4008,27 @@ function RuleListItem({
 
 function BlockedSection({
   items,
+  allowedItems,
   mailboxes,
   mailboxId,
   onMailboxChange,
   onCreate,
   onDelete,
+  onCreateAllowed,
+  onDeleteAllowed,
+  allowedPending,
   pending,
 }: {
   items: BlockedSender[]
+  allowedItems: AllowedSender[]
   mailboxes: Mailbox[]
   mailboxId: string
   onMailboxChange: (value: string) => void
   onCreate: (form: FormData) => void
   onDelete: (id: string) => void
+  onCreateAllowed: (form: FormData) => void
+  onDeleteAllowed: (id: string) => void
+  allowedPending: boolean
   pending: boolean
 }) {
   useUiLanguage()
@@ -4067,6 +4104,76 @@ function BlockedSection({
             </div>
           ))}
           {items.length === 0 && <EmptyState text={uiText("暂无拦截发件人")} />}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>{uiText("新增白名单发件人")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              onCreateAllowed(new FormData(e.currentTarget))
+              e.currentTarget.reset()
+            }}
+          >
+            <Field label={uiText("适用邮箱")}>
+              <MailboxSelect value={mailboxId} mailboxes={mailboxes} onChange={onMailboxChange} />
+            </Field>
+            <Field label={uiText("发件人邮箱")}>
+              <Input name="email" type="email" required />
+            </Field>
+            <Field label={uiText("备注")}>
+              <Input name="reason" />
+            </Field>
+            <Button className="w-full" disabled={allowedPending}>
+              {allowedPending ? uiText("保存中...") : uiText("加入白名单")}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>{uiText("白名单")}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {allowedItems.map((item) => (
+            <div
+              key={item.id}
+              className="flex items-center justify-between gap-3 rounded-lg border p-3"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{item.email}</div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {item.mailboxId
+                    ? mailboxes.find((m) => m.id === item.mailboxId)?.address
+                    : uiText("全部邮箱")}
+                  {item.reason ? ` · ${item.reason}` : ""}
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-destructive"
+                onClick={() =>
+                  setPendingConfirm({
+                    title: "移出白名单？",
+                    description: uiMessage("{0} 之后将不再自动进入收件箱。", [item.email]),
+                    confirmText: "移出白名单",
+                    onConfirm: () => {
+                      onDeleteAllowed(item.id)
+                      setPendingConfirm(null)
+                    },
+                  })
+                }
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+          {allowedItems.length === 0 && <EmptyState text={uiText("暂无白名单发件人")} />}
         </CardContent>
       </Card>
       <ConfirmDialog

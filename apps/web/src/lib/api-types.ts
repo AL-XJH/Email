@@ -454,6 +454,13 @@ export type BlockedSender = {
   reason: string
   createdAt: string
 }
+export type AllowedSender = {
+  id: string
+  mailboxId: string
+  email: string
+  reason: string
+  createdAt: string
+}
 export type MailStats = {
   totalMessages: number
   unreadMessages: number

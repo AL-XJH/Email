@@ -579,6 +579,17 @@ func postgresFreshSchema() []string {
 			UNIQUE(user_id,mailbox_id,email)
 		)`,
 		`CREATE INDEX idx_blocked_senders_user_mailbox ON blocked_senders(user_id,mailbox_id,email)`,
+		`CREATE TABLE allowed_senders (
+			id VARCHAR(64) PRIMARY KEY,
+			user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mailbox_id VARCHAR(64) NOT NULL DEFAULT '',
+			email VARCHAR(320) NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			created_at VARCHAR(35) NOT NULL,
+			updated_at VARCHAR(35) NOT NULL,
+			UNIQUE(user_id,mailbox_id,email)
+		)`,
+		`CREATE INDEX idx_allowed_senders_user_mailbox ON allowed_senders(user_id,mailbox_id,email)`,
 		`CREATE TABLE mail_labels (
 			id VARCHAR(64) PRIMARY KEY,
 			mailbox_id VARCHAR(64) NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,

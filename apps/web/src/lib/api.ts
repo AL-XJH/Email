@@ -36,6 +36,7 @@ import type {
   ForwardAddress,
   TelegramSettings,
   BlockedSender,
+  AllowedSender,
   MailStats,
   ExternalImapAccount,
   ExternalImapAccountPayload,
@@ -248,6 +249,14 @@ export const api = {
     }),
   deleteBlockedSender: (id: string) =>
     request<{ ok: boolean }>(`/api/me/blocked-senders/${id}`, { method: "DELETE" }),
+  allowedSenders: () => request<ListResponse<AllowedSender>>("/api/me/allowed-senders"),
+  createAllowedSender: (payload: { mailboxId: string; email: string; reason: string }) =>
+    request<AllowedSender>("/api/me/allowed-senders", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteAllowedSender: (id: string) =>
+    request<{ ok: boolean }>(`/api/me/allowed-senders/${id}`, { method: "DELETE" }),
   mailStats: (mailboxId?: string) =>
     request<MailStats>(
       `/api/me/stats${mailboxId ? `?mailboxId=${encodeURIComponent(mailboxId)}` : ""}`

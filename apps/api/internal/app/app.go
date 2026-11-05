@@ -749,6 +749,16 @@ func (a *App) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			UNIQUE(user_id, mailbox_id, email)
 		)`,
+		`CREATE TABLE IF NOT EXISTS allowed_senders (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mailbox_id TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(user_id, mailbox_id, email)
+		)`,
 		`CREATE TABLE IF NOT EXISTS mail_labels (
 			id TEXT PRIMARY KEY,
 			mailbox_id TEXT NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,

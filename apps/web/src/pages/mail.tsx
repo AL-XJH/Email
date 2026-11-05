@@ -382,6 +382,7 @@ export function MailPage() {
   const [sendQueuePendingId, setSendQueuePendingId] = React.useState("")
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false)
   const [labelEditMode, setLabelEditMode] = React.useState(false)
+  const [labelsCollapsed, setLabelsCollapsed] = React.useState(false)
   const [newLabelEditing, setNewLabelEditing] = React.useState(false)
   const [messageContextMenu, setMessageContextMenu] =
     React.useState<MessageContextMenuState | null>(null)
@@ -2077,9 +2078,22 @@ export function MailPage() {
           <SidebarGroup>
             {!sidebarCollapsed && (
               <div className="flex items-center justify-between px-2 py-1.5">
-                <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
-                  {uiText("标签")}
-                </SidebarGroupLabel>
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-xs font-semibold uppercase text-muted-foreground transition-colors hover:text-foreground"
+                  aria-expanded={!labelsCollapsed}
+                  onClick={() => setLabelsCollapsed((value) => !value)}
+                >
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 transition-transform",
+                      labelsCollapsed && "-rotate-90"
+                    )}
+                  />
+                  <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                    {uiText("标签")}
+                  </SidebarGroupLabel>
+                </button>
                 {canManageSelectedLabels && (
                   <div className="flex items-center gap-0.5">
                     <Button
@@ -2116,7 +2130,7 @@ export function MailPage() {
             <SidebarGroupContent>
               <SidebarMenu>
                 {canReadMail &&
-                  labelItems.map((label) => {
+                  !labelsCollapsed && labelItems.map((label) => {
                     const colors = { backgroundColor: labelDotColor(label) }
                     return (
                       <SidebarMenuItem key={label.id}>
@@ -2155,6 +2169,7 @@ export function MailPage() {
                     )
                   })}
                 {canReadMail &&
+                  !labelsCollapsed &&
                   !sidebarCollapsed &&
                   !labels.isLoading &&
                   labelItems.length === 0 && (
@@ -2792,6 +2807,26 @@ export function MailPage() {
           const active = (message.labels || []).some((item) => item.id === label.id)
           if (active) removeLabel.mutate({ id: message.id, labelId: label.id })
           else addLabel.mutate({ id: message.id, label })
+        }}
+        onAllowSender={(message) => {
+          const email = senderAddress(message)
+          if (!email) {
+            toast({ title: uiText("无法识别发件人地址") })
+            return
+          }
+          void api
+            .createAllowedSender({
+              mailboxId: activeMailboxId || selectedMailbox?.id || "",
+              email,
+              reason: "",
+            })
+            .then(() => {
+              toast({ title: uiText("已加入白名单"), description: email })
+              void qc.invalidateQueries({ queryKey: ["allowed-senders"] })
+            })
+            .catch((error) =>
+              toast({ title: uiText("加入白名单失败"), description: errorMessage(error) })
+            )
         }}
       />
       <SidebarContextMenu
@@ -3945,6 +3980,7 @@ function MessageContextMenu({
   onAction,
   onMoveToFolder,
   onToggleLabel,
+  onAllowSender,
 }: {
   state: MessageContextMenuState | null
   labels: MailLabel[]
@@ -3961,6 +3997,7 @@ function MessageContextMenu({
   ) => void
   onMoveToFolder: (message: MailMessage, folderName: string) => void
   onToggleLabel: (message: MailMessage, label: MailLabel) => void
+  onAllowSender: (message: MailMessage) => void
 }) {
   useUiLanguage()
 
@@ -4062,6 +4099,18 @@ function MessageContextMenu({
             item(uiText("移入回收站"), <Trash2 className="h-4 w-4" />, "trash")}
           {message.folder !== "Spam" &&
             item(uiText("移入垃圾邮件"), <Trash2 className="h-4 w-4" />, "spam")}
+          <Button
+            type="button"
+            variant="ghost"
+            className={itemClass}
+            onClick={() => {
+              onAllowSender(message)
+              onClose()
+            }}
+          >
+            <ShieldCheck className="h-4 w-4" />
+            <span>{uiText("加入白名单")}</span>
+          </Button>
         </>
       )}
       {!draft && canOrganize && movableFolders.length > 0 && (
@@ -5360,6 +5409,23 @@ function displayNameFromAddress(value: string) {
   return localPart || text || "未知发件人"
 }
 
+// 从主题/摘要里识别验证码：只在「含关键词的那一行」里找数字，避免把订单号/跨行单词当成验证码。
+const VERIFICATION_KEYWORD =
+  /(验证码|校验码|动态码|安全码|确认码|verification\s*code|verify\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)/i
+
+export function extractVerificationCode(subject: string, text: string): string {
+  const body = `${subject || ""}\n${text || ""}`.trim()
+  if (!body) return ""
+  for (const line of body.split(/\r?\n/)) {
+    if (!VERIFICATION_KEYWORD.test(line)) continue
+    const numeric = line.match(/\b(\d{4,8})\b/)
+    if (numeric) return numeric[1]
+    const mixed = line.match(/\b(?=[A-Za-z]*\d)([0-9A-Za-z]{5,8})\b/)
+    if (mixed) return mixed[1]
+  }
+  return ""
+}
+
 function senderTitle(message: MailMessage) {
   const name = decodeMimeHeader(message.fromName?.trim() || "")
   const from = decodeMimeHeader(message.from)
@@ -5588,10 +5654,12 @@ function MessageRow({
   canOrganize: boolean
 }) {
   useUiLanguage()
+  const { toast } = useToast()
 
   const visibleLabels = (message.labels || []).slice(0, 2)
   const hiddenLabelCount = Math.max((message.labels?.length || 0) - visibleLabels.length, 0)
   const senderName = senderDisplayName(message)
+  const verificationCode = extractVerificationCode(message.subject, message.snippet)
   return (
     <div
       onClick={onClick}
@@ -5679,6 +5747,28 @@ function MessageRow({
           </div>
           <div className="flex items-center justify-between">
             <div className="mail-list-row-preview flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
+              {verificationCode && (
+                <button
+                  type="button"
+                  className="verification-code-chip inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-transparent px-1.5 py-0.5 text-xs transition-colors hover:bg-accent"
+                  title={uiText("复制验证码")}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void navigator.clipboard
+                      ?.writeText(verificationCode)
+                      .then(() =>
+                        toast({ title: uiText("验证码已复制"), description: verificationCode })
+                      )
+                      .catch(() => toast({ title: uiText("复制失败") }))
+                  }}
+                >
+                  <span className="hidden font-medium text-foreground/80 sm:inline">
+                    {uiText("验证码")}
+                  </span>
+                  <code className="font-mono font-semibold text-foreground">{verificationCode}</code>
+                  <Copy className="h-3 w-3 text-muted-foreground" />
+                </button>
+              )}
               {message.snippet && <span className="min-w-0 truncate">{message.snippet}</span>}
             </div>
             {(visibleLabels.length > 0 || hiddenLabelCount > 0) && (

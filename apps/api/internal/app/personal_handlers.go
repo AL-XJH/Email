@@ -649,6 +649,81 @@ func (a *App) handleDeleteBlockedSender(w http.ResponseWriter, r *http.Request) 
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (a *App) handleListAllowedSenders(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT id,user_id,mailbox_id,email,reason,created_at FROM allowed_senders WHERE user_id=? ORDER BY created_at DESC`, user.ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load allowed senders")
+		return
+	}
+	defer rows.Close()
+	items := []AllowedSender{}
+	for rows.Next() {
+		item, err := scanAllowedSender(rows)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to scan allowed senders")
+			return
+		}
+		items = append(items, item)
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *App) handleCreateAllowedSender(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	var req struct {
+		MailboxID string `json:"mailboxId"`
+		Email     string `json:"email"`
+		Reason    string `json:"reason"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	mailboxID, ok := a.optionalMailboxIDForUser(r, req.MailboxID)
+	if !ok {
+		respondError(w, http.StatusNotFound, "mailbox not found")
+		return
+	}
+	email := normalizeEmail(req.Email)
+	if email == "" || !strings.Contains(email, "@") {
+		badRequest(w, errors.New("invalid email"))
+		return
+	}
+	id := newID("alw")
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	query := upsertSQL(a.cfg.DBDriver, `INSERT INTO allowed_senders(id,user_id,mailbox_id,email,reason,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?)`, `(user_id,mailbox_id,email)`,
+		`reason=excluded.reason,updated_at=excluded.updated_at`,
+		`reason=VALUES(reason),updated_at=VALUES(updated_at)`)
+	if _, err := a.db.ExecContext(r.Context(), query,
+		id, user.ID, mailboxID, email, strings.TrimSpace(req.Reason), now, now); err != nil {
+		badRequest(w, err)
+		return
+	}
+	row := a.db.QueryRowContext(r.Context(), `SELECT id,user_id,mailbox_id,email,reason,created_at FROM allowed_senders WHERE user_id=? AND mailbox_id=? AND email=?`, user.ID, mailboxID, email)
+	item, err := scanAllowedSender(row)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load allowed sender")
+		return
+	}
+	respondJSON(w, http.StatusCreated, item)
+}
+
+func (a *App) handleDeleteAllowedSender(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	res, err := a.db.ExecContext(r.Context(), `DELETE FROM allowed_senders WHERE id=? AND user_id=?`, chi.URLParam(r, "id"), user.ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to delete allowed sender")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		respondError(w, http.StatusNotFound, "allowed sender not found")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (a *App) handleMailStats(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	mailboxID := strings.TrimSpace(r.URL.Query().Get("mailboxId"))
@@ -911,12 +986,24 @@ func scanBlockedSender(row messageSummaryScanner) (BlockedSender, error) {
 	return item, err
 }
 
+func scanAllowedSender(row messageSummaryScanner) (AllowedSender, error) {
+	var item AllowedSender
+	var created string
+	err := row.Scan(&item.ID, &item.UserID, &item.MailboxID, &item.Email, &item.Reason, &created)
+	item.CreatedAt = parseTime(created)
+	return item, err
+}
+
 func (a *App) applyInboundControls(ctx context.Context, messageID, mailboxID, from, subject string) {
 	var userID string
 	if err := a.db.QueryRowContext(ctx, `SELECT user_id FROM mailboxes WHERE id=?`, mailboxID).Scan(&userID); err != nil {
 		return
 	}
-	if a.senderBlocked(ctx, userID, mailboxID, from) {
+	allowed := a.senderAllowed(ctx, userID, mailboxID, from)
+	if allowed {
+		// 白名单发件人：不论反垃圾判成什么，都拉回收件箱。
+		a.moveAllowedMessageToInbox(ctx, messageID, mailboxID)
+	} else if a.senderBlocked(ctx, userID, mailboxID, from) {
 		a.moveBlockedMessageToSpam(ctx, messageID, mailboxID)
 		return
 	}
@@ -948,6 +1035,9 @@ func (a *App) applyInboundControls(ctx context.Context, messageID, mailboxID, fr
 			break
 		}
 	}
+	if allowed {
+		return
+	}
 	if a.senderBlocked(ctx, userID, mailboxID, from) {
 		a.moveBlockedMessageToSpam(ctx, messageID, mailboxID)
 	}
@@ -961,6 +1051,24 @@ func (a *App) senderBlocked(ctx context.Context, userID, mailboxID, from string)
 	var blocked int
 	_ = a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM blocked_senders WHERE user_id=? AND (mailbox_id='' OR mailbox_id=?) AND email=?`, userID, mailboxID, from).Scan(&blocked)
 	return blocked > 0
+}
+
+func (a *App) senderAllowed(ctx context.Context, userID, mailboxID, from string) bool {
+	from = normalizeEmail(from)
+	if from == "" {
+		return false
+	}
+	var allowed int
+	_ = a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM allowed_senders WHERE user_id=? AND (mailbox_id='' OR mailbox_id=?) AND email=?`, userID, mailboxID, from).Scan(&allowed)
+	return allowed > 0
+}
+
+func (a *App) moveAllowedMessageToInbox(ctx context.Context, messageID, mailboxID string) {
+	inboxID, err := a.ensureFolder(ctx, mailboxID, "Inbox")
+	if err != nil {
+		return
+	}
+	_ = a.moveMessageMaildir(ctx, messageID, inboxID)
 }
 
 func (a *App) moveBlockedMessageToSpam(ctx context.Context, messageID, mailboxID string) {
