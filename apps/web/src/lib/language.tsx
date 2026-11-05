@@ -16,58 +16,34 @@ export const languageOptions: {
   { value: "en", label: "English", shortLabel: "EN", htmlLang: "en" },
 ]
 
-let sessionLanguage: Language | undefined
+/**
+ * 界面锁定为简体中文：不再根据浏览器语言或本地存储切换。
+ * 多语言文案表仍然保留（历史遗留的 zh-TW / en 词条不会再被选中）。
+ */
+export const LOCKED_LANGUAGE: Language = "zh-CN"
 
-const languageValues = new Set(languageOptions.map((item) => item.value))
-
-export function getInitialLanguage(): Language {
-  if (typeof window === "undefined") return "zh-CN"
-  let stored: string | null = null
+if (typeof window !== "undefined") {
+  // 清掉历史版本可能写入的语言偏好，避免旧浏览器残留 en / zh-TW。
   try {
-    stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY)
+    window.localStorage.removeItem(LANGUAGE_STORAGE_KEY)
   } catch {
     /* Storage may be unavailable. */
   }
-  if (sessionLanguage) return sessionLanguage
-  if (stored && languageValues.has(stored as Language)) return stored as Language
-  const browserLanguage = window.navigator.language.toLowerCase()
-  if (
-    browserLanguage.startsWith("zh-tw") ||
-    browserLanguage.startsWith("zh-hk") ||
-    browserLanguage.startsWith("zh-mo")
-  )
-    return "zh-TW"
-  if (browserLanguage.startsWith("en")) return "en"
-  return "zh-CN"
 }
 
-export function setStoredLanguage(language: Language) {
-  sessionLanguage = language
-  try {
-    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
-  } catch {
-    /* Keep the current session language. */
-  }
-  window.dispatchEvent(new CustomEvent("lanqin:language", { detail: language }))
+export function getInitialLanguage(): Language {
+  return LOCKED_LANGUAGE
+}
+
+export function setStoredLanguage(_language: Language) {
+  /* 语言已锁定，保留空实现以兼容既有调用点。 */
 }
 
 export function useLanguage() {
-  const [language, setLanguageState] = React.useState<Language>(getInitialLanguage)
-  React.useEffect(() => {
-    function sync(event: Event) {
-      if (event.type === "storage") sessionLanguage = undefined
-      setLanguageState(getInitialLanguage())
-    }
-    window.addEventListener("storage", sync)
-    window.addEventListener("lanqin:language", sync)
-    return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("lanqin:language", sync)
-    }
-  }, [])
-  const setLanguage = React.useCallback((nextLanguage: Language) => {
-    setStoredLanguage(nextLanguage)
-    setLanguageState(nextLanguage)
+  // 语言已锁定，不再订阅 storage / lanqin:language 事件。
+  const [language] = React.useState<Language>(getInitialLanguage)
+  const setLanguage = React.useCallback((_nextLanguage: Language) => {
+    /* 语言已锁定，忽略切换请求。 */
   }, [])
   return [language, setLanguage] as const
 }

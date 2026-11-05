@@ -6,7 +6,6 @@ import {
   useLanguage as useUiLanguage,
 } from "@/lib/language"
 import { errorMessage } from "@/lib/ui-errors"
-import { LanguageSelector } from "@/components/language-selector"
 import { MailStatistics } from "@/components/mail-statistics"
 
 import * as React from "react"
@@ -5316,7 +5315,6 @@ function AccountHeader({
         >
           {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>
-        <LanguageSelector />
         <Button
           type="button"
           variant="ghost"

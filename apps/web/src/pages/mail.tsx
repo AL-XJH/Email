@@ -8,7 +8,6 @@ import {
   useLanguage,
 } from "@/lib/language"
 import { errorMessage } from "@/lib/ui-errors"
-import { LanguageSelector } from "@/components/language-selector"
 
 import * as React from "react"
 import DOMPurify from "dompurify"
@@ -5212,7 +5211,6 @@ function SidebarUtilityBar({
       >
         {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       </Button>
-      <LanguageSelector />
       <Button
         type="button"
         variant="ghost"

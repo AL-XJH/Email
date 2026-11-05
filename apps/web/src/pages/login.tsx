@@ -1,5 +1,4 @@
 import { errorMessage } from "@/lib/ui-errors"
-import { LanguageSelector } from "@/components/language-selector"
 import { uiText, useLanguage as useUiLanguage } from "@/lib/language"
 import * as React from "react"
 import { Link, Navigate, useLocation, useSearchParams } from "react-router-dom"
@@ -84,9 +83,6 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-10">
       <div className="w-full max-w-[420px]">
         <div className="mb-7 text-center">
-          <div className="flex justify-end">
-            <LanguageSelector />
-          </div>
           <h1 className="text-3xl font-semibold tracking-tight">
             {publicSettings.data?.siteTitle || "LanQin Email"}
           </h1>

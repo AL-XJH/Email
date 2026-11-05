@@ -1,4 +1,3 @@
-import { LanguageSelector } from "@/components/language-selector"
 import { uiText, useLanguage as useUiLanguage } from "@/lib/language"
 import * as React from "react"
 import { Outlet, Link, useLocation } from "react-router-dom"
@@ -138,9 +137,6 @@ function ProtectedContent() {
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>
-            <SidebarMenuItem>
-              <LanguageSelector variant="sidebar" />
-            </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" className="group-data-[collapsible=icon]:!p-0" asChild>
                 <Link to="/profile">
