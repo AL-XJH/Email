@@ -17,6 +17,32 @@ export function formatDate(value: string, language: Language = getInitialLanguag
   }).format(date)
 }
 
+export function formatListDate(value: string, language: Language = getInitialLanguage()) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const now = new Date()
+  if (date.toDateString() === now.toDateString()) {
+    return new Intl.DateTimeFormat(language, {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date)
+  }
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) {
+    return language.toLowerCase().startsWith("zh") ? "昨天" : "Yesterday"
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    return new Intl.DateTimeFormat(language, { month: "2-digit", day: "2-digit" }).format(date)
+  }
+  return new Intl.DateTimeFormat(language, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date)
+}
+
 export function formatDateTime(value: string, language: Language = getInitialLanguage()) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ""

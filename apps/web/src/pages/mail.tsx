@@ -119,6 +119,7 @@ import {
   formatBytes,
   formatDate,
   formatDateTime,
+  formatListDate,
   generateLabelColor,
 } from "@/lib/utils"
 import { applyTheme, getInitialTheme } from "@/lib/theme"
@@ -1847,10 +1848,6 @@ export function MailPage() {
           collapsed={sidebarCollapsed}
           name={me.data?.user.displayName || selectedMailbox?.address || "LanQin"}
           email={me.data?.user.email || selectedMailbox?.address}
-          darkMode={darkMode}
-          onToggleTheme={() => setDarkMode((value) => !value)}
-
-          onSettings={openSettings}
         />
         <div className={cn("mt-2 flex gap-2", sidebarCollapsed && "justify-center")}>
           <MailboxSwitcher
@@ -2185,7 +2182,13 @@ export function MailPage() {
         )}
       </SidebarContent>
       {!isMobile && (
-        <div className={cn("mt-auto border-t p-2", sidebarCollapsed ? "flex justify-center" : "")}>
+        <div className={cn("mt-auto border-t p-2", sidebarCollapsed ? "flex flex-col items-center gap-1" : "")}>
+          <SidebarUtilityBar
+            collapsed={sidebarCollapsed}
+            darkMode={darkMode}
+            onToggleTheme={() => setDarkMode((value) => !value)}
+            onSettings={openSettings}
+          />
           <Button
             type="button"
             variant="ghost"
@@ -2206,7 +2209,7 @@ export function MailPage() {
   )
   function toggleSidebar() {
     if (sidebarCollapsed) {
-      sidebarPanelRef.current?.expand(14)
+      sidebarPanelRef.current?.expand(12)
       setSidebarCollapsed(false)
     } else {
       sidebarPanelRef.current?.collapse()
@@ -2362,9 +2365,9 @@ export function MailPage() {
     />
   ) : (
     <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
-      <ResizablePanel defaultSize={32} minSize={24} maxSize={44}>
+      <ResizablePanel defaultSize={28} minSize={22} maxSize={38}>
         <div className="flex h-full min-h-0 flex-col">
-          <div className="flex h-14 shrink-0 items-center justify-between border-b px-5">
+          <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
             <div className="flex min-w-0 items-center gap-3">
               {canOrganizeSelectedMailbox && (
                 <Checkbox
@@ -2449,7 +2452,7 @@ export function MailPage() {
           />
         </div>
       </ResizablePanel>
-      <ResizableHandle withHandle />
+      <ResizableHandle />
 
       <ResizablePanel defaultSize={68} minSize={44}>
         <section className="h-full min-h-0">
@@ -2657,18 +2660,18 @@ export function MailPage() {
               ref={sidebarPanelRef}
               collapsible
               collapsedSize={4}
-              defaultSize={15}
-              minSize={11}
-              maxSize={24}
+              defaultSize={12}
+              minSize={10}
+              maxSize={18}
               onCollapse={() => setSidebarCollapsed(true)}
               onExpand={() => setSidebarCollapsed(false)}
             >
               {sidebarContent}
             </ResizablePanel>
-            <ResizableHandle withHandle />
+            <ResizableHandle />
             <ResizablePanel defaultSize={85} minSize={60}>
               <section className="flex h-full min-h-0 flex-col">
-                <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b px-5">
+                <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-4">
                   <div className="flex items-center gap-2">
                     <Button
                       size="icon"
@@ -2705,8 +2708,9 @@ export function MailPage() {
                         <>
                           {canOrganizeSelectedMailbox && (
                             <Button
-                              variant="outline"
+                              variant="ghost"
                               size="sm"
+                              className="text-muted-foreground hover:text-foreground"
                               disabled={
                                 !activeMailboxId || markAllRead.isPending || unreadCount === 0
                               }
@@ -2718,7 +2722,11 @@ export function MailPage() {
                           )}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="outline" size="sm">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-muted-foreground hover:text-foreground"
+                              >
                                 <SlidersHorizontal className="h-4 w-4" />
                                 {uiText(filterLabels[mailFilter])}
                               </Button>
@@ -2735,7 +2743,7 @@ export function MailPage() {
                       )}
                   </div>
                   {mailView !== "sendQueue" && (
-                    <div className="relative w-full max-w-md">
+                    <div className="relative ml-auto w-full max-w-md">
                       <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                       <Input
                         value={query}
@@ -5182,20 +5190,50 @@ function NewLabelButton({
   )
 }
 
-function AccountHeader({
+function SidebarUtilityBar({
   collapsed,
-  name,
-  email,
   darkMode,
   onToggleTheme,
   onSettings,
 }: {
   collapsed: boolean
-  name: string
-  email?: string
   darkMode: boolean
   onToggleTheme: () => void
   onSettings: () => void
+}) {
+  return (
+    <div className={cn("flex items-center gap-1", collapsed ? "flex-col" : "px-1 pb-1")}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-8 rounded-md text-muted-foreground"
+        onClick={onToggleTheme}
+      >
+        {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      </Button>
+      <LanguageSelector />
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-8 rounded-md text-muted-foreground"
+        onClick={onSettings}
+      >
+        <Settings className="h-4 w-4" />
+      </Button>
+    </div>
+  )
+}
+
+function AccountHeader({
+  collapsed,
+  name,
+  email,
+}: {
+  collapsed: boolean
+  name: string
+  email?: string
 }) {
   useUiLanguage()
 
@@ -5222,27 +5260,6 @@ function AccountHeader({
         <div className="min-w-0 text-sm">
           <div className="truncate text-sm font-semibold leading-5">{displayName}</div>
         </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 rounded-md text-muted-foreground"
-          onClick={onToggleTheme}
-        >
-          {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        </Button>
-        <LanguageSelector />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 rounded-md text-muted-foreground"
-          onClick={onSettings}
-        >
-          <Settings className="h-4 w-4" />
-        </Button>
       </div>
     </div>
   )
@@ -5612,57 +5629,73 @@ function MessageRow({
     <div
       onClick={onClick}
       onContextMenu={onContextMenu}
+      data-active={active ? "true" : undefined}
       className={cn(
-        "cursor-pointer border-b p-4 transition-colors hover:bg-accent/50",
-        active && "bg-accent",
-        !message.isRead && "font-semibold"
+        "group relative w-full cursor-pointer overflow-hidden border-b border-border/60 py-2.5 pl-4 pr-3 transition-colors hover:bg-accent/50",
+        active && "bg-accent shadow-[inset_2px_0_0_0_hsl(var(--foreground))]"
       )}
     >
-      <div className="flex gap-3">
+      <div className="flex items-start gap-3">
         {canOrganize && (
           <Checkbox
             aria-label={uiText("选择邮件")}
             checked={checked}
             onCheckedChange={(value) => onCheckedChange(value === true)}
             onClick={(event) => event.stopPropagation()}
-            className="mt-0.5 shrink-0"
+            className="mt-1 shrink-0"
           />
         )}
         <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <div className="min-w-0 truncate text-sm" title={senderTitle(message)}>
-              {senderName}
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {canOrganize && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label={message.isStarred ? uiText("取消星标") : uiText("添加星标")}
-                  className="h-7 w-7 text-muted-foreground hover:text-yellow-500"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onStar()
-                  }}
-                >
-                  <Star
-                    className={cn(
-                      "h-4 w-4",
-                      message.isStarred && "fill-yellow-400 text-yellow-500"
-                    )}
-                  />
-                </Button>
+          <div className="flex items-baseline gap-2">
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate text-sm",
+                message.isRead ? "text-foreground/75" : "font-semibold text-foreground"
               )}
-              <div className="text-xs text-muted-foreground">{formatDate(message.receivedAt)}</div>
-            </div>
+              title={senderTitle(message)}
+            >
+              {senderName}
+            </span>
+            <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+              {formatListDate(message.receivedAt)}
+            </span>
+            {canOrganize && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={message.isStarred ? uiText("取消星标") : uiText("添加星标")}
+                className={cn(
+                  "-mr-1 h-6 w-6 shrink-0 text-muted-foreground hover:text-yellow-500",
+                  message.isStarred ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                )}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onStar()
+                }}
+              >
+                <Star
+                  className={cn(
+                    "h-3.5 w-3.5",
+                    message.isStarred && "fill-yellow-400 text-yellow-500"
+                  )}
+                />
+              </Button>
+            )}
           </div>
-          <div className="mb-1 flex min-w-0 items-center gap-2">
-            <span className="min-w-0 truncate text-sm">{message.subject}</span>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
+            <span
+              className={cn(
+                "min-w-0 max-w-[58%] shrink truncate",
+                message.isRead ? "text-foreground/75" : "text-foreground"
+              )}
+            >
+              {message.subject}
+            </span>
             {scheduled && (
               <Badge
                 variant="secondary"
-                className="h-5 shrink-0 rounded-md px-1.5 text-[11px] font-normal"
+                className="h-4 shrink-0 rounded px-1 text-[10px] font-normal"
               >
                 {uiText("已定时")}
               </Badge>
@@ -5673,7 +5706,7 @@ function MessageRow({
             {hiddenLabelCount > 0 && (
               <Badge
                 variant="outline"
-                className="h-5 shrink-0 rounded-md px-1.5 text-[11px] font-normal text-muted-foreground"
+                className="h-4 shrink-0 rounded px-1 text-[10px] font-normal text-muted-foreground"
               >
                 +{uiText("{0}", [hiddenLabelCount])}
               </Badge>
@@ -5681,8 +5714,12 @@ function MessageRow({
             {message.hasAttachments && (
               <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
             )}
+            {message.snippet && (
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                — {message.snippet}
+              </span>
+            )}
           </div>
-          <div className="line-clamp-2 text-xs text-muted-foreground">{message.snippet}</div>
         </div>
       </div>
     </div>

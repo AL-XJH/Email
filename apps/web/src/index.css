@@ -249,3 +249,11 @@ vue-devtools-anchor,
     opacity: 1 !important;
   }
 }
+
+@layer base {
+  /* Radix ScrollArea 的内容容器默认 display:table，会把列表行撑成 max-content 宽度，
+     导致右侧时间列被挤出可视区、文字在面板边缘被硬切（没有省略号）。 */
+  [data-radix-scroll-area-viewport] > div {
+    display: block !important;
+  }
+}
