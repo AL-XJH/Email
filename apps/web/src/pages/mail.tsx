@@ -41,6 +41,7 @@ import {
   AlignRight,
   Archive,
   ArrowLeft,
+  Ban,
   Bold,
   Calendar,
   Check,
@@ -207,9 +208,9 @@ import { hasPermission } from "@/lib/permissions"
 const folderIcons: Record<string, React.ReactNode> = {
   inbox: <Inbox className="h-4 w-4" />,
   sent: <Send className="h-4 w-4" />,
-  drafts: <FileText className="h-4 w-4" />,
+  drafts: <Pencil className="h-4 w-4" />,
   archive: <Archive className="h-4 w-4" />,
-  spam: <Trash2 className="h-4 w-4" />,
+  spam: <Ban className="h-4 w-4" />,
   trash: <Trash2 className="h-4 w-4" />,
 }
 const folderLabels: Record<string, string> = {
@@ -1847,6 +1848,9 @@ export function MailPage() {
           collapsed={sidebarCollapsed}
           name={me.data?.user.displayName || selectedMailbox?.address || "LanQin"}
           email={me.data?.user.email || selectedMailbox?.address}
+          darkMode={darkMode}
+          onToggleTheme={() => setDarkMode((value) => !value)}
+          onSettings={openSettings}
         />
         <div className={cn("mt-2 flex gap-2", sidebarCollapsed && "justify-center")}>
           <MailboxSwitcher
@@ -2116,23 +2120,24 @@ export function MailPage() {
                           }}
                         >
                           {sidebarCollapsed ? (
-                            <span
-                              className="h-2 w-2 rounded-full"
-                              style={{ backgroundColor: colors.backgroundColor }}
-                            />
-                          ) : (
-                            <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                               <span
-                                className="h-2 w-2 shrink-0 rounded-full"
+                                className="h-2.5 w-2.5 rounded-full"
                                 style={{ backgroundColor: colors.backgroundColor }}
                               />
-                              {label.name}
-                            </Badge>
-                          )}
-                          {!sidebarCollapsed && !labelEditMode && !!label.messageCount && (
-                            <span className="ml-auto text-[11px] text-muted-foreground">
-                              {uiText("{0}", [label.messageCount])}
                             </span>
+                          ) : (
+                            <>
+                              <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                <span
+                                  className="h-2.5 w-2.5 rounded-full"
+                                  style={{ backgroundColor: colors.backgroundColor }}
+                                />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
+                                {label.name}
+                              </span>
+                            </>
                           )}
                           {!sidebarCollapsed && labelEditMode && canManageSelectedLabels && (
                             <button
@@ -2182,12 +2187,6 @@ export function MailPage() {
       </SidebarContent>
       {!isMobile && (
         <div className={cn("mt-auto border-t p-2", sidebarCollapsed ? "flex flex-col items-center gap-1" : "")}>
-          <SidebarUtilityBar
-            collapsed={sidebarCollapsed}
-            darkMode={darkMode}
-            onToggleTheme={() => setDarkMode((value) => !value)}
-            onSettings={openSettings}
-          />
           <Button
             type="button"
             variant="ghost"
@@ -5189,49 +5188,20 @@ function NewLabelButton({
   )
 }
 
-function SidebarUtilityBar({
+function AccountHeader({
   collapsed,
+  name,
+  email,
   darkMode,
   onToggleTheme,
   onSettings,
 }: {
   collapsed: boolean
+  name: string
+  email?: string
   darkMode: boolean
   onToggleTheme: () => void
   onSettings: () => void
-}) {
-  return (
-    <div className={cn("flex items-center gap-1", collapsed ? "flex-col" : "px-1 pb-1")}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="size-8 rounded-md text-muted-foreground"
-        onClick={onToggleTheme}
-      >
-        {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="size-8 rounded-md text-muted-foreground"
-        onClick={onSettings}
-      >
-        <Settings className="h-4 w-4" />
-      </Button>
-    </div>
-  )
-}
-
-function AccountHeader({
-  collapsed,
-  name,
-  email,
-}: {
-  collapsed: boolean
-  name: string
-  email?: string
 }) {
   useUiLanguage()
 
@@ -5258,6 +5228,28 @@ function AccountHeader({
         <div className="min-w-0 text-sm">
           <div className="truncate text-sm font-semibold leading-5">{displayName}</div>
         </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 rounded-md text-muted-foreground"
+          aria-label={darkMode ? "切换到浅色" : "切换到深色"}
+          onClick={onToggleTheme}
+        >
+          {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 rounded-md text-muted-foreground"
+          aria-label="设置"
+          onClick={onSettings}
+        >
+          <Settings className="h-4 w-4" />
+        </Button>
       </div>
     </div>
   )
