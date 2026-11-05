@@ -5,6 +5,7 @@ import { Navigate, RouterProvider, createBrowserRouter } from "react-router-dom"
 import { Toaster } from "@/components/ui/toaster"
 import { LanguageDomSync } from "@/lib/language"
 import { SiteTitleSync } from "@/components/site-title-sync"
+import { persistQueryCache, restoreQueryCache } from "@/lib/query-cache"
 import { ProtectedLayout } from "@/components/protected-layout"
 import { AdminOnly } from "@/components/admin-only"
 import "./index.css"
@@ -39,6 +40,9 @@ function lazyPage(element: React.ReactNode) {
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 10_000 } },
 })
+// 必须在第一次渲染前 hydrate，否则还是会先闪一下骨架屏
+restoreQueryCache(queryClient)
+persistQueryCache(queryClient)
 const router = createBrowserRouter([
   { path: "/login", element: lazyPage(<LoginPage />) },
   { path: "/register", element: lazyPage(<RegisterPage />) },
