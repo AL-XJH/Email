@@ -383,6 +383,7 @@ export function MailPage() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false)
   const [labelEditMode, setLabelEditMode] = React.useState(false)
   const [labelsCollapsed, setLabelsCollapsed] = React.useState(false)
+  const [foldersCollapsed, setFoldersCollapsed] = React.useState(false)
   const [newLabelEditing, setNewLabelEditing] = React.useState(false)
   const [messageContextMenu, setMessageContextMenu] =
     React.useState<MessageContextMenuState | null>(null)
@@ -1847,73 +1848,14 @@ export function MailPage() {
   function openSettings() {
     navigate("/profile")
   }
-  const sidebarContent = (
-    <Sidebar collapsible="none" className="h-full w-full border-r bg-sidebar">
-      <SidebarHeader className={cn("border-b py-3", sidebarCollapsed ? "px-2" : "px-3")}>
-        <AccountHeader
-          collapsed={sidebarCollapsed}
-          name={me.data?.user.displayName || selectedMailbox?.address || "LanQin"}
-          email={me.data?.user.email || selectedMailbox?.address}
-          darkMode={darkMode}
-          onToggleTheme={() => setDarkMode((value) => !value)}
-          onSettings={openSettings}
-        />
-        <div className={cn("mt-2 flex gap-2", sidebarCollapsed && "justify-center")}>
-          <MailboxSwitcher
-            collapsed={sidebarCollapsed}
-            mailboxes={mailboxList.data?.items || []}
-            selectedMailbox={selectedMailbox}
-            onSelect={switchMailbox}
-          />
-          {!sidebarCollapsed && (
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="h-9 w-9 shrink-0 rounded-md"
-              onClick={copyCurrentMailbox}
-              disabled={!selectedMailbox}
-            >
-              <Copy className="h-4 w-4" />
-            </Button>
-          )}
-        </div>
-        {canSendSelectedMailbox && (
-          <Button
-            className={cn("mt-2 h-10 w-full rounded-md text-sm", sidebarCollapsed && "px-0")}
-            size={sidebarCollapsed ? "icon" : "default"}
-            onClick={() => openCompose()}
-            disabled={!selectedMailbox}
-          >
-            <PencilLine className="h-4 w-4" />
-            {!sidebarCollapsed && <span>{uiText("写邮件")}</span>}
-          </Button>
-        )}
-      </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          {!sidebarCollapsed && (
-            <div className="flex items-center justify-between px-2 py-1.5">
-              <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
-                {uiText("邮件")}
-              </SidebarGroupLabel>
-              {canOrganizeSelectedMailbox && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-5 w-5"
-                  onClick={() => setFolderDialogOpen(true)}
-                  disabled={!activeMailboxId}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </Button>
-              )}
-            </div>
-          )}
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {mailMenuItems.map((item) => (
+  const systemMenuItems = mailMenuItems.filter(
+    (item) => !(item.type === "folder" && item.custom)
+  )
+  const customFolderItems = mailMenuItems.filter(
+    (item) => item.type === "folder" && item.custom
+  )
+
+  const renderMailMenuItem = (item: MailMenuItem) => (
                 <SidebarMenuItem
                   key={item.key}
                   draggable={
@@ -1976,7 +1918,63 @@ export function MailPage() {
                     )}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              ))}
+  )
+
+  const sidebarContent = (
+    <Sidebar collapsible="none" className="h-full w-full border-r bg-sidebar">
+      <SidebarHeader className={cn("border-b py-3", sidebarCollapsed ? "px-2" : "px-3")}>
+        <AccountHeader
+          collapsed={sidebarCollapsed}
+          name={me.data?.user.displayName || selectedMailbox?.address || "LanQin"}
+          email={me.data?.user.email || selectedMailbox?.address}
+          darkMode={darkMode}
+          onToggleTheme={() => setDarkMode((value) => !value)}
+          onSettings={openSettings}
+        />
+        <div className={cn("mt-2 flex gap-2", sidebarCollapsed && "justify-center")}>
+          <MailboxSwitcher
+            collapsed={sidebarCollapsed}
+            mailboxes={mailboxList.data?.items || []}
+            selectedMailbox={selectedMailbox}
+            onSelect={switchMailbox}
+          />
+          {!sidebarCollapsed && (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-9 w-9 shrink-0 rounded-md"
+              onClick={copyCurrentMailbox}
+              disabled={!selectedMailbox}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+        {canSendSelectedMailbox && (
+          <Button
+            className={cn("mt-2 h-10 w-full rounded-md text-sm", sidebarCollapsed && "px-0")}
+            size={sidebarCollapsed ? "icon" : "default"}
+            onClick={() => openCompose()}
+            disabled={!selectedMailbox}
+          >
+            <PencilLine className="h-4 w-4" />
+            {!sidebarCollapsed && <span>{uiText("写邮件")}</span>}
+          </Button>
+        )}
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          {!sidebarCollapsed && (
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                {uiText("邮件")}
+              </SidebarGroupLabel>
+            </div>
+          )}
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {systemMenuItems.map(renderMailMenuItem)}
               {!sidebarCollapsed && canOrganizeSelectedMailbox && (
                 <div
                   className={cn(
@@ -1997,6 +1995,49 @@ export function MailPage() {
               )}
             </SidebarMenu>
             {folders.isLoading && <FolderSkeleton />}
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          {!sidebarCollapsed && (
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <button
+                type="button"
+                className="flex items-center gap-1 text-xs font-semibold uppercase text-muted-foreground transition-colors hover:text-foreground"
+                aria-expanded={!foldersCollapsed}
+                onClick={() => setFoldersCollapsed((value) => !value)}
+              >
+                <ChevronDown
+                  className={cn("h-3.5 w-3.5 transition-transform", foldersCollapsed && "-rotate-90")}
+                />
+                <SidebarGroupLabel className="m-0 p-0 text-xs font-semibold uppercase text-muted-foreground">
+                  {uiText("文件夹")}
+                </SidebarGroupLabel>
+              </button>
+              {canOrganizeSelectedMailbox && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5"
+                  onClick={() => setFolderDialogOpen(true)}
+                  disabled={!activeMailboxId}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          )}
+          <SidebarGroupContent>
+            {!foldersCollapsed && (
+              <SidebarMenu>
+                {customFolderItems.map(renderMailMenuItem)}
+                {!folders.isLoading && customFolderItems.length === 0 && (
+                  <div className="px-3 py-2 text-sm text-muted-foreground">
+                    {uiText("暂无自定义文件夹")}
+                  </div>
+                )}
+              </SidebarMenu>
+            )}
           </SidebarGroupContent>
         </SidebarGroup>
         {externalAccountItems.length > 0 && (
