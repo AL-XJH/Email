@@ -14,7 +14,10 @@ set -eu
 : "${LANQIN_MAILDIR_ROOT:=/var/mail/vhosts}"
 : "${LANQIN_TLS_CERT_FILE:=}"
 : "${LANQIN_TLS_KEY_FILE:=}"
+# Rspamd 的 DNS 解析器：必须是本地递归解析器，公共 DNS 会让 DNSBL 全部失效。
+: "${LANQIN_RSPAMD_DNS:=127.0.0.1:53}"
 
+export LANQIN_RSPAMD_DNS
 export LANQIN_DATA_DIR LANQIN_DB_PATH LANQIN_DB_DRIVER LANQIN_ADDR LANQIN_SMTP_HOST LANQIN_SMTP_PORT LANQIN_SUBMISSION_ADDR LANQIN_SUBMISSION_TLS_ADDR LANQIN_SUBMISSION_MAX_MESSAGE_MB LANQIN_MAILDIR_ROOT LANQIN_TLS_CERT_FILE LANQIN_TLS_KEY_FILE
 
 addgroup --system --gid 5000 vmail 2>/dev/null || true
@@ -68,6 +71,9 @@ postconf -e "non_smtpd_milters = inet:127.0.0.1:11332"
 sed -i "s#^ssl_cert = <.*#ssl_cert = <${TLS_CERT}#" /etc/dovecot/dovecot.conf
 sed -i "s#^ssl_key = <.*#ssl_key = <${TLS_KEY}#" /etc/dovecot/dovecot.conf
 sed -i "s#^auth_policy_hash_nonce = .*#auth_policy_hash_nonce = ${AUTH_POLICY_HASH_NONCE}#" /etc/dovecot/dovecot.conf
+if [ -f /etc/rspamd/local.d/options.inc ]; then
+	sed -i "s#__LANQIN_RSPAMD_DNS__#${LANQIN_RSPAMD_DNS}#" /etc/rspamd/local.d/options.inc
+fi
 
 # Rspamd DKIM keys are exported after API seed/migrations are complete.
 /usr/local/bin/lanqin-api >/tmp/lanqin-api-bootstrap.log 2>&1 &

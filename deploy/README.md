@@ -122,6 +122,61 @@ docker compose -f docker-compose.stack.yml -f docker-compose.stack.build.yml up 
 
 配置完成后点击“检测”。
 
+## 反垃圾（Rspamd）
+
+默认镜像里的 Rspamd 是「只签名、不拦信」的配置，而且有两个会让它**看起来完全没工作**的问题，这个分支把它们修掉了。
+
+### 1. DNS 解析器必须指向本地递归解析器
+
+Spamhaus（`zen.spamhaus.org` / `dbl.spamhaus.org`）和 URIBL 都拒绝来自公共 DNS（1.1.1.1 / 8.8.8.8 / 9.9.9.9）的查询，返回的是 `127.255.255.254`、`127.0.0.1` 这类错误码。Rspamd 识别到这种返回值会把对应黑名单标记为不可靠并停用，日志里只有一句：
+
+```
+rspamd_monitored_dns_cb: DNS reply returned 'no error' for zen.spamhaus.org while
+'no records with this name' was expected ... (likely DNS spoofing or BL internal issues)
+```
+
+结果是**所有 DNSBL 静默失效**，垃圾邮件评分只剩内容规则那几分，永远够不到阈值。转发型的 DNS（smartdns、dnsmasq 转发公共上游）同样不行——Spamhaus 看到的是上游的 IP。
+
+配置项：
+
+```dotenv
+# 单容器：docker0 网关上的本地递归解析器
+LANQIN_RSPAMD_DNS=172.17.0.1:53
+```
+
+宿主机上起一个 unbound（或 knot-resolver / 自建 BIND 递归），只监听 docker 网桥网关或 `127.0.0.1`，并在 `access-control` 里放行 docker 网段即可。改完重启容器，用这条命令验收：
+
+```bash
+docker exec <container> getent hosts 2.0.0.127.zen.spamhaus.org
+# 正常：返回 127.0.0.2 / 127.0.0.10 之类的真实错误码
+# 被拒：返回 127.255.255.254
+```
+
+### 2. 判定结果要写进邮件头
+
+Debian 打包的 `milter_headers` 默认 `use = []`，判定完一个头都不写——下游拿不到任何信号。这个分支用 `deploy/rspamd/override.d/milter_headers.conf` 打开：
+
+```
+X-Spam-Status: Yes, score=15.5 required=6.0 ...
+X-Spam-Level: ***************
+X-Spamd-Bar: +++++++++++++++
+X-Spamd-Result: default: False [15.50 / 999.00]; RBL_SPAMHAUS_XBL(4.00)...
+```
+
+注意 rspamd 3.x 没有 `x-spam` / `x-spam-score` / `x-spam-flag` 这几个 routine，写进去只会得到 `routine does not exist`。
+
+### 3. 收信阶段就分拣进「垃圾邮件」
+
+`deploy/dovecot/sieve/spam.sieve` 通过 `sieve_before` 挂在 LMTP 投递阶段：带 `X-Spam-Status: Yes` 的邮件直接 `fileinto :create "Spam"`。在投递阶段做的好处是不会和 IMAP 客户端搬信打架，也不需要额外的定时任务。
+
+### 4. 阈值
+
+`deploy/rspamd/local.d/actions.conf` 保持保守策略：`reject = 999`（不拒信）、`add_header = 6`（打分即标记）、`greylist = 999`（未启用）。
+
+想更强硬可以把 `reject` 调到 15~20，但那是 SMTP 阶段拒收，会直接产生退信，建议先观察一段时间标记效果再决定。
+
+灰名单和 Bayes 需要 Redis 后端，本分支暂未接入。
+
 ## Linux.do SSO
 
 1. 确认 `LANQIN_PUBLIC_BASE_URL` 是用户实际访问的 HTTPS 地址。

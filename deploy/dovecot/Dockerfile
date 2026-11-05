@@ -5,10 +5,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
-    apt-get update && apt-get install -y --no-install-recommends dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sqlite ssl-cert ca-certificates
+    apt-get update && apt-get install -y --no-install-recommends dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-sqlite ssl-cert ca-certificates
 COPY dovecot.conf /etc/dovecot/dovecot.conf
 COPY dovecot-sql.conf.ext /etc/dovecot/dovecot-sql.conf.ext
+COPY sieve/ /etc/dovecot/sieve/
 COPY entrypoint.sh /entrypoint.sh
+RUN sievec /etc/dovecot/sieve/spam.sieve && \
+    chmod 644 /etc/dovecot/sieve/spam.sieve /etc/dovecot/sieve/spam.svbin
+
 RUN chmod +x /entrypoint.sh
 EXPOSE 993 995 24 12345
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \

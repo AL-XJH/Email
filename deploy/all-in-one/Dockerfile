@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl sqlite3 default-mysql-client postgresql-client supervisor nginx \
     postfix postfix-sqlite postfix-mysql postfix-pgsql \
-    dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sqlite dovecot-mysql dovecot-pgsql ssl-cert \
+    dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-sqlite dovecot-mysql dovecot-pgsql ssl-cert \
     rspamd
 
 COPY --from=api-build /out/lanqin-api /usr/local/bin/lanqin-api
@@ -49,7 +49,12 @@ COPY deploy/dovecot/dovecot.conf /etc/dovecot/dovecot.conf
 COPY deploy/dovecot/dovecot-sql.conf.ext /etc/dovecot/dovecot-sql.conf.ext
 COPY deploy/dovecot/configure-db.sh /usr/local/bin/lanqin-dovecot-configure-db
 COPY deploy/rspamd/local.d/ /etc/rspamd/local.d/
+COPY deploy/rspamd/override.d/ /etc/rspamd/override.d/
+COPY deploy/dovecot/sieve/ /etc/dovecot/sieve/
 COPY deploy/rspamd/sync-dkim.sh /usr/local/bin/lanqin-rspamd-sync-dkim
+
+RUN sievec /etc/dovecot/sieve/spam.sieve && \
+    chmod 644 /etc/dovecot/sieve/spam.sieve /etc/dovecot/sieve/spam.svbin
 
 RUN chmod +x /entrypoint.sh /usr/local/bin/lanqin-rspamd-sync-dkim /usr/local/bin/lanqin-postfix-configure-db /usr/local/bin/lanqin-dovecot-configure-db && mkdir -p /run/nginx /run/rspamd /var/mail/vhosts /data /var/lib/rspamd/dkim
 
