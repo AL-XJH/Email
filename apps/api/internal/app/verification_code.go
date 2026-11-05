@@ -18,8 +18,10 @@ var (
 // 全文扫描对几万字的长邮件是纯浪费。
 const verificationScanLimit = 8000
 
+// 正文优先、主题兜底：主题里常出现日期、订单号这类数字，
+// 真正的验证码基本都在正文那句「验证码：xxxx」里。
 func extractVerificationCode(subject, text string) string {
-	body := strings.TrimSpace(subject + "\n" + text)
+	body := strings.TrimSpace(text + "\n" + subject)
 	if body == "" {
 		return ""
 	}

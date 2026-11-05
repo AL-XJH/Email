@@ -52,6 +52,12 @@ func TestExtractVerificationCode(t *testing.T) {
 			want:    "A1B2C3",
 		},
 		{
+			name:    "主题里的时间戳不能抢走正文的验证码",
+			subject: "您的临时验证码 222135",
+			text:    "请输入以下验证码完成登录：739204 该验证码 10 分钟内有效。",
+			want:    "739204",
+		},
+		{
 			name:    "空内容",
 			subject: "",
 			text:    "",
