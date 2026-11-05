@@ -5707,7 +5707,7 @@ function MessageRow({
       onContextMenu={onContextMenu}
       data-active={active ? "true" : undefined}
       className={cn(
-        "mail-list-row group relative w-full cursor-pointer px-3 py-3 transition-colors hover:bg-accent/40",
+        "mail-list-row group relative w-full cursor-pointer border-b border-border/60 px-3 py-1.5 transition-colors hover:bg-accent/40",
         active && "bg-accent"
       )}
     >
@@ -5727,7 +5727,7 @@ function MessageRow({
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center justify-between gap-2">
+          <div className="mb-0.5 flex items-center justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
               <span
                 className={cn(
@@ -5742,7 +5742,7 @@ function MessageRow({
                 <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
               )}
             </div>
-            <div className="relative flex h-7 flex-shrink-0 items-center justify-end">
+            <div className="relative flex h-5 flex-shrink-0 items-center justify-end">
               <span
                 className={cn(
                   "text-xs tabular-nums text-muted-foreground transition-opacity duration-150",
@@ -5758,7 +5758,7 @@ function MessageRow({
                   size="icon"
                   aria-label={message.isStarred ? uiText("取消星标") : uiText("添加星标")}
                   className={cn(
-                    "absolute right-0 top-0 h-7 w-7 text-muted-foreground hover:text-yellow-500",
+                    "absolute right-0 top-0 h-5 w-5 text-muted-foreground hover:text-yellow-500",
                     message.isStarred
                       ? "opacity-100"
                       : "opacity-0 group-hover:opacity-100 md:group-hover:opacity-100"
@@ -5778,7 +5778,7 @@ function MessageRow({
               )}
             </div>
           </div>
-          <div className="mb-1 flex items-center gap-1.5 truncate text-sm font-medium">
+          <div className="mb-0.5 flex items-center gap-1.5 truncate text-sm font-medium leading-[18px]">
             <span className="truncate">{message.subject}</span>
             {scheduled && (
               <Badge variant="secondary" className="h-4 shrink-0 rounded px-1 text-[10px] font-normal">
@@ -5787,7 +5787,7 @@ function MessageRow({
             )}
           </div>
           <div className="flex items-center justify-between">
-            <div className="mail-list-row-preview flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
+            <div className="mail-list-row-preview flex min-w-0 flex-1 items-center gap-2 text-[13px] leading-[18px] text-muted-foreground">
               {verificationCode && (
                 <button
                   type="button"
