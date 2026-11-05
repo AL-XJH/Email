@@ -122,7 +122,7 @@ services:
   # 没有它 rspamd 会在启动日志里刷 cannot init redis backend，然后静默降级。
   # 不映射端口，只在 compose 网络内给 rspamd 用。
   redis:
-    image: ${LANQIN_REDIS_IMAGE:-redis:7-alpine}
+    image: ${LANQIN_REDIS_IMAGE:-redis:8-alpine}
     # appendonly 落盘：不然重建容器时 Bayes 攒的学习样本全丢，又得从 200 封重新数
     command: ["redis-server", "--appendonly", "yes", "--save", ""]
     volumes:
