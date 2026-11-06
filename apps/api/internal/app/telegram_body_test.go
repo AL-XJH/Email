@@ -14,7 +14,7 @@ func TestHTMLToPlainTextKeepsParagraphs(t *testing.T) {
 		<script>alert(1)</script>
 	</body></html>`
 	got := htmlToPlainText(html)
-	for _, want := range []string{"维护公告", "香港区域将于今晚维护。", "预计 30 分钟。", "• 节点 A", "• 节点 B"} {
+	for _, want := range []string{"维护公告", "香港区域将于今晚维护。", "预计 30 分钟。", "• 节点 A\n• 节点 B"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("纯文本里缺少 %q，实际:\n%s", want, got)
 		}

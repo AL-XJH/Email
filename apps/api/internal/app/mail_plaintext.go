@@ -70,6 +70,10 @@ func normalizePlainBody(value string) string {
 		} else {
 			blank = 0
 		}
+		// 列表项之间不留空行：• 开头的行如果前面是空行，把空行去掉
+		if strings.HasPrefix(line, "• ") && len(out) > 0 && out[len(out)-1] == "" {
+			out = out[:len(out)-1]
+		}
 		out = append(out, line)
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
