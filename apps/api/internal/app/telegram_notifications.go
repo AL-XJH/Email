@@ -25,6 +25,11 @@ const (
 	telegramNotificationMaxAttempts  = 10
 	telegramNotificationTextMaxRunes = 3500
 	telegramNotificationTestCooldown = 10 * time.Second
+	// 单条 Telegram 消息官方上限 4096 字符，留出分段前缀与转义余量。
+	telegramMessageMaxRunes = 3800
+	// 整封正文最多推这么多，再长就截断并引导去网页看（约 6 条消息）。
+	telegramNotificationBodyMaxRunes = 20000
+	telegramPartPrefixReserve        = 16
 )
 
 var (
@@ -56,7 +61,9 @@ type telegramSettingsRecord struct {
 
 type telegramNotificationPayload struct {
 	Text string `json:"text"`
-	URL  string `json:"url,omitempty"`
+	// Parts 是整封邮件拆出来的多条消息（按顺序发）。为空时退回发 Text。
+	Parts []string `json:"parts,omitempty"`
+	URL   string   `json:"url,omitempty"`
 	// Code 是识别出的验证码，仅用于给消息挂「复制验证码」按钮。
 	Code string `json:"code,omitempty"`
 }
@@ -303,19 +310,23 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	if !configured {
 		return nil
 	}
-	var mailboxAddress, fromAddress, fromName, subject, snippet, bodyText string
-	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet,m.body_text
+	var mailboxAddress, fromAddress, fromName, subject, snippet, bodyText, bodyHTML string
+	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet,COALESCE(m.body_text,''),COALESCE(m.body_html,'')
 		FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE m.id=? AND m.mailbox_id=? AND mb.user_id=?`, messageID, mailboxID, userID).
-		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet, &bodyText)
+		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet, &bodyText, &bodyHTML)
 	if err != nil {
 		return err
 	}
 	// 验证码常在第 2、3 才出现，摘要里没有，所以正文一起扫。
 	code := extractVerificationCode(subject, bodyText)
+	// 直接推整封正文：纯文本优先，纯 HTML 邮件先转成可读文本。
+	parts := telegramMessageParts(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, code,
+		emailPlainBody(bodyText, bodyHTML, snippet), telegramMessageMaxRunes)
 	payload := telegramNotificationPayload{
-		Text: telegramNotificationText(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, snippet, code),
-		URL:  a.telegramMessageURL(mailboxID, messageID),
-		Code: code,
+		Text:  parts[0],
+		Parts: parts,
+		URL:   a.telegramMessageURL(mailboxID, messageID),
+		Code:  code,
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	eventKey := "telegram:" + ruleID + ":" + messageID
@@ -326,24 +337,98 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 }
 
 func telegramNotificationText(mailbox, from, subject, snippet, code string) string {
-	clean := func(value, fallback string) string {
-		value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-		if value == "" {
-			return fallback
-		}
-		return value
-	}
-	text := "新邮件\n"
-	if code = strings.TrimSpace(code); code != "" {
-		// 放第二行：Telegram 推送预览只露前两行，验证码必须在预览里看得见。
-		text += "验证码: " + code + "\n"
-	}
-	text += "收件邮箱: " + clean(mailbox, "未知") + "\n发件人: " + clean(from, "未知") + "\n主题: " + clean(subject, "(无主题)") + "\n摘要: " + clean(snippet, "(无摘要)")
+	text := strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n")
+	text += "\n摘要: " + telegramCleanLine(snippet, "(无摘要)")
 	runes := []rune(text)
 	if len(runes) > telegramNotificationTextMaxRunes {
 		text = string(runes[:telegramNotificationTextMaxRunes-3]) + "..."
 	}
 	return text
+}
+
+// telegramCleanLine 把多行/多空格压成一行，空值用 fallback。
+func telegramCleanLine(value, fallback string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+// telegramHeaderLines 消息头：第一行固定「新邮件」，验证码必须占第二行
+// （Telegram 推送预览只露前两行）。
+func telegramHeaderLines(mailbox, from, subject, code string) []string {
+	lines := []string{"新邮件"}
+	if code = strings.TrimSpace(code); code != "" {
+		lines = append(lines, "验证码: "+code)
+	}
+	lines = append(lines,
+		"收件邮箱: "+telegramCleanLine(mailbox, "未知"),
+		"发件人: "+telegramCleanLine(from, "未知"),
+		"主题: "+telegramCleanLine(subject, "(无主题)"),
+	)
+	return lines
+}
+
+// telegramMessageParts 把整封邮件拼成若干条消息：第一条带消息头，其余只带正文，
+// 每条都不超过 maxRunes（超长按换行切）。多段时加 (i/n) 前缀。
+func telegramMessageParts(mailbox, from, subject, code, body string, maxRunes int) []string {
+	if maxRunes <= 0 {
+		maxRunes = telegramMessageMaxRunes
+	}
+	header := strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n")
+	body = normalizePlainBody(body)
+	if runes := []rune(body); len(runes) > telegramNotificationBodyMaxRunes {
+		body = string(runes[:telegramNotificationBodyMaxRunes]) + "\n\n…（正文过长，已截断；完整内容请点「打开邮件」）"
+	}
+	if body == "" {
+		return []string{header}
+	}
+	parts := []string{}
+	rest := body
+	first := true
+	for rest != "" {
+		budget := maxRunes - telegramPartPrefixReserve
+		if first {
+			budget -= len([]rune(header)) + 2
+		}
+		if budget < 400 {
+			budget = 400
+		}
+		chunk, tail := cutPlainText(rest, budget)
+		if chunk == "" {
+			break
+		}
+		if first {
+			parts = append(parts, header+"\n\n"+chunk)
+			first = false
+		} else {
+			parts = append(parts, chunk)
+		}
+		rest = tail
+	}
+	if len(parts) > 1 {
+		for i := range parts {
+			parts[i] = fmt.Sprintf("(%d/%d)\n%s", i+1, len(parts), parts[i])
+		}
+	}
+	return parts
+}
+
+// cutPlainText 按 rune 数切一段，尽量落在换行处（不早于 60%），返回 (本段, 余下)。
+func cutPlainText(value string, max int) (string, string) {
+	runes := []rune(value)
+	if len(runes) <= max {
+		return strings.TrimSpace(value), ""
+	}
+	cut := max
+	for i := max - 1; i > max*3/5; i-- {
+		if runes[i] == '\n' {
+			cut = i
+			break
+		}
+	}
+	return strings.TrimSpace(string(runes[:cut])), strings.TrimSpace(string(runes[cut:]))
 }
 
 func (a *App) telegramMessageURL(mailboxID, messageID string) string {
@@ -496,26 +581,45 @@ func (a *App) deliverTelegramMessage(ctx context.Context, settings telegramSetti
 	if err != nil {
 		return &telegramDeliveryError{message: "failed to decrypt Telegram credentials", permanent: true}
 	}
-	body := map[string]any{
-		"chat_id":                  settings.ChatID,
-		"text":                     payload.Text,
-		"disable_web_page_preview": true,
+	parts := payload.Parts
+	if len(parts) == 0 {
+		parts = []string{payload.Text}
 	}
-	if markup := telegramReplyMarkup(payload, true); markup != nil {
-		body["reply_markup"] = markup
-	}
-	_, err = a.callTelegramAPI(ctx, token, "sendMessage", body)
-	if err != nil && payload.Code != "" && telegramCopyButtonUnsupported(err) {
-		// Bot API 7.11 之前 / 某些第三方镜像不认 copy_text 按钮，
-		// 退化成纯文字按钮，别让整条推送因为按钮格式被丢掉。
-		if markup := telegramReplyMarkup(payload, false); markup != nil {
-			body["reply_markup"] = markup
-		} else {
-			delete(body, "reply_markup")
+	for i, part := range parts {
+		body := map[string]any{
+			"chat_id":                  settings.ChatID,
+			"text":                     part,
+			"disable_web_page_preview": true,
+		}
+		// 按钮只挂在第一条：那条是消息头（收件邮箱/发件人/主题/验证码）。
+		if i == 0 {
+			if markup := telegramReplyMarkup(payload, true); markup != nil {
+				body["reply_markup"] = markup
+			}
 		}
 		_, err = a.callTelegramAPI(ctx, token, "sendMessage", body)
+		if err != nil && i == 0 && payload.Code != "" && telegramCopyButtonUnsupported(err) {
+			// Bot API 7.11 之前 / 某些第三方镜像不认 copy_text 按钮，
+			// 退化成纯文字按钮，别让整条推送因为按钮格式被丢掉。
+			if markup := telegramReplyMarkup(payload, false); markup != nil {
+				body["reply_markup"] = markup
+			} else {
+				delete(body, "reply_markup")
+			}
+			_, err = a.callTelegramAPI(ctx, token, "sendMessage", body)
+		}
+		if err != nil {
+			return err
+		}
+		if i < len(parts)-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(400 * time.Millisecond):
+			}
+		}
 	}
-	return err
+	return nil
 }
 
 // telegramReplyMarkup 组装消息底部的按钮：

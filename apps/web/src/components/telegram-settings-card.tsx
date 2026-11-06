@@ -74,7 +74,9 @@ export function TelegramSettingsCard({
         </div>
         {item?.botUsername && <p className="text-sm text-muted-foreground">@{item.botUsername}</p>}
         <p className="text-sm text-muted-foreground">
-          {uiText("识别到验证码的邮件会在推送里带一个「复制验证码」按钮，点一下直接进剪贴板。")}
+          {uiText(
+              "推送会带上整封正文（太长会自动拆成几条消息）；识别到验证码时还会多一个「复制验证码」按钮，点一下直接进剪贴板。"
+            )}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
