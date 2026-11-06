@@ -5,6 +5,7 @@ import { Link, Navigate, useLocation, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowRight, KeyRound, Link2, LockKeyhole } from "lucide-react"
 import { api } from "@/lib/api"
+import { clearQueryCacheSnapshot } from "@/lib/query-cache"
 import { useMe } from "@/hooks/use-me"
 import { TurnstileBox } from "@/components/turnstile-box"
 import { PasswordInput } from "@/components/ui/password-input"
@@ -39,6 +40,9 @@ export function LoginPage() {
         toast({ title: "请输入双因素验证码" })
         return
       }
+      // 换账号登录：先把上一个人留下的缓存快照和内存数据清掉
+      clearQueryCacheSnapshot()
+      qc.clear()
       await qc.invalidateQueries({ queryKey: ["me"] })
     },
     onError: (e) => toast({ title: "登录失败", description: errorMessage(e) }),

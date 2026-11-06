@@ -1,4 +1,5 @@
 import { ApiError, errorMessage } from "./ui-errors"
+import { QUERY_CACHE_KEY } from "./query-cache"
 import type {
   User,
   AdminUser,
@@ -91,6 +92,14 @@ async function request<T>(
       signal: controller.signal,
     })
     if (!res.ok) {
+      // 会话没了：把本地缓存快照也清掉，别让下次打开先画出上一个会话的邮件。
+      if (res.status === 401) {
+        try {
+          window.localStorage.removeItem(QUERY_CACHE_KEY)
+        } catch {
+          /* ignore */
+        }
+      }
       let message = `${res.status} ${res.statusText}`
       try {
         const body = await res.json()

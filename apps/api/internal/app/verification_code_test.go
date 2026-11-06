@@ -52,6 +52,15 @@ func TestExtractVerificationCode(t *testing.T) {
 			want:    "A1B2C3",
 		},
 		{
+			name:    "营销邮件整封信是一行，不能把显卡型号当验证码",
+			subject: "DLSS 5 Comes to Hogwarts Legacy, War Thunder and Where Winds Meet",
+			text: "Powered by 2X faster AI model - available on GeForce RTX and RTX Spark. " +
+				"To redeem, download the Perplexity Windows app and enter promo code PERPLEXITYRTX in settings. " +
+				"Dynamic Multi Frame Generation and Ray Reconstruction. The GeForce 8800 GTX turns 20! " +
+				"Celebrate its gaming and CUDA legacy with GeForce Rewards.",
+			want: "",
+		},
+		{
 			name:    "主题里的时间戳不能抢走正文的验证码",
 			subject: "您的临时验证码 222135",
 			text:    "请输入以下验证码完成登录：739204 该验证码 10 分钟内有效。",

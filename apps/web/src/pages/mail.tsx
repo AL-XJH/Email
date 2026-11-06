@@ -55,7 +55,6 @@ import {
   Ellipsis,
   Eraser,
   Eye,
-  FileText,
   Forward,
   Highlighter,
   History,
@@ -204,6 +203,7 @@ import { useMe } from "@/hooks/use-me"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useToast } from "@/hooks/use-toast"
 import { hasPermission } from "@/lib/permissions"
+import { extractVerificationCode } from "@/lib/verification-code"
 
 // 标签颜色优先用服务端存的值（seek.li 就是这么做的），缺失时才按名字哈希兜底。
 function labelDotColor(label: { name: string; color?: string | null }): string {
@@ -369,7 +369,6 @@ export function MailPage() {
   const isMobile = useIsMobile()
   const [refreshing, setRefreshing] = React.useState(false)
   const [listAutoRefreshing, setListAutoRefreshing] = React.useState(false)
-  const [lastAutoRefreshAt, setLastAutoRefreshAt] = React.useState<Date | null>(null)
   const [bulkPending, setBulkPending] = React.useState(false)
   const [pendingConfirm, setPendingConfirm] = React.useState<PendingConfirm | null>(null)
   const [cancelingScheduledId, setCancelingScheduledId] = React.useState("")
@@ -403,6 +402,7 @@ export function MailPage() {
   const canManageDrafts = hasPermission(user, "mail.messages.drafts")
   const canScheduleMail = hasPermission(user, "mail.messages.schedule")
   const canOrganizeMail = hasPermission(user, "mail.messages.organize")
+  const canManageBlocked = hasPermission(user, "mail.blocked_senders.manage")
   const canManageLabels = hasPermission(user, "mail.labels.manage")
   const hasAttachmentPermission = hasPermission(user, "mail.attachments.download")
   const canManageSignatures = hasPermission(user, "mail.signatures.manage")
@@ -1270,7 +1270,6 @@ export function MailPage() {
       } finally {
         inFlight = false
         if (!stopped) {
-          setLastAutoRefreshAt(new Date())
           window.setTimeout(() => {
             if (!stopped) setListAutoRefreshing(false)
           }, 600)
@@ -1300,7 +1299,6 @@ export function MailPage() {
 
   React.useEffect(() => {
     if (publicSettings.data?.mailAutoRefresh && inboxProbe.dataUpdatedAt > 0 && !isPlainInboxView) {
-      setLastAutoRefreshAt(new Date(inboxProbe.dataUpdatedAt))
     }
   }, [inboxProbe.dataUpdatedAt, isPlainInboxView, publicSettings.data?.mailAutoRefresh])
 
@@ -1727,14 +1725,6 @@ export function MailPage() {
     setFolderDropTarget(null)
     reorderCustomFolder(draggedId, { key: item.key, edge })
   }
-  function handleFolderDropEnd(event: React.DragEvent) {
-    if (!draggingFolderId) return
-    event.preventDefault()
-    const draggedId = event.dataTransfer.getData("text/plain") || draggingFolderId
-    setDraggingFolderId("")
-    setFolderDropTarget(null)
-    reorderCustomFolder(draggedId, { key: "__end__", edge: "end" })
-  }
   function clearFolderDragState() {
     setDraggingFolderId("")
     setFolderDropTarget(null)
@@ -1835,7 +1825,6 @@ export function MailPage() {
         refreshMailData(),
         new Promise((resolve) => window.setTimeout(resolve, 500)),
       ])
-      setLastAutoRefreshAt(new Date())
     } finally {
       setRefreshing(false)
     }
@@ -2819,6 +2808,7 @@ export function MailPage() {
         state={messageContextMenu}
         labels={labelItems}
         folders={folders.data?.items || []}
+        canManageBlocked={canManageBlocked}
         canSend={canSendSelectedMailbox}
         canOrganize={canOrganizeSelectedMailbox}
         canManageLabels={canManageSelectedLabels}
@@ -4000,6 +3990,7 @@ function MessageContextMenu({
   folders,
   canSend,
   canOrganize,
+  canManageBlocked,
   canManageLabels,
   labelPending,
   onClose,
@@ -4013,6 +4004,7 @@ function MessageContextMenu({
   folders: MailFolder[]
   canSend: boolean
   canOrganize: boolean
+  canManageBlocked: boolean
   canManageLabels: boolean
   labelPending: boolean
   onClose: () => void
@@ -4125,18 +4117,20 @@ function MessageContextMenu({
             item(uiText("移入回收站"), <Trash2 className="h-4 w-4" />, "trash")}
           {message.folder !== "Spam" &&
             item(uiText("移入垃圾邮件"), <Trash2 className="h-4 w-4" />, "spam")}
-          <Button
-            type="button"
-            variant="ghost"
-            className={itemClass}
-            onClick={() => {
-              onAllowSender(message)
-              onClose()
-            }}
-          >
-            <ShieldCheck className="h-4 w-4" />
-            <span>{uiText("加入白名单")}</span>
-          </Button>
+          {canManageBlocked && (
+            <Button
+              type="button"
+              variant="ghost"
+              className={itemClass}
+              onClick={() => {
+                onAllowSender(message)
+                onClose()
+              }}
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span>{uiText("加入白名单")}</span>
+            </Button>
+          )}
         </>
       )}
       {!draft && canOrganize && movableFolders.length > 0 && (
@@ -5463,35 +5457,16 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-// 从主题/摘要里识别验证码：只在「含关键词的那一行」里找数字，避免把订单号/跨行单词当成验证码。
-const VERIFICATION_KEYWORD =
-  /(验证码|校验码|动态码|安全码|确认码|verification\s*code|verify\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)/i
-
-export function extractVerificationCode(subject: string, text: string): string {
-  const body = `${subject || ""}\n${text || ""}`.trim()
-  if (!body) return ""
-  for (const line of body.split(/\r?\n/)) {
-    if (!VERIFICATION_KEYWORD.test(line)) continue
-    const numeric = line.match(/\b(\d{4,8})\b/)
-    if (numeric) return numeric[1]
-    const mixed = line.match(/\b(?=[A-Za-z]*\d)([0-9A-Za-z]{5,8})\b/)
-    if (mixed) return mixed[1]
-  }
-  return ""
-}
-
 function senderTitle(message: MailMessage) {
   const name = decodeMimeHeader(message.fromName?.trim() || "")
   const from = decodeMimeHeader(message.from)
   return name ? `${name} <${from}>` : from
 }
 
+// 只返回真正能解析出的地址；显示用的兜底文案交给 senderDisplayName，
+// 否则调用方永远判断不出「拿不到地址」，会把「未知发件人地址」当成邮箱发出去。
 function senderAddress(message: MailMessage) {
-  return (
-    extractAddress(message.from) ||
-    decodeMimeHeader(message.fromName?.trim() || "") ||
-    "未知发件人地址"
-  )
+  return extractAddress(message.from) || extractAddress(message.fromName || "")
 }
 
 function extractAddress(value?: string) {
@@ -5528,7 +5503,7 @@ function MessageMetaPanel({
   useUiLanguage()
 
   const fromName = senderDisplayName(message)
-  const fromAddress = senderAddress(message)
+  const fromAddress = senderAddress(message) || uiText("未知发件人地址")
   const to = cleanAddressList(message.to)
   const cc = cleanAddressList(message.cc)
   const bcc = cleanAddressList(message.bcc)
