@@ -75,13 +75,25 @@ func normalizePlainBody(value string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-// emailPlainBody 取邮件正文的纯文本：优先 text/plain，没有就从 HTML 转。
+// emailPlainBody 取邮件正文的纯文本。
+//
+// 优先 text/plain，但有个例外：只有 HTML 的邮件入库时 body_text 是「剥标签压成一行」
+// 的产物（没有换行、段落全糊在一起），这时候用 HTML 重新转一遍可读性好得多。
 func emailPlainBody(bodyText, bodyHTML, snippet string) string {
-	if text := normalizePlainBody(bodyText); text != "" {
+	text := normalizePlainBody(bodyText)
+	rich := htmlToPlainText(bodyHTML)
+	switch {
+	case rich == "":
+		if text != "" {
+			return text
+		}
+		return normalizePlainBody(snippet)
+	case text == "":
+		return rich
+	case !strings.Contains(text, "\n") && strings.Count(rich, "\n") >= 2:
+		// 纯文本是一整行、HTML 转出来有段落 → 说明这段文字是从 HTML 剥出来的
+		return rich
+	default:
 		return text
 	}
-	if text := htmlToPlainText(bodyHTML); text != "" {
-		return text
-	}
-	return normalizePlainBody(snippet)
 }

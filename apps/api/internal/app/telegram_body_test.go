@@ -39,6 +39,12 @@ func TestEmailPlainBodyPrefersTextPart(t *testing.T) {
 	if got := emailPlainBody("  ", "", "摘要兜底"); got != "摘要兜底" {
 		t.Fatalf("两个正文都空时应退回摘要，实际 %q", got)
 	}
+	// body_text 只有一行、HTML 有段落时，用 HTML 转出来的版本
+	flat := "HTML 邮件推送测试 这是第一段 这是第二段 列表一列表二"
+	rich := "<h2>HTML 邮件推送测试</h2><p>这是第一段</p><p>这是第二段</p><ul><li>列表一</li><li>列表二</li></ul>"
+	if got := emailPlainBody(flat, rich, ""); !strings.Contains(got, "\n") {
+		t.Fatalf("剥标签来的单行正文应该改用 HTML 版本（要有换行），实际 %q", got)
+	}
 }
 
 func TestTelegramMessagePartsShortBodySingleMessage(t *testing.T) {
