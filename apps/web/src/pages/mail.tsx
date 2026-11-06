@@ -204,6 +204,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { useToast } from "@/hooks/use-toast"
 import { hasPermission } from "@/lib/permissions"
 import { extractVerificationCode } from "@/lib/verification-code"
+import { shouldOfferTranslation } from "@/lib/translation-offer"
 
 // 标签颜色优先用服务端存的值（seek.li 就是这么做的），缺失时才按名字哈希兜底。
 function labelDotColor(label: { name: string; color?: string | null }): string {
@@ -4907,11 +4908,13 @@ function TranslatableMailBody({ message, language }: { message: MailMessage; lan
   const [truncated, setTruncated] = React.useState(false)
   const { toast } = useToast()
   const targetLanguage = normalizeTranslationLanguage(language)
+  // 判断用「界面上真正显示的那份正文」：有 HTML 就以 HTML 为准，
+  // 纯文本部分可能塞满追踪链接（见 lib/translation-offer.ts 的说明）。
   const sourceText = React.useMemo(
-    () => (message.bodyText || stripHtml(message.bodyHtml || message.snippet || "")).trim(),
+    () => (stripHtml(message.bodyHtml || "") || message.bodyText || message.snippet || "").trim(),
     [message.bodyHtml, message.bodyText, message.snippet]
   )
-  const shouldShow = targetLanguage && shouldOfferMessageTranslation(sourceText, language)
+  const shouldShow = targetLanguage && shouldOfferTranslation(sourceText, language)
   const translatedMessage = React.useMemo<MailMessage>(
     () => ({ ...message, bodyText: translatedText, bodyHtml: translatedHtml }),
     [message, translatedHtml, translatedText]
@@ -5013,16 +5016,6 @@ function translationTargetLabel(language: Language) {
   if (language === "zh-CN") return "简体中文"
   if (language === "zh-TW") return "繁體中文"
   return "English"
-}
-
-function shouldOfferMessageTranslation(text: string, language: Language) {
-  if (!text.trim()) return false
-  const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length
-  const latinCount = (text.match(/[a-zA-Z]/g) || []).length
-  if (language === "zh-CN" || language === "zh-TW")
-    return latinCount > 80 && latinCount > cjkCount * 3
-  if (language === "en") return cjkCount > 20
-  return false
 }
 
 function CompactMessageRow({
