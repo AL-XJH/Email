@@ -363,7 +363,7 @@ func telegramHeaderLines(mailbox, from, subject, code string) []string {
 		lines = append(lines, "验证码: "+code)
 	}
 	lines = append(lines,
-		"收件邮箱: "+telegramCleanLine(mailbox, "未知"),
+		"收件人: "+telegramCleanLine(mailbox, "未知"),
 		"发件人: "+telegramCleanLine(from, "未知"),
 	)
 	return lines
@@ -588,7 +588,7 @@ func (a *App) deliverTelegramMessage(ctx context.Context, settings telegramSetti
 			"parse_mode":               "HTML",
 			"disable_web_page_preview": true,
 		}
-		// 按钮只挂在第一条：那条是消息头（收件邮箱/发件人/主题/验证码）。
+		// 按钮只挂在第一条：那条是消息头（主题/收件人/发件人/验证码）。
 		if i == 0 {
 			if markup := telegramReplyMarkup(payload, true); markup != nil {
 				body["reply_markup"] = markup
