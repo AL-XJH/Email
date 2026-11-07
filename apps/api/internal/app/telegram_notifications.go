@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -376,8 +377,8 @@ func telegramMessageParts(mailbox, from, subject, code, body string, maxRunes in
 	if maxRunes <= 0 {
 		maxRunes = telegramMessageMaxRunes
 	}
-	header := strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n")
-	body = shortenPlainLinks(normalizePlainBody(body))
+	header := telegramEscapeText(strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n"))
+	body, links := protectLongLinks(normalizePlainBody(body))
 	if runes := []rune(body); len(runes) > telegramNotificationBodyMaxRunes {
 		body = string(runes[:telegramNotificationBodyMaxRunes]) + "\n\n…（正文过长，已截断；完整内容请点「打开邮件」）"
 	}
@@ -400,10 +401,10 @@ func telegramMessageParts(mailbox, from, subject, code, body string, maxRunes in
 			break
 		}
 		if first {
-			parts = append(parts, header+"\n\n"+chunk)
+			parts = append(parts, header+"\n\n"+telegramChunkHTML(chunk, links))
 			first = false
 		} else {
-			parts = append(parts, chunk)
+			parts = append(parts, telegramChunkHTML(chunk, links))
 		}
 		rest = tail
 	}
@@ -426,6 +427,15 @@ func cutPlainText(value string, max int) (string, string) {
 		if runes[i] == '\n' {
 			cut = i
 			break
+		}
+	}
+	// 别把一条长链接从中间劈开：切点落在一个 token 内部时，往后挪到下一个空白。
+	if cut > 0 && cut < len(runes) && !unicode.IsSpace(runes[cut]) && !unicode.IsSpace(runes[cut-1]) {
+		for i := cut; i < len(runes) && i < cut+500; i++ {
+			if unicode.IsSpace(runes[i]) {
+				cut = i
+				break
+			}
 		}
 	}
 	return strings.TrimSpace(string(runes[:cut])), strings.TrimSpace(string(runes[cut:]))
@@ -589,6 +599,7 @@ func (a *App) deliverTelegramMessage(ctx context.Context, settings telegramSetti
 		body := map[string]any{
 			"chat_id":                  settings.ChatID,
 			"text":                     part,
+			"parse_mode":               "HTML",
 			"disable_web_page_preview": true,
 		}
 		// 按钮只挂在第一条：那条是消息头（收件邮箱/发件人/主题/验证码）。

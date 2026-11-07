@@ -198,8 +198,12 @@ func TestTelegramRuleOutboxIsIdempotentAndRetriesRateLimit(t *testing.T) {
 		t.Fatalf("deliveredAt=%q err=%v", deliveredAt, err)
 	}
 	text, _ := deliveredBody["text"].(string)
-	if !strings.Contains(text, mailbox.Address) || !strings.Contains(text, "Sender & Team") || !strings.Contains(text, "Build <passed>") || !strings.Contains(text, "Sensitive preview text") {
+	// parse_mode=HTML：正文和消息头都必须转义，否则 & / < 会把消息搞坏
+	if !strings.Contains(text, mailbox.Address) || !strings.Contains(text, "Sender &amp; Team") || !strings.Contains(text, "Build &lt;passed&gt;") || !strings.Contains(text, "Sensitive preview text") {
 		t.Fatalf("Telegram text=%q", text)
+	}
+	if mode, _ := deliveredBody["parse_mode"].(string); mode != "HTML" {
+		t.Fatalf("parse_mode=%q, 需要 HTML 才能让「链接」可点", mode)
 	}
 	markup, ok := deliveredBody["reply_markup"].(map[string]any)
 	if !ok || markup["inline_keyboard"] == nil {

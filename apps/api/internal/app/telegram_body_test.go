@@ -1,6 +1,7 @@
 package app
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -120,19 +121,44 @@ func itoa(value int) string {
 	return string(digits)
 }
 
-func TestShortenPlainLinksCollapsesTrackingLinks(t *testing.T) {
+func TestTelegramMessagePartsMakesLongLinksClickable(t *testing.T) {
 	long := "https://hs-41051298.t.hubspotemail.net/e2t/c/" + strings.Repeat("a", 200)
 	short := "https://cerebras.ai/blog"
-	input := "看这里 " + long + " 还有 " + short + " 和 <" + long + ">"
-	got := shortenPlainLinks(input)
-	if strings.Contains(got, strings.Repeat("a", 50)) {
-		t.Fatalf("超长追踪链接没有被压掉:\n%s", got)
+	parts := telegramMessageParts("m@example.test", "s@example.test", "链接测试", "",
+		"看这里 "+long+" 还有 "+short+" 和 <"+long+">", telegramMessageMaxRunes)
+	if len(parts) != 1 {
+		t.Fatalf("这么短的正文应该一条发完，实际 %d 条", len(parts))
+	}
+	got := parts[0]
+	if !strings.Contains(got, `<a href="`+long+`">链接</a>`) {
+		t.Fatalf("长链接应变成可点的「链接」:\n%s", got)
+	}
+	if strings.Count(got, ">链接</a>") != 2 {
+		t.Fatalf("两条长链接（含 <...> 写法的）都应变成「链接」，实际:\n%s", got)
 	}
 	if !strings.Contains(got, short) {
-		t.Fatalf("短链接不该被动:\n%s", got)
+		t.Fatalf("短链接应保持原样:\n%s", got)
 	}
-	if strings.Count(got, "[链接]") != 2 {
-		t.Fatalf("应该压成两个 [链接]，实际:\n%s", got)
+	// 可见文字里不能残留那串 a（只允许出现在 href 里）
+	visible := regexp.MustCompile(`<a href="[^"]*">链接</a>`).ReplaceAllString(got, "")
+	if strings.Contains(visible, strings.Repeat("a", 50)) {
+		t.Fatalf("可见文本里还留着长链接原文:\n%s", visible)
+	}
+}
+
+func TestTelegramMessagePartsEscapesTextButNotHref(t *testing.T) {
+	long := "https://example.com/track/" + strings.Repeat("b", 80) + "?a=1&b=2"
+	parts := telegramMessageParts("m@example.test", "S & T <ops@example.test>", "A & B <C>", "",
+		"A & B < C "+long, telegramMessageMaxRunes)
+	got := parts[0]
+	if !strings.Contains(got, "A &amp; B &lt; C") {
+		t.Fatalf("正文里的 & 和 < 应被转义:\n%s", got)
+	}
+	if !strings.Contains(got, "S &amp; T &lt;ops@example.test&gt;") {
+		t.Fatalf("消息头里的 & 和 < 也应被转义:\n%s", got)
+	}
+	if !strings.Contains(got, "?a=1&amp;b=2") {
+		t.Fatalf("href 里的 & 要转成 &amp;，否则 Telegram 解析失败:\n%s", got)
 	}
 }
 
@@ -148,7 +174,10 @@ func TestTelegramMessagePartsCollapsesLinkOnlyNewsletter(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("压掉追踪链接后应该只剩一条，实际 %d 条（共 %d 字符）", len(parts), len([]rune(strings.Join(parts, ""))))
 	}
-	if !strings.Contains(parts[0], "[链接]") {
-		t.Fatalf("没有把长链接压成 [链接]")
+	if !strings.Contains(parts[0], ">链接</a>") {
+		t.Fatalf("没有把长链接压成可点的「链接」")
+	}
+	if strings.Count(parts[0], ">链接</a>") != 17 {
+		t.Fatalf("17 条链接应该都在，实际 %d 条", strings.Count(parts[0], ">链接</a>"))
 	}
 }

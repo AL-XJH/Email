@@ -1,7 +1,9 @@
 package app
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -104,13 +106,48 @@ func emailPlainBody(bodyText, bodyHTML, snippet string) string {
 }
 
 // 超长 URL（追踪链接、带一大堆参数的营销链接）在聊天里就是一大坨蓝色文字，
-// 既占篇幅又没法读。短的保留（点了能跳），长的压成「[链接]」。
+// 既占篇幅又没法读。短的保持原样（点了能跳），长的收成可点的两个字「链接」。
 var (
-	plainLongBracketLinkRe = regexp.MustCompile(`<https?://\S{60,}>`)
-	plainLongLinkRe        = regexp.MustCompile(`https?://\S{60,}`)
+	plainBracketLongLinkRe    = regexp.MustCompile(`<(https?://\S{60,})>`)
+	plainLongLinkRe           = regexp.MustCompile(`https?://\S{60,}`)
+	telegramLinkPlaceholderRe = regexp.MustCompile("\x01L[0-9]+\x01")
 )
 
-func shortenPlainLinks(body string) string {
-	body = plainLongBracketLinkRe.ReplaceAllString(body, "[链接]")
-	return plainLongLinkRe.ReplaceAllString(body, "[链接]")
+// telegramEscapeText 转义 Telegram HTML 模式里有含义的字符。
+func telegramEscapeText(value string) string {
+	value = strings.ReplaceAll(value, "&", "&amp;")
+	value = strings.ReplaceAll(value, "<", "&lt;")
+	value = strings.ReplaceAll(value, ">", "&gt;")
+	return value
+}
+
+func telegramEscapeAttr(value string) string {
+	return strings.ReplaceAll(telegramEscapeText(value), `"`, "&quot;")
+}
+
+// protectLongLinks 把超长链接换成占位符，返回替换后的文本和链接清单。
+//
+// 必须先替换再分段：一条 HubSpot 追踪链接就有四五百字符，不先收起来的话，
+// 分段会按「原始长度」把一封其实只有两千字的邮件拆成三条。
+func protectLongLinks(body string) (string, []string) {
+	links := []string{}
+	trimmed := plainBracketLongLinkRe.ReplaceAllString(body, "$1")
+	text := plainLongLinkRe.ReplaceAllStringFunc(trimmed, func(match string) string {
+		links = append(links, match)
+		return fmt.Sprintf("\x01L%d\x01", len(links)-1)
+	})
+	return text, links
+}
+
+// telegramChunkHTML 把一段（已占位化的）文本转成 Telegram HTML：
+// 占位符换成可点的「链接」锚点，其余文字全部转义。
+func telegramChunkHTML(chunk string, links []string) string {
+	escaped := telegramEscapeText(chunk)
+	return telegramLinkPlaceholderRe.ReplaceAllStringFunc(escaped, func(match string) string {
+		idx, err := strconv.Atoi(strings.Trim(match, "\x01L"))
+		if err != nil || idx < 0 || idx >= len(links) {
+			return "链接"
+		}
+		return `<a href="` + telegramEscapeAttr(links[idx]) + `">链接</a>`
+	})
 }
