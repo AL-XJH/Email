@@ -26,11 +26,10 @@ const (
 	telegramNotificationMaxAttempts  = 10
 	telegramNotificationTextMaxRunes = 3500
 	telegramNotificationTestCooldown = 10 * time.Second
-	// 单条 Telegram 消息官方上限 4096 字符，留出分段前缀与转义余量。
-	telegramMessageMaxRunes = 3800
-	// 整封正文最多推这么多，再长就截断并引导去网页看（约 6 条消息）。
-	telegramNotificationBodyMaxRunes = 20000
-	telegramPartPrefixReserve        = 16
+	// 一条推送最多这么多字（消息头 + 正文）。
+	// 基准是 BitsFlow 那封迁移通知：正文 1041 字、整条推送 1204 字，一条读完不费劲；
+	// 比这更长的邮件只推开头，剩下的点「打开邮件」看。
+	telegramNotificationTextBudget = 1300
 )
 
 var (
@@ -322,7 +321,7 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	code := extractVerificationCode(subject, bodyText)
 	// 直接推整封正文：纯文本优先，纯 HTML 邮件先转成可读文本。
 	parts := telegramMessageParts(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, code,
-		emailPlainBody(bodyText, bodyHTML, snippet), telegramMessageMaxRunes)
+		emailPlainBody(bodyText, bodyHTML, snippet), telegramNotificationTextBudget)
 	payload := telegramNotificationPayload{
 		Text:  parts[0],
 		Parts: parts,
@@ -371,49 +370,27 @@ func telegramHeaderLines(mailbox, from, subject, code string) []string {
 	return lines
 }
 
-// telegramMessageParts 把整封邮件拼成若干条消息：第一条带消息头，其余只带正文，
-// 每条都不超过 maxRunes（超长按换行切）。多段时加 (i/n) 前缀。
-func telegramMessageParts(mailbox, from, subject, code, body string, maxRunes int) []string {
-	if maxRunes <= 0 {
-		maxRunes = telegramMessageMaxRunes
+// telegramMessageParts 把邮件拼成推送文本：消息头 + 正文摘要，总长不超过
+// telegramNotificationTextBudget。超长时截断并留一句引导去网页看全文。
+func telegramMessageParts(mailbox, from, subject, code, body string, budget int) []string {
+	if budget <= 0 {
+		budget = telegramNotificationTextBudget
 	}
 	header := telegramEscapeText(strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n"))
 	body, links := protectLongLinks(normalizePlainBody(body))
-	if runes := []rune(body); len(runes) > telegramNotificationBodyMaxRunes {
-		body = string(runes[:telegramNotificationBodyMaxRunes]) + "\n\n…（正文过长，已截断；完整内容请点「打开邮件」）"
-	}
 	if body == "" {
 		return []string{header}
 	}
-	parts := []string{}
-	rest := body
-	first := true
-	for rest != "" {
-		budget := maxRunes - telegramPartPrefixReserve
-		if first {
-			budget -= len([]rune(header)) + 2
-		}
-		if budget < 400 {
-			budget = 400
-		}
-		chunk, tail := cutPlainText(rest, budget)
-		if chunk == "" {
-			break
-		}
-		if first {
-			parts = append(parts, header+"\n\n"+telegramChunkHTML(chunk, links))
-			first = false
-		} else {
-			parts = append(parts, telegramChunkHTML(chunk, links))
-		}
-		rest = tail
+	const hint = "…（已截断，完整内容请点「打开邮件」）"
+	available := budget - len([]rune(header)) - 2
+	if available < 200 {
+		available = 200
 	}
-	if len(parts) > 1 {
-		for i := range parts {
-			parts[i] = fmt.Sprintf("(%d/%d)\n%s", i+1, len(parts), parts[i])
-		}
+	if len([]rune(body)) > available {
+		body, _ = cutPlainText(body, available-len([]rune(hint))-2)
+		body += "\n\n" + hint
 	}
-	return parts
+	return []string{header + "\n\n" + telegramChunkHTML(body, links)}
 }
 
 // cutPlainText 按 rune 数切一段，尽量落在换行处（不早于 60%），返回 (本段, 余下)。

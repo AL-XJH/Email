@@ -50,7 +50,7 @@ func TestEmailPlainBodyPrefersTextPart(t *testing.T) {
 
 func TestTelegramMessagePartsShortBodySingleMessage(t *testing.T) {
 	parts := telegramMessageParts("admin@example.test", "ChatGPT <noreply@example.test>", "您的临时验证码", "857149",
-		"输入此临时验证码以继续：857149", telegramMessageMaxRunes)
+		"输入此临时验证码以继续：857149", 0)
 	if len(parts) != 1 {
 		t.Fatalf("短邮件不该分段，实际 %d 段", len(parts))
 	}
@@ -66,66 +66,45 @@ func TestTelegramMessagePartsShortBodySingleMessage(t *testing.T) {
 	}
 }
 
-func TestTelegramMessagePartsSplitsLongBody(t *testing.T) {
+func TestTelegramMessagePartsRespectsBudget(t *testing.T) {
 	var body strings.Builder
 	for i := 0; i < 400; i++ {
 		body.WriteString("这是一段用于测试的正文内容，长度大约二十个字。\n")
 	}
-	parts := telegramMessageParts("admin@example.test", "sender@example.test", "长邮件", "", body.String(), telegramMessageMaxRunes)
-	if len(parts) < 2 {
-		t.Fatalf("长正文应该分段，实际 %d 段", len(parts))
+	parts := telegramMessageParts("admin@example.test", "sender@example.test", "长邮件", "", body.String(), 0)
+	if len(parts) != 1 {
+		t.Fatalf("现在只发一条，实际 %d 条", len(parts))
 	}
-	for i, part := range parts {
-		if n := len([]rune(part)); n > telegramMessageMaxRunes {
-			t.Fatalf("第 %d 段 %d 字符，超过单条上限 %d", i+1, n, telegramMessageMaxRunes)
-		}
-		prefix := "(" + itoa(i+1) + "/" + itoa(len(parts)) + ")"
-		if !strings.HasPrefix(part, prefix) {
-			t.Fatalf("第 %d 段缺少前缀 %q: %.40q", i+1, prefix, part)
-		}
+	if n := len([]rune(parts[0])); n > telegramNotificationTextBudget+40 {
+		t.Fatalf("推送 %d 字，超过预算 %d", n, telegramNotificationTextBudget)
+	}
+	if !strings.Contains(parts[0], "已截断，完整内容请点「打开邮件」") {
+		t.Fatalf("超长邮件应提示去网页看全文:\n%.160q", parts[0])
 	}
 	if !strings.Contains(parts[0], "主题: 长邮件") {
-		t.Fatalf("消息头只应出现在第一段:\n%.120q", parts[0])
-	}
-	if strings.Contains(parts[1], "主题: 长邮件") {
-		t.Fatalf("第二段不该重复消息头:\n%.120q", parts[1])
-	}
-	// 拼回去应当还是 400 行原文（分段只加前缀和消息头，不丢内容）
-	joined := strings.Join(parts, "")
-	if got := strings.Count(joined, "这是一段用于测试的正文内容"); got != 400 {
-		t.Fatalf("分段过程丢了正文，实际 %d 行（应为 400）", got)
+		t.Fatalf("消息头丢了:\n%.120q", parts[0])
 	}
 }
 
 func TestTelegramMessagePartsTruncatesAbsurdBody(t *testing.T) {
 	body := strings.Repeat("很长的正文。", 8000) // 48000 字符
-	parts := telegramMessageParts("m@example.test", "s@example.test", "超长", "", body, telegramMessageMaxRunes)
-	last := parts[len(parts)-1]
-	if !strings.Contains(last, "正文过长，已截断") {
-		t.Fatalf("超长正文应提示已截断，实际结尾:\n%.120q", last)
+	parts := telegramMessageParts("m@example.test", "s@example.test", "超长", "", body, 0)
+	if len(parts) != 1 {
+		t.Fatalf("截断后仍是一条，实际 %d 条", len(parts))
 	}
-	if len(parts) > 8 {
-		t.Fatalf("截断后仍拆出 %d 段，太多了", len(parts))
+	if n := len([]rune(parts[0])); n > telegramNotificationTextBudget+40 {
+		t.Fatalf("推送 %d 字，超过预算 %d", n, telegramNotificationTextBudget)
 	}
-}
-
-func itoa(value int) string {
-	if value == 0 {
-		return "0"
+	if !strings.Contains(parts[0], "已截断") {
+		t.Fatalf("超长正文应提示已截断:\n%.120q", parts[0][len(parts[0])-80:])
 	}
-	digits := []byte{}
-	for value > 0 {
-		digits = append([]byte{byte('0' + value%10)}, digits...)
-		value /= 10
-	}
-	return string(digits)
 }
 
 func TestTelegramMessagePartsMakesLongLinksClickable(t *testing.T) {
 	long := "https://hs-41051298.t.hubspotemail.net/e2t/c/" + strings.Repeat("a", 200)
 	short := "https://cerebras.ai/blog"
 	parts := telegramMessageParts("m@example.test", "s@example.test", "链接测试", "",
-		"看这里 "+long+" 还有 "+short+" 和 <"+long+">", telegramMessageMaxRunes)
+		"看这里 "+long+" 还有 "+short+" 和 <"+long+">", 0)
 	if len(parts) != 1 {
 		t.Fatalf("这么短的正文应该一条发完，实际 %d 条", len(parts))
 	}
@@ -149,7 +128,7 @@ func TestTelegramMessagePartsMakesLongLinksClickable(t *testing.T) {
 func TestTelegramMessagePartsEscapesTextButNotHref(t *testing.T) {
 	long := "https://example.com/track/" + strings.Repeat("b", 80) + "?a=1&b=2"
 	parts := telegramMessageParts("m@example.test", "S & T <ops@example.test>", "A & B <C>", "",
-		"A & B < C "+long, telegramMessageMaxRunes)
+		"A & B < C "+long, 0)
 	got := parts[0]
 	if !strings.Contains(got, "A &amp; B &lt; C") {
 		t.Fatalf("正文里的 & 和 < 应被转义:\n%s", got)
@@ -170,7 +149,7 @@ func TestTelegramMessagePartsCollapsesLinkOnlyNewsletter(t *testing.T) {
 		body.WriteString("Read more: https://hs-41051298.t.hubspotemail.net/e2t/c/" + strings.Repeat("x", 460) + "\n\n")
 		body.WriteString("Cerebras and Oracle: the world's fastest AI is coming to Oracle Cloud Infrastructure.\n\n")
 	}
-	parts := telegramMessageParts("xjh@alxjh.cn", "Cerebras <info@cerebras.net>", "The Latest from Cerebras", "", body.String(), telegramMessageMaxRunes)
+	parts := telegramMessageParts("xjh@alxjh.cn", "Cerebras <info@cerebras.net>", "The Latest from Cerebras", "", body.String(), 20000)
 	if len(parts) != 1 {
 		t.Fatalf("压掉追踪链接后应该只剩一条，实际 %d 条（共 %d 字符）", len(parts), len([]rune(strings.Join(parts, ""))))
 	}
