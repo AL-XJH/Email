@@ -1,6 +1,7 @@
 package app
 
 import (
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -100,4 +101,16 @@ func emailPlainBody(bodyText, bodyHTML, snippet string) string {
 	default:
 		return text
 	}
+}
+
+// 超长 URL（追踪链接、带一大堆参数的营销链接）在聊天里就是一大坨蓝色文字，
+// 既占篇幅又没法读。短的保留（点了能跳），长的压成「[链接]」。
+var (
+	plainLongBracketLinkRe = regexp.MustCompile(`<https?://\S{60,}>`)
+	plainLongLinkRe        = regexp.MustCompile(`https?://\S{60,}`)
+)
+
+func shortenPlainLinks(body string) string {
+	body = plainLongBracketLinkRe.ReplaceAllString(body, "[链接]")
+	return plainLongLinkRe.ReplaceAllString(body, "[链接]")
 }

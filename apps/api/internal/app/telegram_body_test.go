@@ -119,3 +119,36 @@ func itoa(value int) string {
 	}
 	return string(digits)
 }
+
+func TestShortenPlainLinksCollapsesTrackingLinks(t *testing.T) {
+	long := "https://hs-41051298.t.hubspotemail.net/e2t/c/" + strings.Repeat("a", 200)
+	short := "https://cerebras.ai/blog"
+	input := "看这里 " + long + " 还有 " + short + " 和 <" + long + ">"
+	got := shortenPlainLinks(input)
+	if strings.Contains(got, strings.Repeat("a", 50)) {
+		t.Fatalf("超长追踪链接没有被压掉:\n%s", got)
+	}
+	if !strings.Contains(got, short) {
+		t.Fatalf("短链接不该被动:\n%s", got)
+	}
+	if strings.Count(got, "[链接]") != 2 {
+		t.Fatalf("应该压成两个 [链接]，实际:\n%s", got)
+	}
+}
+
+func TestTelegramMessagePartsCollapsesLinkOnlyNewsletter(t *testing.T) {
+	// 模拟那封 Cerebras 邮件：正文 9758 字，其中 82% 是 17 条超长追踪链接
+	var body strings.Builder
+	body.WriteString("Cerebras speed is coming to Oracle Cloud.\n\n")
+	for i := 0; i < 17; i++ {
+		body.WriteString("Read more: https://hs-41051298.t.hubspotemail.net/e2t/c/" + strings.Repeat("x", 460) + "\n\n")
+		body.WriteString("Cerebras and Oracle: the world's fastest AI is coming to Oracle Cloud Infrastructure.\n\n")
+	}
+	parts := telegramMessageParts("xjh@alxjh.cn", "Cerebras <info@cerebras.net>", "The Latest from Cerebras", "", body.String(), telegramMessageMaxRunes)
+	if len(parts) != 1 {
+		t.Fatalf("压掉追踪链接后应该只剩一条，实际 %d 条（共 %d 字符）", len(parts), len([]rune(strings.Join(parts, ""))))
+	}
+	if !strings.Contains(parts[0], "[链接]") {
+		t.Fatalf("没有把长链接压成 [链接]")
+	}
+}

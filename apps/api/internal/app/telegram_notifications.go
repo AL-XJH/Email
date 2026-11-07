@@ -377,7 +377,7 @@ func telegramMessageParts(mailbox, from, subject, code, body string, maxRunes in
 		maxRunes = telegramMessageMaxRunes
 	}
 	header := strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n")
-	body = normalizePlainBody(body)
+	body = shortenPlainLinks(normalizePlainBody(body))
 	if runes := []rune(body); len(runes) > telegramNotificationBodyMaxRunes {
 		body = string(runes[:telegramNotificationBodyMaxRunes]) + "\n\n…（正文过长，已截断；完整内容请点「打开邮件」）"
 	}
