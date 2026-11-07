@@ -23,6 +23,26 @@ export function quotedComposerValue(headers: string, body: string): ComposerValu
   }
 }
 
+// 转发/回复时保留原邮件的 HTML：图片、链接、加粗、段落都留在引用块里，
+// 只走纯文本会把一封图文邮件变成「文字 + 一堆链接」。
+export function quotedHtmlComposerValue(
+  headers: string,
+  bodyHtml: string,
+  bodyText: string
+): ComposerValue {
+  const safe = sanitizeComposerHtml(bodyHtml || "")
+  const text = bodyText.trim() ? bodyText : stripHtml(safe)
+  const quotedText = text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n")
+  return {
+    text: `\n\n${headers}\n\n${quotedText}`,
+    html: `<p><br></p><blockquote>${plainTextToHtml(headers)}${safe || plainTextToHtml(text)}</blockquote>`,
+  }
+}
+
 export function plainTextComposerValue(value: string): ComposerValue {
   return { text: value, html: plainTextToHtml(value) }
 }

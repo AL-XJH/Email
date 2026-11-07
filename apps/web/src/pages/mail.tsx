@@ -167,6 +167,7 @@ import {
   plainTextToHtml,
   plainTextToHtmlFragment,
   quotedComposerValue,
+  quotedHtmlComposerValue,
   sanitizeComposerHtml,
   withPrefix,
   type ComposerValue,
@@ -7886,9 +7887,12 @@ function playIncomingMailSound(ref: React.MutableRefObject<AudioContext | null>)
   }
 }
 function quoteMessage(message: MailMessage) {
-  const body = message.bodyText || htmlComposerValue(message.bodyHtml || message.snippet || "").text
   const headers = `----- 原始邮件 -----\nFrom: ${senderTitle(message)}\nTo: ${message.to.join(", ")}\nDate: ${formatDateTime(message.receivedAt, "zh-CN")}\nSubject: ${message.subject}`
-  return quotedComposerValue(headers, body)
+  // 有 HTML 就引用 HTML（图文、链接、排版都在），只有纯文本的邮件才退回文本引用
+  if (message.bodyHtml && message.bodyHtml.trim()) {
+    return quotedHtmlComposerValue(headers, message.bodyHtml, message.bodyText || "")
+  }
+  return quotedComposerValue(headers, message.bodyText || message.snippet || "")
 }
 function stripHtml(html: string) {
   const div = document.createElement("div")
