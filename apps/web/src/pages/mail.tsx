@@ -1535,7 +1535,7 @@ export function MailPage() {
     openCompose({
       key: `forward-${full.id}-${Date.now()}`,
       subject: withPrefix(full.subject, "Fwd:"),
-      ...quoteMessage(full),
+      ...quoteMessage(full, "forward"),
     })
   }
   async function openDraft(message: MailMessage) {
@@ -5917,8 +5917,16 @@ function ComposeDialog({
   const composerText =
     draft?.html ||
     (draft?.text !== undefined ? draft.text : signatureText ? `\n\n-- \n${signatureText}` : "")
+  const draftSplit = React.useMemo(
+    () => splitQuotedComposerHtml(draft?.html || ""),
+    [draft?.html]
+  )
+  const [quotedHtml, setQuotedHtml] = React.useState(draftSplit.quotedHtml)
+  const [quotedText, setQuotedText] = React.useState(draftSplit.quotedText)
   const [body, setBody] = React.useState<ComposerValue>(() =>
-    draft?.html !== undefined ? htmlComposerValue(draft.html) : plainTextComposerValue(composerText)
+    draft?.html !== undefined
+      ? htmlComposerValue(draftSplit.html)
+      : plainTextComposerValue(composerText)
   )
   const activeMailboxId = draft?.mailboxId || mailbox?.id || ""
   const maxAttachmentBytes = attachmentLimitBytes(limits)
@@ -5930,8 +5938,8 @@ function ComposeDialog({
       cc: showCc ? splitEmails(ccValue) : [],
       bcc: showBcc ? splitEmails(bccValue) : [],
       subject: subjectValue,
-      text: body.text,
-      html: body.html || plainTextToHtml(body.text),
+      text: quotedText ? `${body.text}\n\n${quotedText}` : body.text,
+      html: [body.html || plainTextToHtml(body.text), quotedHtml].filter(Boolean).join(""),
       ...(attachmentsTouched ? { attachments: draftAttachments } : {}),
     }),
     [
@@ -5943,6 +5951,8 @@ function ComposeDialog({
       bccValue,
       subjectValue,
       body,
+      quotedHtml,
+      quotedText,
       attachmentsTouched,
       draftAttachments,
     ]
@@ -6004,18 +6014,23 @@ function ComposeDialog({
     sendStartedRef.current = false
     const nextShowCc = Boolean(draft?.cc)
     const nextShowBcc = Boolean(draft?.bcc)
+    const nextSplit = splitQuotedComposerHtml(draft?.html || "")
     const nextBody =
       draft?.html !== undefined
-        ? htmlComposerValue(draft.html)
+        ? htmlComposerValue(nextSplit.html)
         : plainTextComposerValue(composerText)
+    const nextQuotedHtml = nextSplit.quotedHtml
+    const nextQuotedText = nextSplit.quotedText
     lastSavedPayloadRef.current = JSON.stringify({
       mailboxId: draft?.mailboxId || mailbox?.id || "",
       to: splitEmails(draft?.to || ""),
       cc: nextShowCc ? splitEmails(draft?.cc || "") : [],
       bcc: nextShowBcc ? splitEmails(draft?.bcc || "") : [],
       subject: draft?.subject || "",
-      text: nextBody.text,
-      html: nextBody.html || plainTextToHtml(nextBody.text),
+      text: nextQuotedText ? `${nextBody.text}\n\n${nextQuotedText}` : nextBody.text,
+      html: [nextBody.html || plainTextToHtml(nextBody.text), nextQuotedHtml]
+        .filter(Boolean)
+        .join(""),
       draftId: draft?.id || "",
     })
     setDraftId(draft?.id || "")
@@ -6023,6 +6038,8 @@ function ComposeDialog({
     setCcValue(draft?.cc || "")
     setBccValue(draft?.bcc || "")
     setSubjectValue(draft?.subject || "")
+    setQuotedHtml(nextQuotedHtml)
+    setQuotedText(nextQuotedText)
     setBody(nextBody)
     setDraftStatus("idle")
     setLastSavedAt(null)
@@ -6153,8 +6170,8 @@ function ComposeDialog({
     const to = splitEmails(toValue)
     const cc = showCc ? splitEmails(ccValue) : []
     const bcc = showBcc ? splitEmails(bccValue) : []
-    const text = body.text
-    const html = body.html || plainTextToHtml(text)
+    const text = quotedText ? `${body.text}\n\n${quotedText}` : body.text
+    const html = [body.html || plainTextToHtml(body.text), quotedHtml].filter(Boolean).join("")
     const payload: SendPayload = {
       mailboxId: mailbox.id,
       to,
@@ -6209,8 +6226,8 @@ function ComposeDialog({
       cc: showCc ? splitEmails(ccValue) : [],
       bcc: showBcc ? splitEmails(bccValue) : [],
       subject: subjectValue,
-      text: body.text,
-      html: body.html || plainTextToHtml(body.text),
+      text: quotedText ? `${body.text}\n\n${quotedText}` : body.text,
+      html: [body.html || plainTextToHtml(body.text), quotedHtml].filter(Boolean).join(""),
       attachments,
       draftId: draftId || undefined,
       sendAt,
@@ -6352,7 +6369,13 @@ function ComposeDialog({
             </ComposeField>
             <MailBodyComposer
               defaultValue={composerText}
-              defaultHtml={draft?.html}
+              defaultHtml={draft?.html !== undefined ? draftSplit.html : undefined}
+              quotedHtml={quotedHtml}
+              quotedText={quotedText}
+              onRemoveQuote={() => {
+                setQuotedHtml("")
+                setQuotedText("")
+              }}
               files={files}
               signatureText={signatureText}
               maxAttachmentText={maxAttachmentText}
@@ -6708,6 +6731,40 @@ function composerValueFromEditor(editor: Editor): ComposerValue {
   return { text, html: html || plainTextToHtml(text) }
 }
 
+const QUOTED_MAIL_HEADER_RE =
+  /-{2,}\s*(?:原始邮件|转发邮件|Original Message|Forwarded Message)\s*-{2,}/i
+
+/**
+ * 把「原始邮件」引用块从正文 HTML 里拆出来。
+ *
+ * 富文本编辑器（tiptap）的 schema 里没有 table/style，newsletter 那种表格排版的
+ * 正文一旦放进编辑器就会被压成单列、颜色和列宽全丢。所以引用块干脆不进编辑器：
+ * 自己写的正文照常编辑，引用块用只读 iframe 原样渲染，发信时再把原始 HTML
+ * 原封不动拼回去。
+ */
+function splitQuotedComposerHtml(html: string): {
+  html: string
+  quotedHtml: string
+  quotedText: string
+} {
+  const raw = html || ""
+  if (!raw.trim() || typeof window === "undefined") {
+    return { html: raw, quotedHtml: "", quotedText: "" }
+  }
+  const doc = new DOMParser().parseFromString(`<body>${raw}</body>`, "text/html")
+  const quotes = Array.from(doc.body.querySelectorAll("blockquote")).filter(
+    (quote) =>
+      !quote.parentElement?.closest("blockquote") &&
+      QUOTED_MAIL_HEADER_RE.test(quote.textContent || "")
+  )
+  const quote = quotes[quotes.length - 1]
+  if (!quote) return { html: raw, quotedHtml: "", quotedText: "" }
+  const quotedHtml = quote.outerHTML
+  const quotedText = (quote.textContent || "").replace(/\n{3,}/g, "\n\n").trim()
+  quote.remove()
+  return { html: doc.body.innerHTML, quotedHtml, quotedText }
+}
+
 function editorTextSelection(editor: Editor) {
   const { from, to, empty } = editor.state.selection
   if (empty) return ""
@@ -6740,6 +6797,9 @@ function scheduleToNodeAttributes(schedule: ScheduleDraft) {
 function MailBodyComposer({
   defaultValue,
   defaultHtml,
+  quotedHtml,
+  quotedText,
+  onRemoveQuote,
   files,
   signatureText,
   maxAttachmentText,
@@ -6749,6 +6809,9 @@ function MailBodyComposer({
 }: {
   defaultValue: string
   defaultHtml?: string
+  quotedHtml?: string
+  quotedText?: string
+  onRemoveQuote?: () => void
   files: File[]
   signatureText: string
   maxAttachmentText: string
@@ -7384,6 +7447,25 @@ function MailBodyComposer({
       >
         <EditorContent editor={editor} className="flex min-h-0 min-w-0 flex-1" />
       </div>
+      {quotedHtml && (
+        <div className="border-b bg-muted/20">
+          <div className="flex items-center justify-between gap-2 px-4 py-2 text-xs text-muted-foreground sm:px-6">
+            <span className="truncate">{uiText("以下是原邮件，发送时原样附带（只读）")}</span>
+            {onRemoveQuote && (
+              <button
+                type="button"
+                className="shrink-0 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
+                onClick={onRemoveQuote}
+              >
+                {uiText("删除")}
+              </button>
+            )}
+          </div>
+          <div className="max-h-[360px] overflow-y-auto overflow-x-hidden border-t bg-white px-2 py-2 sm:px-4">
+            <MailHtmlFrame key={quotedHtml.slice(0, 64)} bodyHtml={quotedHtml} bodyText={quotedText || ""} minHeight={60} />
+          </div>
+        </div>
+      )}
       {files.length > 0 && (
         <div className="border-t px-4 py-3 sm:px-6">
           <div className="flex flex-wrap gap-2">
@@ -7886,8 +7968,11 @@ function playIncomingMailSound(ref: React.MutableRefObject<AudioContext | null>)
     osc.stop(start + 0.18)
   }
 }
-function quoteMessage(message: MailMessage) {
-  const headers = `----- 原始邮件 -----\nFrom: ${senderTitle(message)}\nTo: ${message.to.join(", ")}\nDate: ${formatDateTime(message.receivedAt, "zh-CN")}\nSubject: ${message.subject}`
+function quoteMessage(message: MailMessage, mode: "reply" | "forward" = "reply") {
+  // 转发和回复用不同的分隔行：收件端只折叠「原始邮件」（回复），
+  // 转发是整封内容的主体，折叠了就什么都看不见了。
+  const marker = mode === "forward" ? "转发邮件" : "原始邮件"
+  const headers = `----- ${marker} -----\nFrom: ${senderTitle(message)}\nTo: ${message.to.join(", ")}\nDate: ${formatDateTime(message.receivedAt, "zh-CN")}\nSubject: ${message.subject}`
   // 有 HTML 就引用 HTML（图文、链接、排版都在），只有纯文本的邮件才退回文本引用
   if (message.bodyHtml && message.bodyHtml.trim()) {
     return quotedHtmlComposerValue(headers, message.bodyHtml, message.bodyText || "")

@@ -25,12 +25,38 @@ export function quotedComposerValue(headers: string, body: string): ComposerValu
 
 // 转发/回复时保留原邮件的 HTML：图片、链接、加粗、段落都留在引用块里，
 // 只走纯文本会把一封图文邮件变成「文字 + 一堆链接」。
+/**
+ * 引用原邮件时用的消毒器：比编辑器的宽一档，保留 <style> 和表格属性。
+ *
+ * 编辑器自己的 schema 装不下 table/style，所以引用块不进编辑器、发信时原样附带；
+ * 这里的白名单要和后端 HTMLPolicy 对得上，否则「收到的」和「转出去的」不是一个东西。
+ */
+export function sanitizeQuotedMailHtml(value: string) {
+  return DOMPurify.sanitize(value || "", {
+    ADD_TAGS: ["style", "center", "font", "colgroup", "col", "thead", "tbody", "tfoot"],
+    ADD_ATTR: [
+      "align",
+      "valign",
+      "width",
+      "height",
+      "bgcolor",
+      "background",
+      "border",
+      "cellpadding",
+      "cellspacing",
+      "class",
+      "target",
+      "role",
+    ],
+  })
+}
+
 export function quotedHtmlComposerValue(
   headers: string,
   bodyHtml: string,
   bodyText: string
 ): ComposerValue {
-  const safe = sanitizeComposerHtml(bodyHtml || "")
+  const safe = sanitizeQuotedMailHtml(bodyHtml || "")
   const text = bodyText.trim() ? bodyText : stripHtml(safe)
   const quotedText = text
     .replace(/\r\n/g, "\n")
