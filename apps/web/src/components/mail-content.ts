@@ -146,9 +146,28 @@ function foldMailQuotes(html: string, language: Language) {
     quote.replaceWith(details)
     details.append(summary, quote)
   }
+  // 引用块前面还有正文 = 这是「回复」，折叠起来省地方；
+  // 前面什么都没 = 这是「转发」，整封内容都在引用块里，一折叠收件人就啥也看不见了。
+  const hasContentBefore = (quote: Element) => {
+    try {
+      const range = doc.createRange()
+      range.selectNodeContents(doc.body)
+      range.setEndBefore(quote)
+      const before = range.toString().replace(/\s+/g, "")
+      if (before) return true
+    } catch {
+      return true
+    }
+    let sibling = quote.previousElementSibling
+    while (sibling) {
+      if ((sibling.textContent || "").trim() || sibling.querySelector("img, table, hr")) return true
+      sibling = sibling.previousElementSibling
+    }
+    return false
+  }
   for (const quote of Array.from(doc.body.querySelectorAll("blockquote"))) {
     if (!quote.parentElement?.closest("blockquote") && header.test(stripHtml(quote.innerHTML))) {
-      fold(quote)
+      if (hasContentBefore(quote)) fold(quote)
     }
   }
   for (const element of Array.from(doc.body.children)) {
@@ -180,7 +199,7 @@ function foldMailQuotes(html: string, language: Language) {
       element.replaceWith(quote)
     }
     siblings.forEach((node) => node.remove())
-    fold(quote)
+    if (hasContentBefore(quote)) fold(quote)
   }
   return wholeDocument ? doc.documentElement.outerHTML : doc.body.innerHTML
 }
