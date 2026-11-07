@@ -55,7 +55,11 @@ func TestTelegramMessagePartsShortBodySingleMessage(t *testing.T) {
 		t.Fatalf("短邮件不该分段，实际 %d 段", len(parts))
 	}
 	lines := strings.Split(parts[0], "\n")
-	if lines[0] != "新邮件" || lines[1] != "验证码: 857149" {
+	// 第一行是加粗的主题，验证码仍旧占第二行（推送预览只露前两行）。
+	if lines[0] != "<b>您的临时验证码</b>" {
+		t.Fatalf("第一行应该是加粗主题，实际 %q", lines[0])
+	}
+	if lines[1] != "验证码: 857149" {
 		t.Fatalf("验证码必须在第二行，实际:\n%s", parts[0])
 	}
 	if !strings.Contains(parts[0], "输入此临时验证码以继续：857149") {
@@ -81,8 +85,8 @@ func TestTelegramMessagePartsRespectsBudget(t *testing.T) {
 	if !strings.Contains(parts[0], "已截断，完整内容请点「打开邮件」") {
 		t.Fatalf("超长邮件应提示去网页看全文:\n%.160q", parts[0])
 	}
-	if !strings.Contains(parts[0], "主题: 长邮件") {
-		t.Fatalf("消息头丢了:\n%.120q", parts[0])
+	if !strings.HasPrefix(parts[0], "<b>长邮件</b>\n") {
+		t.Fatalf("消息头第一行应该是加粗主题:\n%.120q", parts[0])
 	}
 }
 

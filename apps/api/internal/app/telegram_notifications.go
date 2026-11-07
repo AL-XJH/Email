@@ -355,19 +355,28 @@ func telegramCleanLine(value, fallback string) string {
 	return value
 }
 
-// telegramHeaderLines 消息头：第一行固定「新邮件」，验证码必须占第二行
+// telegramHeaderLines 消息头的纯文本行：第一行是主题，验证码必须占第二行
 // （Telegram 推送预览只露前两行）。
 func telegramHeaderLines(mailbox, from, subject, code string) []string {
-	lines := []string{"新邮件"}
+	lines := []string{telegramCleanLine(subject, "(无主题)")}
 	if code = strings.TrimSpace(code); code != "" {
 		lines = append(lines, "验证码: "+code)
 	}
 	lines = append(lines,
 		"收件邮箱: "+telegramCleanLine(mailbox, "未知"),
 		"发件人: "+telegramCleanLine(from, "未知"),
-		"主题: "+telegramCleanLine(subject, "(无主题)"),
 	)
 	return lines
+}
+
+// telegramHeaderHTML 消息头的 HTML 版本：主题单独加粗当第一行，其余按纯文本转义。
+func telegramHeaderHTML(mailbox, from, subject, code string) string {
+	lines := telegramHeaderLines(mailbox, from, subject, code)
+	first := "<b>" + telegramEscapeText(lines[0]) + "</b>"
+	if len(lines) == 1 {
+		return first
+	}
+	return first + "\n" + telegramEscapeText(strings.Join(lines[1:], "\n"))
 }
 
 // telegramMessageParts 把邮件拼成推送文本：消息头 + 正文摘要，总长不超过
@@ -376,7 +385,7 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 	if budget <= 0 {
 		budget = telegramNotificationTextBudget
 	}
-	header := telegramEscapeText(strings.Join(telegramHeaderLines(mailbox, from, subject, code), "\n"))
+	header := telegramHeaderHTML(mailbox, from, subject, code)
 	body, links := protectLongLinks(normalizePlainBody(body))
 	if body == "" {
 		return []string{header}

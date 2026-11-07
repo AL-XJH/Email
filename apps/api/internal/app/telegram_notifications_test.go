@@ -428,7 +428,7 @@ func TestTelegramRequestTimeoutAndNotificationTextLimit(t *testing.T) {
 func TestTelegramNotificationTextIncludesVerificationCode(t *testing.T) {
 	text := telegramNotificationText("admin@example.test", "ChatGPT <noreply@example.test>", "您的临时 ChatGPT 验证码", "输入此临时验证码以继续：857149", "857149")
 	lines := strings.Split(text, "\n")
-	if len(lines) < 3 || lines[0] != "新邮件" || lines[1] != "验证码: 857149" {
+	if len(lines) < 3 || lines[0] != "您的临时 ChatGPT 验证码" || lines[1] != "验证码: 857149" {
 		t.Fatalf("验证码应出现在消息第二行，实际: %q", text)
 	}
 
