@@ -1506,21 +1506,35 @@ export function MailPage() {
     setComposeDraft(draft || { key: `new-${Date.now()}` })
     setComposeOpen(true)
   }
-  function openReply(message: MailMessage) {
+  // 列表行对象只有 snippet，没有正文；从右键菜单「回复/转发」时必须先把整封取回来，
+  // 否则引用的原文只剩摘要那一百来字（用户实测：转发后正文只剩半句话）。
+  async function withFullBody(message: MailMessage): Promise<MailMessage> {
+    if (message.bodyText || message.bodyHtml) return message
+    try {
+      return message.externalAccountId
+        ? await api.externalMessage(message.externalAccountId, message.id)
+        : await api.message(message.id, { markRead: false })
+    } catch {
+      return message
+    }
+  }
+  async function openReply(message: MailMessage) {
     if (!canSendSelectedMailbox) return
+    const full = await withFullBody(message)
     openCompose({
-      key: `reply-${message.id}-${Date.now()}`,
-      to: message.from,
-      subject: withPrefix(message.subject, "Re:"),
-      ...quoteMessage(message),
+      key: `reply-${full.id}-${Date.now()}`,
+      to: full.from,
+      subject: withPrefix(full.subject, "Re:"),
+      ...quoteMessage(full),
     })
   }
-  function openForward(message: MailMessage) {
+  async function openForward(message: MailMessage) {
     if (!canSendSelectedMailbox) return
+    const full = await withFullBody(message)
     openCompose({
-      key: `forward-${message.id}-${Date.now()}`,
-      subject: withPrefix(message.subject, "Fwd:"),
-      ...quoteMessage(message),
+      key: `forward-${full.id}-${Date.now()}`,
+      subject: withPrefix(full.subject, "Fwd:"),
+      ...quoteMessage(full),
     })
   }
   async function openDraft(message: MailMessage) {
