@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,8 @@ func (a *App) enqueueSend(ctx context.Context, in sendQueueInput) (string, error
 			return "", err
 		}
 		if existingID != id {
+			// 同一个 Message-ID 再次提交 = 用户主动重发（客户端重试走的是 delivered 标记，
+			// 不会走到这里），因此 delivered 也要重新入队。
 			if status == sendQueueStatusDelivered || status == sendQueueStatusCanceled || (status == sendQueueStatusFailed && attemptCount >= maxAttempts) {
 				_, err := a.db.ExecContext(ctx, `UPDATE send_queue SET user_id=?,sent_message_id=?,mail_from=?,header_from=?,recipients_json=?,mime_base64=?,status=?,attempt_count=0,next_attempt_at=?,last_error='',updated_at=?,delivered_at=NULL,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status=?`,
 					in.UserID, in.SentMessageID, normalizeEmail(in.MailFrom), normalizeEmail(in.HeaderFrom), recipientsJSON, mimeBase64, sendQueueStatusQueued, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), existingID, status)
@@ -201,12 +204,15 @@ func (a *App) processDueSendQueue(ctx context.Context) error {
 func (a *App) recoverStaleSendQueueItems(ctx context.Context) error {
 	cutoff := a.now().UTC().Add(-sendQueueStaleAfter).Format(time.RFC3339Nano)
 	nowText := a.now().UTC().Format(time.RFC3339Nano)
-	rows, err := a.db.QueryContext(ctx, `SELECT id,user_id,mailbox_id,sent_message_id,message_id,source,mail_from,header_from,recipients_json,mime_base64,attempt_count,max_attempts,lease_token FROM send_queue WHERE status=? AND (lease_until<=? OR (lease_until IS NULL AND updated_at<=?)) AND attempt_count<max_attempts LIMIT 20`, sendQueueStatusSending, nowText, cutoff)
+	rows, err := a.db.QueryContext(ctx, `SELECT id,user_id,mailbox_id,sent_message_id,message_id,source,mail_from,header_from,recipients_json,mime_base64,attempt_count,max_attempts,lease_token FROM send_queue WHERE status=? AND (lease_until<=? OR (lease_until IS NULL AND updated_at<=?)) LIMIT 20`, sendQueueStatusSending, nowText, cutoff)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var items []sendQueueItem
+	// 载荷坏掉（base64 解不开）的行单独收着：不能因为一行坏数据让整轮恢复失败，
+	// 那样整个发送队列会每 10 秒卡在同一条上。
+	var broken []sendQueueItem
 	for rows.Next() {
 		var item sendQueueItem
 		var recipientsJSON, mimeBase64 string
@@ -224,7 +230,8 @@ func (a *App) recoverStaleSendQueueItems(ctx context.Context) error {
 		}
 		mimeBytes, err := base64.StdEncoding.DecodeString(mimeBase64)
 		if err != nil {
-			return err
+			broken = append(broken, item)
+			continue
 		}
 		item.MIMEBytes = mimeBytes
 		items = append(items, item)
@@ -233,6 +240,9 @@ func (a *App) recoverStaleSendQueueItems(ctx context.Context) error {
 		return err
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
+	for _, item := range broken {
+		a.failSendQueueRow(ctx, item, "stored message payload is corrupt")
+	}
 	for _, item := range items {
 		delivered, err := a.hasSendQueueDeliveredMarker(item.ID)
 		if err != nil {
@@ -242,6 +252,13 @@ func (a *App) recoverStaleSendQueueItems(ctx context.Context) error {
 			if err := a.markSendQueueDelivered(ctx, item); err != nil {
 				return err
 			}
+			continue
+		}
+		if item.AttemptCount >= item.MaxAttempts {
+			// 最后一次尝试时进程崩了，没有投递标记 —— 结果未知。
+			// 以前这类行永远停在 sending（查询里被 attempt_count<max_attempts 过滤掉），
+			// 既不发也不报失败。这里收尾成 failed，交给人工/审计。
+			a.failSendQueueRow(ctx, item, "send attempt interrupted after the last allowed attempt")
 			continue
 		}
 		res, err := a.db.ExecContext(ctx, `UPDATE send_queue SET status=?,next_attempt_at=?,last_error=?,updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status=? AND lease_token=?`, sendQueueStatusQueued, now, "send attempt interrupted", now, item.ID, sendQueueStatusSending, item.LeaseToken)
@@ -320,8 +337,9 @@ func (a *App) claimSendQueueItem(ctx context.Context, id string) (sendQueueItem,
 func (a *App) markSendQueueFailed(ctx context.Context, item sendQueueItem, sendErr error) {
 	now := a.now().UTC()
 	status := sendQueueStatusFailed
+	permanent := permanentSMTPFailure(sendErr)
 	nextAttempt := now.Add(sendRetryDelay(item.AttemptCount))
-	if item.AttemptCount >= item.MaxAttempts {
+	if item.AttemptCount >= item.MaxAttempts || permanent {
 		nextAttempt = now.Add(365 * 24 * time.Hour)
 	}
 	res, err := a.db.ExecContext(ctx, `UPDATE send_queue SET status=?,next_attempt_at=?,last_error=?,updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status=? AND lease_token=?`, status, nextAttempt.Format(time.RFC3339Nano), sendErr.Error(), now.Format(time.RFC3339Nano), item.ID, sendQueueStatusSending, item.LeaseToken)
@@ -333,10 +351,40 @@ func (a *App) markSendQueueFailed(ctx context.Context, item sendQueueItem, sendE
 		return
 	}
 	event := sendAuditRetry
-	if item.AttemptCount >= item.MaxAttempts {
+	if item.AttemptCount >= item.MaxAttempts || permanent {
 		event = sendAuditFailed
 	}
 	a.recordSendAudit(ctx, event, status, sendAuditInputFromQueue(item, sendErr.Error()))
+}
+
+// permanentSMTPFailure 判断是不是「重试也没用」的 5xx（收件人不存在、被拒收等）。
+// 421/450/451/452/455 是临时性错误，仍按退避重试。
+func permanentSMTPFailure(err error) bool {
+	var smtpErr *textproto.Error
+	if !errors.As(err, &smtpErr) {
+		return false
+	}
+	switch smtpErr.Code {
+	case 421, 450, 451, 452, 455:
+		return false
+	}
+	return smtpErr.Code >= 500 && smtpErr.Code < 600
+}
+
+// failSendQueueRow 把一行直接收尾成失败（不再重试）：载荷损坏、或者最后一次
+// 尝试时进程崩溃导致结果未知。以前这两种情况会让行永远停在 sending。
+func (a *App) failSendQueueRow(ctx context.Context, item sendQueueItem, reason string) {
+	now := a.now().UTC()
+	res, err := a.db.ExecContext(ctx, `UPDATE send_queue SET status=?,next_attempt_at=?,last_error=?,updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status=? AND lease_token=?`,
+		sendQueueStatusFailed, now.Add(365*24*time.Hour).Format(time.RFC3339Nano), reason, now.Format(time.RFC3339Nano), item.ID, sendQueueStatusSending, item.LeaseToken)
+	if err != nil {
+		a.log.Warn("failed to mark send queue row failed", "id", item.ID, "error", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return
+	}
+	a.recordSendAudit(ctx, sendAuditFailed, sendQueueStatusFailed, sendAuditInputFromQueue(item, reason))
 }
 
 func sendRetryDelay(attempt int) time.Duration {

@@ -86,7 +86,8 @@ test("known errors retain actionable messages; unknown errors never leak server 
 
 test("language remains usable when localStorage is blocked", () => {
   const { getInitialLanguage, setStoredLanguage, events } = setup("en", true)
-  assert.equal(getInitialLanguage(), "en")
+  // 界面锁定简体中文：存储不可用时回落到 LOCKED_LANGUAGE，而不是浏览器语言。
+  assert.equal(getInitialLanguage(), "zh-CN")
   setStoredLanguage("zh-TW")
   assert.equal(getInitialLanguage(), "zh-TW")
   assert.equal(events[0].type, "lanqin:language")

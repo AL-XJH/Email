@@ -202,6 +202,7 @@ import { MailHtmlFrame } from "@/components/mail-html-frame"
 import { MailAttachment } from "@/components/mail-attachment"
 import { useMe } from "@/hooks/use-me"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useDebouncedValue } from "@/lib/use-debounced-value"
 import { useToast } from "@/hooks/use-toast"
 import { hasPermission } from "@/lib/permissions"
 import { extractVerificationCode } from "@/lib/verification-code"
@@ -378,6 +379,8 @@ export function MailPage() {
   const [mailView, setMailView] = React.useState<MailView>("folder")
   const [selectedLabelId, setSelectedLabelId] = React.useState("")
   const [query, setQuery] = React.useState("")
+  // 搜索框输入即时回显，但只有停顿 300ms 才真的去请求，避免每敲一个字符打一次接口。
+  const debouncedQuery = useDebouncedValue(query, 300)
   const [messagePageIndex, setMessagePageIndex] = React.useState(0)
   const [messagePageSize, setMessagePageSize] = React.useState<MailPageSize>(getInitialMailPageSize)
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
@@ -633,18 +636,20 @@ export function MailPage() {
       mailView,
       folder,
       selectedLabelId,
-      query,
+      debouncedQuery,
       messagePageSize,
     ],
     queryFn: ({ pageParam }) => {
       const cursor = typeof pageParam === "string" ? pageParam : ""
       if (mailView === "starred")
-        return api.starredMessages(query, cursor, activeMailboxId, messagePageSize)
+        return api.starredMessages(debouncedQuery, cursor, activeMailboxId, messagePageSize)
       if (mailView === "label")
-        return api.labelMessages(selectedLabelId, query, cursor, activeMailboxId, messagePageSize)
-      return api.messages(folder, query, cursor, activeMailboxId, messagePageSize)
+        return api.labelMessages(selectedLabelId, debouncedQuery, cursor, activeMailboxId, messagePageSize)
+      return api.messages(folder, debouncedQuery, cursor, activeMailboxId, messagePageSize)
     },
     initialPageParam: "",
+    // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏。
+    placeholderData: (previous) => previous,
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
     enabled:
       !!activeMailboxId &&
@@ -660,7 +665,7 @@ export function MailPage() {
       "external-messages",
       selectedExternalAccountId,
       externalFolder,
-      query,
+      debouncedQuery,
       messagePageSize,
     ],
     queryFn: ({ pageParam }) =>
@@ -668,10 +673,12 @@ export function MailPage() {
         selectedExternalAccountId,
         externalFolder,
         typeof pageParam === "string" ? pageParam : "",
-        query,
+        debouncedQuery,
         messagePageSize
       ),
     initialPageParam: "",
+    // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏。
+    placeholderData: (previous) => previous,
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
     enabled:
       !!selectedExternalAccountId && canReadMail && mailView === "external" && externalImapEnabled,
@@ -712,12 +719,34 @@ export function MailPage() {
   const autoRefreshing = Boolean(
     publicSettings.data?.mailAutoRefresh && (listAutoRefreshing || inboxProbe.isRefetching)
   )
+  // 乐观更新的回滚快照：详情与列表都可能被同一次操作改到，出错时整体还原。
+  type MessageCacheSnapshot = {
+    details: [readonly unknown[], MailMessage | undefined][]
+    lists: [readonly unknown[], InfiniteData<MailListResponse> | undefined][]
+  }
+  function snapshotMessageCaches(): MessageCacheSnapshot {
+    return {
+      details: qc.getQueriesData<MailMessage>({ queryKey: ["message"] }),
+      lists: [
+        ...qc.getQueriesData<InfiniteData<MailListResponse>>({ queryKey: ["messages"] }),
+        ...qc.getQueriesData<InfiniteData<MailListResponse>>({ queryKey: ["external-messages"] }),
+      ],
+    }
+  }
+  function restoreMessageCaches(snapshot?: MessageCacheSnapshot) {
+    if (!snapshot) return
+    for (const [key, data] of snapshot.details) qc.setQueryData(key, data)
+    for (const [key, data] of snapshot.lists) qc.setQueryData(key, data)
+  }
   function updateCachedMessage(id: string, patch: Partial<MailMessage>) {
+    patchCachedMessage(id, (message) => ({ ...message, ...patch }))
+  }
+  function patchCachedMessage(id: string, updater: (message: MailMessage) => MailMessage) {
     // 详情缓存是 ["message", id, view, externalAccountId]，setQueryData 只认精确 key，
     // 写 ["message", id] 只会造出一个没人订阅的幽灵条目（乐观更新全部失效、失败回滚也回滚不到）。
     // 这里用前缀匹配的 setQueriesData。
     qc.setQueriesData({ queryKey: ["message", id] }, (current: MailMessage | undefined) =>
-      current ? { ...current, ...patch } : current
+      current ? updater(current) : current
     )
     qc.setQueriesData(
       { queryKey: ["messages"] },
@@ -728,7 +757,7 @@ export function MailPage() {
           pages: current.pages.map((page) => ({
             ...page,
             items: (page.items || []).map((message) =>
-              message.id === id ? { ...message, ...patch } : message
+              message.id === id ? updater(message) : message
             ),
           })),
         }
@@ -743,7 +772,7 @@ export function MailPage() {
           pages: current.pages.map((page) => ({
             ...page,
             items: (page.items || []).map((message) =>
-              message.id === id ? { ...message, ...patch } : message
+              message.id === id ? updater(message) : message
             ),
           })),
         }
@@ -752,32 +781,50 @@ export function MailPage() {
   }
   const star = useMutation({
     mutationFn: ({ id, starred }: { id: string; starred: boolean }) => api.star(id, starred),
-    onMutate: ({ id, starred }) => updateCachedMessage(id, { isStarred: starred }),
+    onMutate: ({ id, starred }) => {
+      const snapshot = snapshotMessageCaches()
+      updateCachedMessage(id, { isStarred: starred })
+      return snapshot
+    },
     onSuccess: async (_, variables) => {
       await qc.invalidateQueries({ queryKey: ["messages"] })
       await qc.invalidateQueries({ queryKey: ["message", variables.id] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
       await qc.invalidateQueries({ queryKey: ["labels"] })
     },
-    onError: (error) => toast({ title: "操作失败", description: errorMessage(error) }),
+    onError: (error, _variables, snapshot) => {
+      restoreMessageCaches(snapshot)
+      toast({ title: "操作失败", description: errorMessage(error) })
+    },
   })
   const markRead = useMutation({
     mutationFn: ({ id, read }: { id: string; read: boolean }) => api.markRead(id, read),
-    onMutate: ({ id, read }) => updateCachedMessage(id, { isRead: read }),
+    onMutate: ({ id, read }) => {
+      const snapshot = snapshotMessageCaches()
+      updateCachedMessage(id, { isRead: read })
+      return snapshot
+    },
     onSuccess: async (_, variables) => {
       await qc.invalidateQueries({ queryKey: ["messages"] })
       await qc.invalidateQueries({ queryKey: ["message", variables.id] })
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
     },
-    onError: (error) => toast({ title: "操作失败", description: errorMessage(error) }),
+    onError: (error, _variables, snapshot) => {
+      restoreMessageCaches(snapshot)
+      toast({ title: "操作失败", description: errorMessage(error) })
+    },
   })
   const markExternalRead = useMutation({
     mutationFn: ({ id, remoteId, read }: { id: string; remoteId: string; read: boolean }) =>
       externalMessagesStoredLocally
         ? api.markRead(remoteId, read)
         : api.markExternalRead(id, remoteId, read),
-    onMutate: ({ remoteId, read }) => updateCachedMessage(remoteId, { isRead: read }),
+    onMutate: ({ remoteId, read }) => {
+      const snapshot = snapshotMessageCaches()
+      updateCachedMessage(remoteId, { isRead: read })
+      return snapshot
+    },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["external-messages"] })
       await qc.invalidateQueries({ queryKey: ["message"] })
@@ -785,40 +832,26 @@ export function MailPage() {
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
     },
-    onError: (error) => toast({ title: "操作失败", description: errorMessage(error) }),
+    onError: (error, _variables, snapshot) => {
+      restoreMessageCaches(snapshot)
+      toast({ title: "操作失败", description: errorMessage(error) })
+    },
   })
   const addLabel = useMutation({
     mutationFn: ({ id, label }: { id: string; label: MailLabel }) =>
       api.addLabel(id, { name: label.name, color: label.color }),
     onMutate: async ({ id, label }) => {
       await qc.cancelQueries({ queryKey: ["messages"] })
-      if (selectedId) await qc.cancelQueries({ queryKey: ["message", selectedId] })
-      const prevMessage = selectedId
-        ? qc.getQueryData<MailMessage>(["message", selectedId])
-        : undefined
-      if (selectedId)
-        qc.setQueryData<MailMessage>(["message", selectedId], (current) =>
-          current ? { ...current, labels: [...(current.labels || []), label] } : current
-        )
-      qc.setQueriesData<InfiniteData<MailListResponse>>({ queryKey: ["messages"] }, (current) =>
-        current
-          ? {
-              ...current,
-              pages: current.pages.map((page) => ({
-                ...page,
-                items: (page.items || []).map((m) =>
-                  m.id === id ? { ...m, labels: [...(m.labels || []), label] } : m
-                ),
-              })),
-            }
-          : current
+      const snapshot = snapshotMessageCaches()
+      patchCachedMessage(id, (message) =>
+        (message.labels || []).some((item) => item.id === label.id)
+          ? message
+          : { ...message, labels: [...(message.labels || []), label] }
       )
-      return { prevMessage }
+      return snapshot
     },
-    onError: (_error, _vars, context) => {
-      if (selectedId && context?.prevMessage)
-        qc.setQueriesData({ queryKey: ["message", selectedId] }, (current: MailMessage | undefined) => context.prevMessage || current)
-      qc.invalidateQueries({ queryKey: ["messages"] })
+    onError: (_error, _vars, snapshot) => {
+      restoreMessageCaches(snapshot)
       toast({ title: "添加标签失败" })
     },
     onSettled: () => {
@@ -830,37 +863,15 @@ export function MailPage() {
     mutationFn: ({ id, labelId }: { id: string; labelId: string }) => api.removeLabel(id, labelId),
     onMutate: async ({ id, labelId }) => {
       await qc.cancelQueries({ queryKey: ["messages"] })
-      if (selectedId) await qc.cancelQueries({ queryKey: ["message", selectedId] })
-      const prevMessage = selectedId
-        ? qc.getQueryData<MailMessage>(["message", selectedId])
-        : undefined
-      if (selectedId)
-        qc.setQueryData<MailMessage>(["message", selectedId], (current) =>
-          current
-            ? { ...current, labels: (current.labels || []).filter((l) => l.id !== labelId) }
-            : current
-        )
-      qc.setQueriesData<InfiniteData<MailListResponse>>({ queryKey: ["messages"] }, (current) =>
-        current
-          ? {
-              ...current,
-              pages: current.pages.map((page) => ({
-                ...page,
-                items: (page.items || []).map((m) =>
-                  m.id === id
-                    ? { ...m, labels: (m.labels || []).filter((l) => l.id !== labelId) }
-                    : m
-                ),
-              })),
-            }
-          : current
-      )
-      return { prevMessage }
+      const snapshot = snapshotMessageCaches()
+      patchCachedMessage(id, (message) => ({
+        ...message,
+        labels: (message.labels || []).filter((item) => item.id !== labelId),
+      }))
+      return snapshot
     },
-    onError: (_error, _vars, context) => {
-      if (selectedId && context?.prevMessage)
-        qc.setQueriesData({ queryKey: ["message", selectedId] }, (current: MailMessage | undefined) => context.prevMessage || current)
-      qc.invalidateQueries({ queryKey: ["messages"] })
+    onError: (_error, _vars, snapshot) => {
+      restoreMessageCaches(snapshot)
       toast({ title: "移除标签失败" })
     },
     onSettled: () => {
@@ -1262,14 +1273,37 @@ export function MailPage() {
   }, [activeMailboxId, notificationItems, qc, toast])
 
   React.useEffect(() => {
-    const events = new EventSource("/api/events", { withCredentials: true })
-    events.addEventListener("sync", () => {
-      qc.invalidateQueries({ queryKey: ["folders"] })
-      qc.invalidateQueries({ queryKey: ["mail-stats"] })
-      qc.invalidateQueries({ queryKey: ["labels"] })
-      qc.invalidateQueries({ queryKey: ["mail-notifications"] })
-    })
-    return () => events.close()
+    let source: EventSource | null = null
+    let closed = false
+    let attempts = 0
+    let timer: number | undefined
+    const connect = () => {
+      source = new EventSource("/api/events", { withCredentials: true })
+      source.addEventListener("sync", () => {
+        qc.invalidateQueries({ queryKey: ["folders"] })
+        qc.invalidateQueries({ queryKey: ["mail-stats"] })
+        qc.invalidateQueries({ queryKey: ["labels"] })
+        qc.invalidateQueries({ queryKey: ["mail-notifications"] })
+      })
+      source.onopen = () => {
+        attempts = 0
+      }
+      source.onerror = () => {
+        // 浏览器默认每 3 秒无限重连；登录过期或网关挂掉时会一直打点。
+        // 这里主动关掉，按 3s→6s→12s→24s→60s 退避重建。
+        source?.close()
+        if (closed) return
+        attempts += 1
+        const delay = Math.min(60000, 3000 * 2 ** Math.min(attempts - 1, 4))
+        timer = window.setTimeout(connect, delay)
+      }
+    }
+    connect()
+    return () => {
+      closed = true
+      window.clearTimeout(timer)
+      source?.close()
+    }
   }, [qc])
 
   React.useEffect(() => {
@@ -1297,7 +1331,7 @@ export function MailPage() {
                 "external-messages",
                 selectedExternalAccountId,
                 externalFolder,
-                query,
+                debouncedQuery,
                 messagePageSize,
               ]
             : [
@@ -1306,7 +1340,7 @@ export function MailPage() {
                 mailView,
                 folder,
                 selectedLabelId,
-                query,
+                debouncedQuery,
                 messagePageSize,
               ]
         const nextPage =
@@ -1315,20 +1349,20 @@ export function MailPage() {
                 selectedExternalAccountId,
                 externalFolder,
                 "",
-                query,
+                debouncedQuery,
                 messagePageSize
               )
             : mailView === "starred"
-              ? await api.starredMessages(query, "", activeMailboxId, messagePageSize)
+              ? await api.starredMessages(debouncedQuery, "", activeMailboxId, messagePageSize)
               : mailView === "label"
                 ? await api.labelMessages(
                     selectedLabelId,
-                    query,
+                    debouncedQuery,
                     "",
                     activeMailboxId,
                     messagePageSize
                   )
-                : await api.messages(folder, query, "", activeMailboxId, messagePageSize)
+                : await api.messages(folder, debouncedQuery, "", activeMailboxId, messagePageSize)
         const current = qc.getQueryData<InfiniteData<MailListResponse>>(queryKey)
         if (current?.pages[0] && JSON.stringify(current.pages[0]) !== JSON.stringify(nextPage)) {
           await qc.invalidateQueries({ queryKey, exact: true })
@@ -1360,15 +1394,10 @@ export function MailPage() {
     mailView,
     messagePageSize,
     qc,
-    query,
+    debouncedQuery,
     selectedExternalAccountId,
     selectedLabelId,
   ])
-
-  React.useEffect(() => {
-    if (publicSettings.data?.mailAutoRefresh && inboxProbe.dataUpdatedAt > 0 && !isPlainInboxView) {
-    }
-  }, [inboxProbe.dataUpdatedAt, isPlainInboxView, publicSettings.data?.mailAutoRefresh])
 
   const selected = detail.data
   const messagePages =
@@ -1491,13 +1520,19 @@ export function MailPage() {
       setCompactSelectedIds([])
       return
     }
-    const result =
-      mailView === "external"
-        ? await externalMessages.fetchNextPage()
-        : await messages.fetchNextPage()
-    if (result.data?.pages[nextIndex]) {
-      setMessagePageIndex(nextIndex)
-      setCompactSelectedIds([])
+    try {
+      const result =
+        mailView === "external"
+          ? await externalMessages.fetchNextPage()
+          : await messages.fetchNextPage()
+      // 翻页途中切了文件夹/搜索词的话，这份结果已经不属于当前列表了。
+      const totalPages = mailView === "external" ? externalMessages.data?.pages.length : messages.data?.pages.length
+      if ((totalPages || 0) > nextIndex && result.data?.pages[nextIndex]) {
+        setMessagePageIndex(nextIndex)
+        setCompactSelectedIds([])
+      }
+    } catch (error) {
+      toast({ title: "加载下一页失败", description: errorMessage(error) })
     }
   }
   async function refreshMailData() {
@@ -5368,7 +5403,7 @@ function AccountHeader({
           variant="ghost"
           size="icon"
           className="size-8 rounded-lg text-muted-foreground"
-          aria-label={darkMode ? "切换到浅色" : "切换到深色"}
+          aria-label={uiText(darkMode ? "切换到浅色" : "切换到深色")}
           onClick={onToggleTheme}
         >
           {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
@@ -5378,7 +5413,7 @@ function AccountHeader({
           variant="ghost"
           size="icon"
           className="size-8 rounded-lg text-muted-foreground"
-          aria-label="设置"
+          aria-label={uiText("设置")}
           onClick={onSettings}
         >
           <Settings className="h-4 w-4" />
@@ -5781,11 +5816,20 @@ function MessageRow({
   React.useEffect(() => () => window.clearTimeout(codeCopiedTimer.current), [])
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${senderName} ${message.subject}`.trim()}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onClick()
+        }
+      }}
       onContextMenu={onContextMenu}
       data-active={active ? "true" : undefined}
       className={cn(
-        "mail-list-row group relative w-full cursor-pointer border-b border-border/60 px-3 py-1.5 transition-colors hover:bg-accent/40",
+        "mail-list-row group relative w-full cursor-pointer border-b border-border/60 px-3 py-1.5 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         active && "bg-accent"
       )}
     >

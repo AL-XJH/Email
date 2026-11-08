@@ -1326,6 +1326,15 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 	}
 	imported, skipped, failed := 0, 0, 0
 	lastUID := state.LastUID
+	if state.UIDValidity != 0 && state.UIDValidity != folder.UIDValidity {
+		// 远端重建了 UID 空间（迁移/重建索引）。旧的 last_uid 在新空间里没有意义，
+		// 继续用它会导致「新邮件 UID 比旧值小」而被永久跳过。从头扫一遍，
+		// 重复的邮件靠 Message-ID 去重。
+		a.log.Info("external imap uidvalidity changed, rescanning folder",
+			"account", account.ID, "folder", folder.Name,
+			"old", state.UIDValidity, "new", folder.UIDValidity)
+		lastUID = 0
+	}
 	processed := 0
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	for processed < externalIMAPSyncMaxPerRun {
@@ -1396,10 +1405,13 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 			break
 		}
 	}
+	// UIDVALIDITY 变了就不能再对 last_uid 取 max：新空间里的 UID 可能更小，
+	// 取 max 会把游标永久钉在旧值上，之后的邮件全部漏掉。
+	maxLastUID := scalarMaxSQL(a.config().DBDriver, "last_uid", "excluded.last_uid")
 	query := upsertSQL(a.config().DBDriver, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,last_sync_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder)`,
-		`local_folder_id=excluded.local_folder_id,uid_validity=excluded.uid_validity,last_uid=`+scalarMaxSQL(a.config().DBDriver, "last_uid", "excluded.last_uid")+`,last_sync_at=excluded.last_sync_at,updated_at=excluded.updated_at`,
-		`local_folder_id=VALUES(local_folder_id),uid_validity=VALUES(uid_validity),last_uid=GREATEST(last_uid,VALUES(last_uid)),last_sync_at=VALUES(last_sync_at),updated_at=VALUES(updated_at)`)
+		`local_folder_id=excluded.local_folder_id,uid_validity=excluded.uid_validity,last_uid=CASE WHEN external_imap_folder_states.uid_validity=excluded.uid_validity THEN `+maxLastUID+` ELSE excluded.last_uid END,last_sync_at=excluded.last_sync_at,updated_at=excluded.updated_at`,
+		`local_folder_id=VALUES(local_folder_id),uid_validity=VALUES(uid_validity),last_uid=CASE WHEN uid_validity=VALUES(uid_validity) THEN GREATEST(last_uid,VALUES(last_uid)) ELSE VALUES(last_uid) END,last_sync_at=VALUES(last_sync_at),updated_at=VALUES(updated_at)`)
 	_, _ = a.db.ExecContext(ctx, query,
 		account.ID, folder.Name, localFolderID, folder.UIDValidity, lastUID, now, now, now)
 	return imported, skipped, failed, ctx.Err()
@@ -1407,12 +1419,13 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 
 type externalIMAPFolderState struct {
 	LocalFolderID string
+	UIDValidity   uint32
 	LastUID       uint32
 }
 
 func (a *App) loadExternalIMAPFolderState(ctx context.Context, accountID, folder string) externalIMAPFolderState {
 	var state externalIMAPFolderState
-	_ = a.db.QueryRowContext(ctx, `SELECT local_folder_id,last_uid FROM external_imap_folder_states WHERE account_id=? AND remote_folder=?`, accountID, folder).Scan(&state.LocalFolderID, &state.LastUID)
+	_ = a.db.QueryRowContext(ctx, `SELECT local_folder_id,uid_validity,last_uid FROM external_imap_folder_states WHERE account_id=? AND remote_folder=?`, accountID, folder).Scan(&state.LocalFolderID, &state.UIDValidity, &state.LastUID)
 	return state
 }
 
@@ -1475,6 +1488,23 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", tx.Commit()
+	}
+	if msg.MessageID != "" {
+		// UIDVALIDITY 重置后重扫，同一封信会以新的 UID 再出现一次。
+		// 这里按 Message-ID 认一下：已经在本地就直接补映射，不再插一封重复的邮件。
+		var existingID string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? LIMIT 1`,
+			msg.MailboxID, msg.FolderID, msg.MessageID).Scan(&existingID)
+		switch {
+		case err == nil:
+			if _, err := tx.ExecContext(ctx, `UPDATE external_imap_messages SET local_message_id=?,updated_at=? WHERE account_id=? AND remote_folder=? AND uid_validity=? AND uid=?`,
+				existingID, now, account.ID, folder, item.UIDValidity, item.UID); err != nil {
+				return "", err
+			}
+			return "", tx.Commit()
+		case !errors.Is(err, sql.ErrNoRows):
+			return "", err
+		}
 	}
 	id, err := a.insertMessageWithDB(ctx, tx, msg, attachments)
 	if err != nil {

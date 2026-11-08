@@ -281,7 +281,10 @@ func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipient
 	if err := wc.Close(); err != nil {
 		return err
 	}
-	return client.Quit()
+	// 走到这里服务器已经返回 250，邮件确定被接受。QUIT 只是礼貌收尾：
+	// 把它的错误当成发送失败会让上层重试，收件人收到两封一样的信。
+	_ = client.Quit()
+	return nil
 }
 
 func htmlEscape(s string) string {

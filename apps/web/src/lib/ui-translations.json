@@ -1,21 +1,60 @@
 {
-  "网站标题": { "zh-TW": "網站標題", "en": "Website title" },
-  "网站图标": { "zh-TW": "網站圖示", "en": "Website icon" },
-  "选择 ICO 文件": { "zh-TW": "選擇 ICO 檔案", "en": "Choose ICO file" },
-  "正在上传...": { "zh-TW": "正在上傳...", "en": "Uploading..." },
-  "上传 ICO": { "zh-TW": "上傳 ICO", "en": "Upload ICO" },
-  "移除网站图标": { "zh-TW": "移除網站圖示", "en": "Remove website icon" },
-  "网站图标已更新": { "zh-TW": "網站圖示已更新", "en": "Website icon updated" },
-  "图标上传失败": { "zh-TW": "圖示上傳失敗", "en": "Icon upload failed" },
-  "网站图标已移除": { "zh-TW": "網站圖示已移除", "en": "Website icon removed" },
-  "移除图标失败": { "zh-TW": "移除圖示失敗", "en": "Icon removal failed" },
-  "不可停用": { "zh-TW": "不可停用", "en": "Protected" },
+  "网站标题": {
+    "zh-TW": "網站標題",
+    "en": "Website title"
+  },
+  "网站图标": {
+    "zh-TW": "網站圖示",
+    "en": "Website icon"
+  },
+  "选择 ICO 文件": {
+    "zh-TW": "選擇 ICO 檔案",
+    "en": "Choose ICO file"
+  },
+  "正在上传...": {
+    "zh-TW": "正在上傳...",
+    "en": "Uploading..."
+  },
+  "上传 ICO": {
+    "zh-TW": "上傳 ICO",
+    "en": "Upload ICO"
+  },
+  "移除网站图标": {
+    "zh-TW": "移除網站圖示",
+    "en": "Remove website icon"
+  },
+  "网站图标已更新": {
+    "zh-TW": "網站圖示已更新",
+    "en": "Website icon updated"
+  },
+  "图标上传失败": {
+    "zh-TW": "圖示上傳失敗",
+    "en": "Icon upload failed"
+  },
+  "网站图标已移除": {
+    "zh-TW": "網站圖示已移除",
+    "en": "Website icon removed"
+  },
+  "移除图标失败": {
+    "zh-TW": "移除圖示失敗",
+    "en": "Icon removal failed"
+  },
+  "不可停用": {
+    "zh-TW": "不可停用",
+    "en": "Protected"
+  },
   "默认管理员不可停用": {
     "zh-TW": "預設管理員不可停用",
     "en": "The default administrator cannot be disabled"
   },
-  "停用用户：{0}": { "zh-TW": "停用使用者：{0}", "en": "Disable user: {0}" },
-  "启用用户：{0}": { "zh-TW": "啟用使用者：{0}", "en": "Enable user: {0}" },
+  "停用用户：{0}": {
+    "zh-TW": "停用使用者：{0}",
+    "en": "Disable user: {0}"
+  },
+  "启用用户：{0}": {
+    "zh-TW": "啟用使用者：{0}",
+    "en": "Enable user: {0}"
+  },
   "确认停用用户 {0}？": {
     "zh-TW": "確認停用使用者 {0}？",
     "en": "Disable user {0}?"
@@ -24,10 +63,22 @@
     "zh-TW": "確認啟用使用者 {0}？",
     "en": "Enable user {0}?"
   },
-  "用户总数": { "zh-TW": "使用者總數", "en": "Total users" },
-  "正常用户": { "zh-TW": "正常使用者", "en": "Active users" },
-  "已停用用户": { "zh-TW": "已停用使用者", "en": "Disabled users" },
-  "正在加载用户...": { "zh-TW": "正在載入使用者...", "en": "Loading users..." },
+  "用户总数": {
+    "zh-TW": "使用者總數",
+    "en": "Total users"
+  },
+  "正常用户": {
+    "zh-TW": "正常使用者",
+    "en": "Active users"
+  },
+  "已停用用户": {
+    "zh-TW": "已停用使用者",
+    "en": "Disabled users"
+  },
+  "正在加载用户...": {
+    "zh-TW": "正在載入使用者...",
+    "en": "Loading users..."
+  },
   "无法加载用户列表，请刷新重试": {
     "zh-TW": "無法載入使用者清單，請重新整理後再試",
     "en": "Unable to load users. Refresh to try again."
@@ -36,29 +87,74 @@
     "zh-TW": "搜尋使用者、信箱、顯示名稱或 ID",
     "en": "Search users, emails, names or IDs"
   },
-  "全部双因素认证状态": { "zh-TW": "全部雙因素認證狀態", "en": "All 2FA statuses" },
+  "全部双因素认证状态": {
+    "zh-TW": "全部雙因素認證狀態",
+    "en": "All 2FA statuses"
+  },
   "显示 {0} / {1} 位用户": {
     "zh-TW": "顯示 {0} / {1} 位使用者",
     "en": "Showing {0} of {1} users"
   },
-  "查看用户详情：{0}": { "zh-TW": "檢視使用者詳情：{0}", "en": "View user details: {0}" },
-  "用户操作：{0}": { "zh-TW": "使用者操作：{0}", "en": "User actions: {0}" },
-  "创建时间：{0}": { "zh-TW": "建立時間：{0}", "en": "Created: {0}" },
-  "暂无用户": { "zh-TW": "尚無使用者", "en": "No users yet" },
-  "双因素认证未启用": { "zh-TW": "雙因素認證未啟用", "en": "2FA not enabled" },
-  "用户详情": { "zh-TW": "使用者詳情", "en": "User details" },
-  "用户 ID": { "zh-TW": "使用者 ID", "en": "User ID" },
-  "累计创建邮箱": { "zh-TW": "累計建立信箱", "en": "Mailboxes created to date" },
-  "额外邮箱额度": { "zh-TW": "額外信箱額度", "en": "Additional mailbox allowance" },
-  "绑定邮箱（{0}）": { "zh-TW": "綁定信箱（{0}）", "en": "Linked mailboxes ({0})" },
-  "配额与限制": { "zh-TW": "配額與限制", "en": "Quotas and limits" },
-  "已授予权限": { "zh-TW": "已授予權限", "en": "Granted permissions" },
-  "未授予权限": { "zh-TW": "未授予權限", "en": "No permissions granted" },
+  "查看用户详情：{0}": {
+    "zh-TW": "檢視使用者詳情：{0}",
+    "en": "View user details: {0}"
+  },
+  "用户操作：{0}": {
+    "zh-TW": "使用者操作：{0}",
+    "en": "User actions: {0}"
+  },
+  "创建时间：{0}": {
+    "zh-TW": "建立時間：{0}",
+    "en": "Created: {0}"
+  },
+  "暂无用户": {
+    "zh-TW": "尚無使用者",
+    "en": "No users yet"
+  },
+  "双因素认证未启用": {
+    "zh-TW": "雙因素認證未啟用",
+    "en": "2FA not enabled"
+  },
+  "用户详情": {
+    "zh-TW": "使用者詳情",
+    "en": "User details"
+  },
+  "用户 ID": {
+    "zh-TW": "使用者 ID",
+    "en": "User ID"
+  },
+  "累计创建邮箱": {
+    "zh-TW": "累計建立信箱",
+    "en": "Mailboxes created to date"
+  },
+  "额外邮箱额度": {
+    "zh-TW": "額外信箱額度",
+    "en": "Additional mailbox allowance"
+  },
+  "绑定邮箱（{0}）": {
+    "zh-TW": "綁定信箱（{0}）",
+    "en": "Linked mailboxes ({0})"
+  },
+  "配额与限制": {
+    "zh-TW": "配額與限制",
+    "en": "Quotas and limits"
+  },
+  "已授予权限": {
+    "zh-TW": "已授予權限",
+    "en": "Granted permissions"
+  },
+  "未授予权限": {
+    "zh-TW": "未授予權限",
+    "en": "No permissions granted"
+  },
   "账号已停用，权限暂不可用": {
     "zh-TW": "帳號已停用，權限暫不可用",
     "en": "This account is disabled. Its permissions cannot be used."
   },
-  "投递失败": { "zh-TW": "投遞失敗", "en": "Delivery failed" },
+  "投递失败": {
+    "zh-TW": "投遞失敗",
+    "en": "Delivery failed"
+  },
   "统一收件": {
     "zh-TW": "統一收件",
     "en": "Unified collection"
@@ -127,25 +223,70 @@
     "zh-TW": "統一收件目標不能設定別名轉寄",
     "en": "A collection destination cannot have a forwarding alias"
   },
-  "已读": { "zh-TW": "已讀", "en": "Read" },
-  "平均邮件大小": { "zh-TW": "平均郵件大小", "en": "Average message size" },
-  "统计指标": { "zh-TW": "統計指標", "en": "Statistics metric" },
-  "邮件数量": { "zh-TW": "郵件數量", "en": "Message count" },
-  "存储用量": { "zh-TW": "儲存用量", "en": "Storage usage" },
-  "暂无邮件数据": { "zh-TW": "暫無郵件資料", "en": "No message data" },
-  "阅读状态": { "zh-TW": "閱讀狀態", "en": "Reading status" },
-  "已读比例": { "zh-TW": "已讀比例", "en": "Read percentage" },
-  "未设置容量上限": { "zh-TW": "未設定容量上限", "en": "No storage limit set" },
-  "剩余容量：{0}": { "zh-TW": "剩餘容量：{0}", "en": "Available storage: {0}" },
-  "存储容量已用尽": { "zh-TW": "儲存容量已用盡", "en": "Storage limit reached" },
-  "存储容量即将用尽": { "zh-TW": "儲存容量即將用盡", "en": "Storage almost full" },
-  "存储容量使用正常": { "zh-TW": "儲存容量使用正常", "en": "Storage usage is healthy" },
-  "{0} 个附件 · {1}": { "zh-TW": "{0} 個附件 · {1}", "en": "{0} attachments · {1}" },
+  "已读": {
+    "zh-TW": "已讀",
+    "en": "Read"
+  },
+  "平均邮件大小": {
+    "zh-TW": "平均郵件大小",
+    "en": "Average message size"
+  },
+  "统计指标": {
+    "zh-TW": "統計指標",
+    "en": "Statistics metric"
+  },
+  "邮件数量": {
+    "zh-TW": "郵件數量",
+    "en": "Message count"
+  },
+  "存储用量": {
+    "zh-TW": "儲存用量",
+    "en": "Storage usage"
+  },
+  "暂无邮件数据": {
+    "zh-TW": "暫無郵件資料",
+    "en": "No message data"
+  },
+  "阅读状态": {
+    "zh-TW": "閱讀狀態",
+    "en": "Reading status"
+  },
+  "已读比例": {
+    "zh-TW": "已讀比例",
+    "en": "Read percentage"
+  },
+  "未设置容量上限": {
+    "zh-TW": "未設定容量上限",
+    "en": "No storage limit set"
+  },
+  "剩余容量：{0}": {
+    "zh-TW": "剩餘容量：{0}",
+    "en": "Available storage: {0}"
+  },
+  "存储容量已用尽": {
+    "zh-TW": "儲存容量已用盡",
+    "en": "Storage limit reached"
+  },
+  "存储容量即将用尽": {
+    "zh-TW": "儲存容量即將用盡",
+    "en": "Storage almost full"
+  },
+  "存储容量使用正常": {
+    "zh-TW": "儲存容量使用正常",
+    "en": "Storage usage is healthy"
+  },
+  "{0} 个附件 · {1}": {
+    "zh-TW": "{0} 個附件 · {1}",
+    "en": "{0} attachments · {1}"
+  },
   "统计加载失败，请刷新重试": {
     "zh-TW": "統計載入失敗，請重新整理重試",
     "en": "Could not load statistics. Refresh to retry."
   },
-  "正在加载统计数据...": { "zh-TW": "正在載入統計資料...", "en": "Loading statistics..." },
+  "正在加载统计数据...": {
+    "zh-TW": "正在載入統計資料...",
+    "en": "Loading statistics..."
+  },
   "概览": {
     "zh-TW": "概覽",
     "en": "Overview"
@@ -4615,5 +4756,137 @@
   "界面语言": {
     "zh-TW": "介面語言",
     "en": "Interface language"
+  },
+  "{0} 之后将不再自动进入收件箱。": {
+    "zh-TW": "{0} 之後將不再自動進入收件匣。",
+    "en": "Messages from {0} will no longer skip the inbox."
+  },
+  "以下是原邮件，发送时原样附带（只读）": {
+    "zh-TW": "以下是原郵件，寄送時原樣附上（唯讀）",
+    "en": "Original message below, attached as-is when sending (read-only)"
+  },
+  "加入白名单": {
+    "zh-TW": "加入白名單",
+    "en": "Add to allowlist"
+  },
+  "加入白名单失败": {
+    "zh-TW": "加入白名單失敗",
+    "en": "Failed to add to allowlist"
+  },
+  "后台管理": {
+    "zh-TW": "後台管理",
+    "en": "Admin console"
+  },
+  "域名、邮箱账号、权限组、黑白名单、投递与系统设置都在这里。": {
+    "zh-TW": "網域、郵箱帳號、權限組、黑白名單、投遞與系統設定都在這裡。",
+    "en": "Domains, mailboxes, permission groups, allow/block lists, delivery and system settings all live here."
+  },
+  "复制失败": {
+    "zh-TW": "複製失敗",
+    "en": "Copy failed"
+  },
+  "复制验证码": {
+    "zh-TW": "複製驗證碼",
+    "en": "Copy code"
+  },
+  "已加入白名单": {
+    "zh-TW": "已加入白名單",
+    "en": "Added to allowlist"
+  },
+  "已处理 {0} 封，{1} 封失败，可再试一次": {
+    "zh-TW": "已處理 {0} 封，{1} 封失敗，可再試一次",
+    "en": "Processed {0} messages, {1} failed — you can try again"
+  },
+  "推送会带上整封正文（超过 1300 字会截断并留「打开邮件」）；外文邮件会先翻成中文再发；识别到验证码时还会多一个「复制验证码」按钮，点一下直接进剪贴板。": {
+    "zh-TW": "推播會帶上整封正文（超過 1300 字會截斷並留「開啟郵件」）；外文郵件會先翻成中文再送；辨識到驗證碼時還會多一個「複製驗證碼」按鈕，點一下直接進剪貼簿。",
+    "en": "Pushes include the full body (truncated past 1300 characters with an Open email link); foreign-language mail is translated to Chinese first; when a verification code is detected a Copy code button is added."
+  },
+  "搜索发件人、主题、内容...": {
+    "zh-TW": "搜尋寄件人、主旨、內容...",
+    "en": "Search sender, subject, or content..."
+  },
+  "新增白名单发件人": {
+    "zh-TW": "新增白名單寄件人",
+    "en": "Add allowlisted sender"
+  },
+  "无法识别发件人地址": {
+    "zh-TW": "無法辨識寄件人地址",
+    "en": "Could not detect the sender address"
+  },
+  "暂无白名单发件人": {
+    "zh-TW": "暫無白名單寄件人",
+    "en": "No allowlisted senders yet"
+  },
+  "暂无自定义文件夹": {
+    "zh-TW": "暫無自訂資料夾",
+    "en": "No custom folders yet"
+  },
+  "白名单": {
+    "zh-TW": "白名單",
+    "en": "Allowlist"
+  },
+  "进入后台": {
+    "zh-TW": "進入後台",
+    "en": "Open admin"
+  },
+  "选择一封邮件以查看详情": {
+    "zh-TW": "選擇一封郵件以查看詳情",
+    "en": "Select a message to view details"
+  },
+  "白名单已添加": {
+    "zh-TW": "白名單已新增",
+    "en": "Added to allowlist"
+  },
+  "白名单已移除": {
+    "zh-TW": "白名單已移除",
+    "en": "Removed from allowlist"
+  },
+  "移出白名单？": {
+    "zh-TW": "移出白名單？",
+    "en": "Remove from allowlist?"
+  },
+  "移出白名单": {
+    "zh-TW": "移出白名單",
+    "en": "Remove from allowlist"
+  },
+  "昨天": {
+    "zh-TW": "昨天",
+    "en": "Yesterday"
+  },
+  "已归档": {
+    "zh-TW": "已封存",
+    "en": "Archived"
+  },
+  "移动失败": {
+    "zh-TW": "移動失敗",
+    "en": "Move failed"
+  },
+  "加载下一页失败": {
+    "zh-TW": "載入下一頁失敗",
+    "en": "Failed to load the next page"
+  },
+  "稍后提醒": {
+    "zh-TW": "稍後提醒",
+    "en": "Snoozed"
+  },
+  "切换到浅色": {
+    "zh-TW": "切換到淺色",
+    "en": "Switch to light mode"
+  },
+  "切换到深色": {
+    "zh-TW": "切換到深色",
+    "en": "Switch to dark mode"
+  },
+  "设置": {
+    "zh-TW": "設定",
+    "en": "Settings"
+  },
+  "转发邮件": {
+    "zh-TW": "轉寄郵件",
+    "en": "Forwarded message"
+  },
+  "原始邮件": {
+    "zh-TW": "原始郵件",
+    "en": "Original message"
   }
 }

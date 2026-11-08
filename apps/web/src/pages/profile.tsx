@@ -429,6 +429,7 @@ export function ProfilePage() {
       qc.invalidateQueries({ queryKey: ["contacts"] })
       toast({ title: "联系人已删除" })
     },
+    onError: (error) => toast({ title: "删除失败", description: errorMessage(error) }),
   })
   const createSignature = useMutation({
     mutationFn: (form: FormData) =>
@@ -476,6 +477,7 @@ export function ProfilePage() {
       qc.invalidateQueries({ queryKey: ["signature"] })
       toast({ title: "签名已删除" })
     },
+    onError: (error) => toast({ title: "删除失败", description: errorMessage(error) }),
   })
   const createRule = useMutation({
     mutationFn: (payload: {
@@ -508,6 +510,7 @@ export function ProfilePage() {
       qc.invalidateQueries({ queryKey: ["rules"] })
       toast({ title: "规则已删除" })
     },
+    onError: (error) => toast({ title: "删除失败", description: errorMessage(error) }),
   })
   const saveTelegramSettings = useMutation({
     mutationFn: api.saveTelegramSettings,
@@ -579,6 +582,7 @@ export function ProfilePage() {
       qc.invalidateQueries({ queryKey: ["blocked-senders"] })
       toast({ title: "拦截规则已删除" })
     },
+    onError: (error) => toast({ title: "删除失败", description: errorMessage(error) }),
   })
   const createAllowed = useMutation({
     mutationFn: (form: FormData) =>
@@ -599,6 +603,7 @@ export function ProfilePage() {
       qc.invalidateQueries({ queryKey: ["allowed-senders"] })
       toast({ title: "白名单已移除" })
     },
+    onError: (error) => toast({ title: "移除失败", description: errorMessage(error) }),
   })
   const cleanup = useMutation({
     mutationFn: (target: "empty-trash" | "empty-spam" | "archive-read-inbox") =>

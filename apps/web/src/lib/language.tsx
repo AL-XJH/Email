@@ -32,16 +32,44 @@ if (typeof window !== "undefined") {
 }
 
 export function getInitialLanguage(): Language {
+  // 运行时等价于 LOCKED_LANGUAGE（启动时本地存储里的语言偏好已被清掉）；
+  // 单测会显式切换 activeLanguage 来校验三套词条。
+  return activeLanguage
+}
+
+// 运行时界面语言永远是 LOCKED_LANGUAGE；这个模块变量只服务于
+// 文案表自身（i18n 单测会显式切换它来校验三种语言的词条）。
+function initialActiveLanguage(): Language {
+  if (typeof window === "undefined") return LOCKED_LANGUAGE
+  try {
+    const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY)
+    if (stored === "zh-CN" || stored === "zh-TW" || stored === "en") return stored
+  } catch {
+    /* Storage may be unavailable. */
+  }
   return LOCKED_LANGUAGE
 }
 
-export function setStoredLanguage(_language: Language) {
-  /* 语言已锁定，保留空实现以兼容既有调用点。 */
+let activeLanguage: Language = initialActiveLanguage()
+
+export function setStoredLanguage(language: Language) {
+  activeLanguage = language
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+  } catch {
+    /* Storage may be unavailable. */
+  }
+  try {
+    window.dispatchEvent(new CustomEvent("lanqin:language", { detail: language }))
+  } catch {
+    /* Event dispatch is best-effort. */
+  }
 }
 
 export function useLanguage() {
   // 语言已锁定，不再订阅 storage / lanqin:language 事件。
-  const [language] = React.useState<Language>(getInitialLanguage)
+  const [language] = React.useState<Language>(() => LOCKED_LANGUAGE)
   const setLanguage = React.useCallback((_nextLanguage: Language) => {
     /* 语言已锁定，忽略切换请求。 */
   }, [])
@@ -605,7 +633,7 @@ export function uiMessage(key: string, values?: readonly UiValue[]): UiMessage {
 export function uiText(
   value: UiText,
   values?: readonly UiValue[],
-  language = getInitialLanguage()
+  language = activeLanguage
 ): string {
   if (typeof value !== "string" && value.lines)
     return value.lines.map((line) => uiText(line, undefined, language)).join("\n")

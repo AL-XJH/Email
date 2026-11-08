@@ -740,6 +740,11 @@ func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scan
 			continue
 		}
 		if _, err := os.Stat(it.RawPath); errors.Is(err, os.ErrNotExist) {
+			// 文件不在，但要先确认它所在的目录还在：挂载抖动/目录临时不可见时，
+			// 整个目录下的文件都会报 ErrNotExist，直接删等于把整箱邮件清空。
+			if _, dirErr := os.Stat(filepath.Dir(it.RawPath)); dirErr != nil {
+				continue
+			}
 			missing = append(missing, it)
 		} else if err != nil {
 			rows.Close()

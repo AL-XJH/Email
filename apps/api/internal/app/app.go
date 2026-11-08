@@ -188,6 +188,12 @@ func (a *App) configureSQLite(ctx context.Context) error {
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA busy_timeout = 5000",
+		// 默认缓存只有 2MB，邮件正文+索引很容易把它冲掉；给 64MB。
+		"PRAGMA cache_size = -65536",
+		// 只读页走 mmap，省掉一次内核态拷贝。
+		"PRAGMA mmap_size = 268435456",
+		// 排序/临时表放内存，列表分页和搜索都受益。
+		"PRAGMA temp_store = MEMORY",
 	}
 	for _, q := range pragmas {
 		if _, err := a.db.ExecContext(ctx, q); err != nil {
