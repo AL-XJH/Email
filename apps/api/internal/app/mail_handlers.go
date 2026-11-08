@@ -446,7 +446,10 @@ func (a *App) handleMailThreads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mb := access.Mailbox
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id) ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC`, mb.ID)
+	// 只共享了部分文件夹/标签时，线程列表也必须按同一范围过滤。
+	shareClause, shareArgs := a.mailShareVisibilitySQL(access, "m")
+	threadArgs := append([]any{mb.ID}, shareArgs...)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id) ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC`, threadArgs...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load threads")
 		return
@@ -479,7 +482,19 @@ func (a *App) handleMailMessageThread(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "message not found")
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id=? ORDER BY m.received_at,m.id`, msg.MailboxID, msg.ThreadID)
+	if msg.ThreadID == "" {
+		// thread_id 为空的历史/导入邮件不能当成一条线程，否则会把邮箱里所有无 thread 的邮件都吐出来。
+		respondJSON(w, 200, map[string]any{"items": []MailMessage{*msg}})
+		return
+	}
+	access, accessErr := a.mailboxReadAccessWithID(r, msg.MailboxID)
+	if accessErr != nil {
+		respondError(w, 404, "message not found")
+		return
+	}
+	shareClause, shareArgs := a.mailShareVisibilitySQL(access, "m")
+	threadArgs := append([]any{msg.MailboxID, msg.ThreadID}, shareArgs...)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id=?`+shareClause+` ORDER BY m.received_at,m.id`, threadArgs...)
 	if err != nil {
 		respondError(w, 500, "failed to load thread")
 		return

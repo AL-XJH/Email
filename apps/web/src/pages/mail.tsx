@@ -678,7 +678,10 @@ export function MailPage() {
     publicSettings.data?.mailAutoRefresh && (listAutoRefreshing || inboxProbe.isRefetching)
   )
   function updateCachedMessage(id: string, patch: Partial<MailMessage>) {
-    qc.setQueryData(["message", id], (current: MailMessage | undefined) =>
+    // 详情缓存是 ["message", id, view, externalAccountId]，setQueryData 只认精确 key，
+    // 写 ["message", id] 只会造出一个没人订阅的幽灵条目（乐观更新全部失效、失败回滚也回滚不到）。
+    // 这里用前缀匹配的 setQueriesData。
+    qc.setQueriesData({ queryKey: ["message", id] }, (current: MailMessage | undefined) =>
       current ? { ...current, ...patch } : current
     )
     qc.setQueriesData(
@@ -779,7 +782,7 @@ export function MailPage() {
     },
     onError: (_error, _vars, context) => {
       if (selectedId && context?.prevMessage)
-        qc.setQueryData(["message", selectedId], context.prevMessage)
+        qc.setQueriesData({ queryKey: ["message", selectedId] }, (current: MailMessage | undefined) => context.prevMessage || current)
       qc.invalidateQueries({ queryKey: ["messages"] })
       toast({ title: "添加标签失败" })
     },
@@ -821,7 +824,7 @@ export function MailPage() {
     },
     onError: (_error, _vars, context) => {
       if (selectedId && context?.prevMessage)
-        qc.setQueryData(["message", selectedId], context.prevMessage)
+        qc.setQueriesData({ queryKey: ["message", selectedId] }, (current: MailMessage | undefined) => context.prevMessage || current)
       qc.invalidateQueries({ queryKey: ["messages"] })
       toast({ title: "移除标签失败" })
     },
@@ -895,7 +898,7 @@ export function MailPage() {
     onError: (_error, _id, context) => {
       if (context?.prevLabels) qc.setQueryData(["labels", activeMailboxId], context.prevLabels)
       if (selectedId && context?.prevMessage)
-        qc.setQueryData(["message", selectedId], context.prevMessage)
+        qc.setQueriesData({ queryKey: ["message", selectedId] }, (current: MailMessage | undefined) => context.prevMessage || current)
       qc.invalidateQueries({ queryKey: ["messages"] })
       toast({ title: "删除标签失败" })
     },
@@ -927,6 +930,7 @@ export function MailPage() {
       await qc.invalidateQueries({ queryKey: ["labels"] })
       toast({ title: "已移动" })
     },
+    onError: (error) => toast({ title: "移动失败", description: errorMessage(error) }),
   })
   const cancelScheduledSend = useMutation({
     mutationFn: (item: ScheduledSend) => api.cancelScheduledSend(item.id),
@@ -1591,8 +1595,8 @@ export function MailPage() {
         key: `draft-${detail.id}-${Date.now()}`,
         id: detail.id,
         mailboxId: detail.mailboxId,
-        to: detail.to.join(", "),
-        cc: detail.cc.join(", "),
+        to: (detail.to || []).join(", "),
+        cc: (detail.cc || []).join(", "),
         bcc: (detail.bcc || []).join(", "),
         subject: detail.subject === "(无主题)" ? "" : detail.subject,
         text: detail.bodyText || "",
@@ -6028,7 +6032,11 @@ function ComposeDialog({
       setDraftId("")
       onSent()
     },
-    onError: (e) => toast({ title: "发送失败", description: errorMessage(e) }),
+    onError: (e) => {
+      // 发信失败后必须解掉这个闸门，否则接下来的编辑再也不会自动存草稿。
+      sendStartedRef.current = false
+      toast({ title: "发送失败", description: errorMessage(e) })
+    },
   })
   const scheduleSend = useMutation({
     mutationFn: (payload: SendPayload & { draftId?: string; sendAt: string }) =>
@@ -6046,7 +6054,10 @@ function ComposeDialog({
       ])
       onSent()
     },
-    onError: (e) => toast({ title: "定时发送失败", description: errorMessage(e) }),
+    onError: (e) => {
+      sendStartedRef.current = false
+      toast({ title: "定时发送失败", description: errorMessage(e) })
+    },
   })
 
   React.useEffect(() => {
@@ -6055,10 +6066,12 @@ function ComposeDialog({
     const nextShowCc = Boolean(draft?.cc)
     const nextShowBcc = Boolean(draft?.bcc)
     const nextSplit = splitQuotedComposerHtml(draft?.html || "")
+    // 这里只用草稿本身初始化。默认签名是异步查回来的，以前把它拼进 composerText 又放进
+    // 依赖数组 —— 签名一到就重跑这个 effect，把用户已经敲好的收件人/主题/正文清空。
     const nextBody =
       draft?.html !== undefined
         ? htmlComposerValue(nextSplit.html)
-        : plainTextComposerValue(composerText)
+        : plainTextComposerValue(draft?.text ?? "")
     const nextQuotedHtml = nextSplit.quotedHtml
     const nextQuotedText = nextSplit.quotedText
     lastSavedPayloadRef.current = JSON.stringify({
@@ -6101,7 +6114,6 @@ function ComposeDialog({
     draft?.html,
     draft?.files,
     mailbox?.id,
-    composerText,
   ])
 
   React.useEffect(() => {
@@ -8012,7 +8024,7 @@ function quoteMessage(message: MailMessage, mode: "reply" | "forward" = "reply")
   // 转发和回复用不同的分隔行：收件端只折叠「原始邮件」（回复），
   // 转发是整封内容的主体，折叠了就什么都看不见了。
   const marker = mode === "forward" ? "转发邮件" : "原始邮件"
-  const headers = `----- ${marker} -----\nFrom: ${senderTitle(message)}\nTo: ${message.to.join(", ")}\nDate: ${formatDateTime(message.receivedAt, "zh-CN")}\nSubject: ${message.subject}`
+  const headers = `----- ${marker} -----\nFrom: ${senderTitle(message)}\nTo: ${(message.to || []).join(", ")}\nDate: ${formatDateTime(message.receivedAt, "zh-CN")}\nSubject: ${message.subject}`
   // 有 HTML 就引用 HTML（图文、链接、排版都在），只有纯文本的邮件才退回文本引用
   if (message.bodyHtml && message.bodyHtml.trim()) {
     return quotedHtmlComposerValue(headers, message.bodyHtml, message.bodyText || "")

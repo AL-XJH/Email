@@ -1,0 +1,371 @@
+[
+ {
+  "file": "apps/api/internal/app/app.go",
+  "line": 690,
+  "severity": "P0",
+  "category": "index",
+  "problem": "external_imap_messages 的 local_message_id 是 partial index（WHERE local_message_id <> ''），但所有调用点都写成 em.local_message_id=m.id，SQLite/PG 都无法证明该谓词成立，于是退化成 SCAN em（整表扫）。实测：5 万封邮件 / 3 万行 external_imap_messages 时，同一条 SELECT COUNT(*) ... AND NOT EXISTS(...) 从 10ms（普通索引）变成 28.3s；这条 NOT EXISTS 出现在消息列表(523/584)、文件夹列表(133/134)、统计(741/747/762)、thread(449/478/482)、admin(2157) 所有热路径上，全站按 邮件数×外部IMAP行数 放大。",
+  "evidence": "CREATE INDEX IF NOT EXISTS idx_external_imap_messages_local ON external_imap_messages(local_message_id) WHERE local_message_id <> ''  -- EXPLAIN: CORRELATED SCALAR SUBQUERY -> SCAN em",
+  "fix": "SQLite/PG 去掉 partial 谓词重建（3 万行也就 1-2MB）：DROP INDEX IF EXISTS idx_external_imap_messages_local; CREATE INDEX idx_external_imap_messages_local ON external_imap_messages(local_message_id);  PG 同理（schema_postgres.go:... 同步改）。MySQL 侧本来就是非 partial，无需动。改完用 EXPLAIN QUERY PLAN 确认变成 SEARCH em USING COVERING INDEX。临时止血：在所有 NOT EXISTS 里显式写 em.local_message_id>'' AND em.local_message_id=m.id（SQLite 就能用 partial index）。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 593,
+  "severity": "P0",
+  "category": "index",
+  "problem": "列表主查询每行都带一个相关子查询 (SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id)。messages 上没有任何 thread_id 索引，SQLite 只能用 idx_messages_mailbox_message_id 把整个邮箱范围撸一遍：50 行/页 × 2.5 万行 = 一次翻页约 120 万行访问。实测 30 行/页 442ms，加 (mailbox_id,thread_id) 索引后 0ms。前端 inboxProbe 每 30s 自动轮询一次(mail.tsx:591 refetchIntervalInBackground)，N 个标签页 = N 倍。",
+  "evidence": "query := `SELECT ...,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id) FROM messages m ...` // EXPLAIN: SEARCH mt USING INDEX idx_messages_mailbox_message_id (mailbox_id=?)",
+  "fix": "CREATE INDEX IF NOT EXISTS idx_messages_mailbox_thread ON messages(mailbox_id, thread_id);  （PG/MySQL: CREATE INDEX idx_messages_mailbox_thread ON messages(mailbox_id,thread_id); 三套 schema 都要加）。另外同页的 threadCount 是常量级信息，可以改成一次 GROUP BY 聚合：SELECT thread_id,COUNT(*) FROM messages WHERE mailbox_id=? AND thread_id IN (...) GROUP BY thread_id，或直接在列表查询里 LEFT JOIN 聚合子表，避免逐行相关子查询。同样的子查询还在 449/482/open_api_handlers.go:569。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 449,
+  "severity": "P0",
+  "category": "unbounded",
+  "problem": "handleMailThreads 外层无 LIMIT（返回邮箱里所有 thread），并且用了 m.id=(SELECT m2.id ... ORDER BY received_at DESC LIMIT 1) 这种逐行相关子查询 —— 外层扫整个邮箱，每行再按 received_at 反向扫一遍邮箱。EXPLAIN 确认为 O(邮箱邮件数²)：5 万封邮件约 12 亿次行比较，分钟级；并且 SQLite 只有一个连接，期间全站阻塞。",
+  "evidence": "rows, err := a.db.QueryContext(r.Context(), `SELECT ...,(SELECT COUNT(*) ...) FROM messages m LEFT JOIN folders f ... WHERE m.mailbox_id=? AND ... AND m.id=(SELECT m2.id FROM messages m2 ... ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC`, mb.ID)  // 无 LIMIT",
+  "fix": "改成先聚合再取代表行，一次扫表：SELECT m.* FROM messages m JOIN (SELECT thread_id, MAX(received_at||'|'||id) AS k FROM messages WHERE mailbox_id=? AND NOT EXISTS(...) GROUP BY thread_id) t ON t.k=m.received_at||'|'||m.id ORDER BY m.received_at DESC LIMIT ?; 或者干脆分页（加 nextCursor + LIMIT 50）。前提仍是先建 idx_messages_mailbox_thread。"
+ },
+ {
+  "file": "apps/api/internal/app/threading.go",
+  "line": 51,
+  "severity": "P0",
+  "category": "index",
+  "problem": "线程归属查询对列做了 lower(trim(message_id,'<>'))，任何索引都用不上，退化为按 mailbox_id 扫全邮箱。实测 5 万封邮件单次 5ms；而一封新邮件有几条 References/In-Reply-To 就查几次（循环在 49 行，常见 5-20 次），即每封入站邮件 25-100ms 纯扫描；maildir 首次导入 1 万封 = 50 万次邮箱级扫描。",
+  "evidence": "if err := q.QueryRowContext(ctx, `SELECT COALESCE(thread_id,'') FROM messages WHERE mailbox_id=? AND lower(trim(message_id,'<>'))=? LIMIT 1`, mailboxID, ref).Scan(&existing)  // EXPLAIN: SEARCH messages USING INDEX idx_messages_mailbox_message_id (mailbox_id=?) -> 全邮箱扫",
+  "fix": "二选一：(a) 表达式索引 CREATE INDEX IF NOT EXISTS idx_messages_mailbox_norm_message_id ON messages(mailbox_id, lower(trim(message_id,'<>')));（PG 支持；MySQL 5.7 不支持函数索引，需要 8.0.13+ 或写成生成列 message_id_norm）。(b) 写入时把 message_id 归一化存进新列 message_id_norm 并建 CREATE INDEX idx_messages_mailbox_msgid_norm ON messages(mailbox_id,message_id_norm)，查询改成 WHERE mailbox_id=? AND message_id_norm=?。方案 (b) 三库通用，推荐。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 2534,
+  "severity": "P0",
+  "category": "unbounded",
+  "problem": "ensureMailboxQuotaAvailable 在每次 insertMessage 时都做 SELECT SUM(size_bytes) FROM messages WHERE mailbox_id=?，即把该邮箱所有邮件行读一遍。实测 5 万封 13.6ms/次；导入是串行逐封的，所以导入 N 封到已有 M 封的邮箱是 O(N×M)：往 5 万封的邮箱再导 1 万封 ≈ 5 亿行读，纯扫描就要 2 分钟以上，而且全程占着唯一连接。",
+  "evidence": "if err := rowDB.QueryRowContext(ctx, `SELECT COALESCE(SUM(size_bytes),0) FROM messages WHERE mailbox_id=?`, mailboxID).Scan(&used)  // called from insertMessageWithDB:2479 / local_delivery.go:316",
+  "fix": "维护计数器而不是每次求和：ALTER TABLE mailboxes ADD COLUMN used_bytes BIGINT NOT NULL DEFAULT 0（迁移时回填一次）；insert 时 UPDATE mailboxes SET used_bytes=used_bytes+? WHERE id=?（同事务），delete 时减。或者至少加覆盖索引避免回表：CREATE INDEX IF NOT EXISTS idx_messages_mailbox_size ON messages(mailbox_id, size_bytes);（仍 O(该邮箱邮件数)，但省掉 5 万次回表）。批量导入时改成进循环前求和一次 + 循环内累加。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 542,
+  "severity": "P0",
+  "category": "unbounded",
+  "problem": "搜索长度 <3 rune（或 FTS5 不可用、或跑在 MySQL/PG 上）时走 LIKE 回退，对 body_text 做 LOWER(...) LIKE '%kw%' 全邮箱扫描。中文两字词是默认用法，而 trigram 分词器至少要 3 个字才命中 FTS。实测 2.5 万封 × 20KB 正文热缓存 282ms，冷缓存要把 500MB 正文从磁盘读一遍（1-3s）；MySQL/PG 部署下所有搜索都走这条路。且 SQLite 单连接，一次搜索期间全站排队。",
+  "evidence": "where += ` AND (LOWER(m.subject) LIKE LOWER(?) OR ... OR LOWER(m.body_text) LIKE LOWER(?) OR EXISTS (SELECT 1 FROM attachments sa ...))`  // EXPLAIN: SEARCH m USING INDEX idx_messages_mailbox_folder_received_id -> 逐行读 body_text",
+  "fix": "1) 前端/后端把最短长度降到 FTS5 trigram 的下限并在 <3 字时提示「至少输入 3 个字符」，别静默降级成全表扫；2) FTS 查询拆成 UNION 而不是 OR：SELECT rowid FROM messages_fts WHERE messages_fts MATCH ? UNION SELECT message_id FROM attachments WHERE LOWER(filename) LIKE LOWER(?)，避免 OR 让附件 LIKE 拖垮整条 FTS 计划；3) 非 SQLite 部署给 body_text 建全文索引（PG: to_tsvector + GIN；MySQL: FULLTEXT(body_text) with ngram parser）并把 search 改成 MATCH ... AGAINST；4) 兜底给搜索加请求级超时 + 单用户并发限制。"
+ },
+ {
+  "file": "apps/api/internal/app/maildir_sync.go",
+  "line": 703,
+  "severity": "P0",
+  "category": "unbounded",
+  "problem": "cleanupMissingMaildirMessages 每次同步（默认 5 秒，config.go:10 defaultMaildirScanSeconds=5）都把「所有 raw_path<>'' 且 updated_at<5分钟前」的邮件整行拉出来，即基本等于整个邮件库：5 万封时实测 SQL 35ms + 每行 2-3 次 syscall(filepath.Abs 两次 + os.Stat)≈15 万次 syscall ≈ 100-200ms；100 万封时每 5 秒 ~1 秒（20% 单核），并且全程占着唯一 DB 连接，5 秒一次把全站请求堵住。",
+  "evidence": "rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,raw_path FROM messages WHERE mailbox_id IS NOT NULL AND mailbox_id<>'' AND raw_path<>'' AND updated_at<?`, cutoff)  // 无 LIMIT，每次 tick 全量",
+  "fix": "只扫本轮真正扫过的目录：把 SQL 改成按目录前缀过滤（raw_path LIKE ? OR ...）或把 (updated_at) 的 cutoff 与 scannedDirs 做交集；更好的做法是给 messages 增加 dir_path 列 + INDEX(dir_path)，用 WHERE dir_path IN (?,...) 精确取数。另外整段包一个上限（LIMIT 500/轮）并在 backlog 非空时缩短下次间隔，避免每 5 秒固定成本。"
+ },
+ {
+  "file": "apps/api/internal/app/personal_handlers.go",
+  "line": 1556,
+  "severity": "P0",
+  "category": "n+1",
+  "problem": "applyRuleToExistingMessages（规则勾了「应用到已有邮件」）先无 LIMIT 拉出用户全部邮件 id，然后循环里对每封调 ruleMessageByID（一条 SELECT 且把 body_text 整段读出来，1099 行）+ 可能再查附件名（1120 行）。10 万封 = 10 万次往返 + 10 万段正文进内存，单请求几十秒到几分钟，期间 SQLite 唯一连接被独占，nginx 默认 60s 就 504 但后端还在跑。",
+  "evidence": "rows, err := a.db.QueryContext(ctx, `SELECT m.id FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE `+where, args...)  // 无 LIMIT；循环内 a.ruleMessageByID(ctx, messageID) 逐条查",
+  "fix": "改成集合式：一条 SELECT 带上规则需要的字段（id,mailbox_id,from_addr,to_addrs,cc_addrs,subject,snippet,body_text,size_bytes,received_at）一次性取出需要的列，在 Go 里做匹配（或者把条件翻译成 SQL 的 WHERE），再按 500 一批走事务批量 UPDATE；并把整个任务改成后台 job（带进度），不要卡在 HTTP 请求里。"
+ },
+ {
+  "file": "apps/api/internal/app/maildir_sync.go",
+  "line": 311,
+  "severity": "P1",
+  "category": "memory",
+  "problem": "knownMaildirFiles 把 messages 里所有 raw_path<>'' 的行读成 Go map[string]knownMaildirFile。10 万封 ≈ 20-40MB 常驻（path 字符串 + map 桶开销），100 万封 ≈ 200-400MB；而且只要本轮有任一目录 mtime 变化（170 行 if len(pending)>0）就整表重建一次，默认 5 秒一轮 —— 持续分配 + GC 抖动，随邮件量线性上涨，OOM 风险实在。",
+  "evidence": "rows, err := a.db.QueryContext(ctx, `SELECT COALESCE(mailbox_id,''),COALESCE(folder_id,''),raw_path,is_read,is_starred FROM messages WHERE raw_path<>''`)  // 全量载入 map",
+  "fix": "按需查询替代全量 map：只在扫到某个文件时用 CREATE UNIQUE INDEX idx_messages_mailbox_raw_path 做点查（SELECT mailbox_id,folder_id,is_read,is_starred FROM messages WHERE mailbox_id=? AND raw_path=? AND raw_path<>''），单次 O(log n)；已知文件集合只保留「本轮扫描目录」的子集（SQL 里加 dir 前缀条件）。若坚持缓存，加 LRU 上限（如 5 万条）并复用同一个 map 而不是每轮 new。"
+ },
+ {
+  "file": "apps/api/internal/app/maildir_sync.go",
+  "line": 282,
+  "severity": "P1",
+  "category": "n+1",
+  "problem": "maildirScanTargets 对每个邮箱单独发一条 SELECT ... FROM folders WHERE mailbox_id=?。1000 个邮箱 = 每轮 1000 条查询，5 秒一轮 = 200 qps 的纯开销（SQLite 单连接，直接和用户请求抢锁）；1 万邮箱直接打满。",
+  "evidence": "folders, err := a.maildirFolders(ctx, mb.ID)  // 在 for _, mb := range mailboxes 循环内",
+  "fix": "一次取全量：SELECT mailbox_id,id,name,role FROM folders ORDER BY mailbox_id（或 WHERE mailbox_id IN (...) 分批），在 Go 里按 mailbox_id 建 map 再拼 targets。folders 表本身很小（邮箱数×几个文件夹），一条查询足够。"
+ },
+ {
+  "file": "apps/api/internal/app/maildir_sync.go",
+  "line": 557,
+  "severity": "P1",
+  "category": "index",
+  "problem": "maildirMessageExists 的 WHERE mailbox_id=? AND (raw_path=? OR (folder_id=? AND message_id=?)) 里，raw_path 是 partial index（WHERE raw_path<>''...），SQLite 无法证明 raw_path<>''，OR 又无法用两个索引，最终按 mailbox_id 扫全邮箱。实测 5 万封时每次调用都是全邮箱范围扫描；首次导入 1 万个文件 = 5 亿行访问。",
+  "evidence": "err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id=? AND (raw_path=? OR (folder_id=? AND message_id=? AND message_id <> ''))`, ...)  // EXPLAIN: SEARCH messages USING INDEX idx_messages_mailbox_message_id (mailbox_id=?)",
+  "fix": "拆成两次点查（各自能命中索引）：SELECT 1 FROM messages WHERE mailbox_id=? AND raw_path=? AND raw_path<>'' LIMIT 1; 再 SELECT 1 FROM messages WHERE mailbox_id=? AND message_id=? AND message_id<>'' AND folder_id=? LIMIT 1;（已实测：带上 raw_path<>'' 谓词后计划变成 SEARCH ... USING COVERING INDEX idx_messages_mailbox_raw_path）。再补一条 CREATE INDEX IF NOT EXISTS idx_messages_folder_message_id ON messages(folder_id, message_id) WHERE message_id<>''; 覆盖第二段。566 行的 unregistered 版本同理。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 132,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "文件夹列表用 LEFT JOIN messages 对每个文件夹做 unread/total 聚合，两个表达式里各带一个 NOT EXISTS 子查询（即每行 2 次子查询），全邮箱邮件扫两遍且每行回表取 m.id。实测 5 万封 36.7ms/次；侧边栏每次切文件夹、每次新增邮件都会重拉，且 30s 自动轮询也在打这条。",
+  "evidence": "COALESCE(SUM(CASE WHEN m.is_read=0 AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0) AS unread, COUNT(CASE WHEN NOT EXISTS (... ) THEN m.id END) AS total ... LEFT JOIN messages m ON m.folder_id=f.id GROUP BY f.id",
+  "fix": "1) 先修 external_imap_messages 索引（见 P0 第一条），这条立刻降一个数量级；2) 加覆盖索引让聚合不回表：CREATE INDEX IF NOT EXISTS idx_messages_folder_read_cover ON messages(folder_id, is_read)（已存在 idx_messages_folder_read，但 size/total 仍要回表，若要 global unread 再补 (mailbox_id,folder_id,is_read)）；3) 真正的解是维护 folders.unread_count/total_count 计数器（插入/已读/移动/删除时 +-1），列表直接读列。"
+ },
+ {
+  "file": "apps/api/internal/app/personal_handlers.go",
+  "line": 741,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "handleMailStats 一次请求跑 3 条全量聚合：741 行对用户所有邮件做 4 个 SUM(CASE ...) 且每行一次 NOT EXISTS；747 行把 attachments JOIN messages JOIN mailboxes 全量 count/sum；762 行再按文件夹 LEFT JOIN messages 聚合一遍。同一批数据被扫 3 次，5 万封邮箱实测合计 ~70ms，10 万封以上到 150ms+，而且这是打开邮件页的第一个请求。",
+  "evidence": "SELECT COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0), ... FROM mailboxes mb LEFT JOIN messages m ON m.mailbox_id=mb.id WHERE mb.user_id=?",
+  "fix": "合并成一条按 (mailbox_id,folder_id) 的 GROUP BY，一次扫描算出总数/未读/星标/字节数/附件数；或直接读计数器（mailboxes.used_bytes + folders.unread_count）。附件总量建议单独维护 mailboxes.attachment_bytes，避免每次都 JOIN 全表 attachments。"
+ },
+ {
+  "file": "apps/api/internal/app/personal_handlers.go",
+  "line": 747,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "附件统计 SELECT COUNT(a.id),SUM(a.size_bytes) FROM attachments a JOIN messages m ON m.id=a.message_id JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND NOT EXISTS(...) —— 没有任何 mailbox 侧的选择性索引可用来先缩小 attachments，实际是对 attachments 全表 × 每行两次 JOIN + 一次 NOT EXISTS。10 万附件 ≈ 30-60ms/次，随附件数线性增长。",
+  "evidence": "SELECT COUNT(a.id),COALESCE(SUM(a.size_bytes),0) FROM attachments a JOIN messages m ON m.id=a.message_id JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND NOT EXISTS (...)",
+  "fix": "给 attachments 加 message 维度的冗余列或改用上面第 14 条的合并聚合；最低成本：CREATE INDEX IF NOT EXISTS idx_attachments_message_size ON attachments(message_id, size_bytes)（现有 idx_attachments_message_filename 不含 size_bytes，JOIN 后仍需回表取 size_bytes）。"
+ },
+ {
+  "file": "apps/api/internal/app/admin_handlers.go",
+  "line": 39,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "管理后台概览一次请求串行跑 9 条全表 COUNT/SUM：users×2、domains、mailboxes×2、aliases、messages×2、SUM(size_bytes)。messages 上 COUNT(*) 虽可走覆盖索引，但 WHERE is_read=0 和 SUM(size_bytes) 都要全表/全索引扫描：100 万封 ≈ 每条 50-200ms，9 条串行 0.5-1.5s，且没有任何缓存，后台每刷新一次就再来一遍。",
+  "evidence": "queries := []struct{...}{{`SELECT COUNT(*) FROM users`}, ... {`SELECT COUNT(*) FROM messages WHERE is_read=0`, &out.UnreadMessages}, {`SELECT COALESCE(SUM(size_bytes),0) FROM messages`, &out.StorageBytes}}  // for 循环串行执行",
+  "fix": "合并成一条 SELECT (SELECT COUNT(*) FROM users), (SELECT COUNT(*) FROM messages WHERE is_read=0), ...；更实际的是把 messages 的两个指标做成计数器（全局 messages_total / messages_unread / storage_bytes 存在 system_settings 或一张 stats 表，写入时增减），或给结果加 60s 进程内缓存。另补 CREATE INDEX IF NOT EXISTS idx_messages_is_read ON messages(is_read) WHERE is_read=0（SQLite/PG 部分索引），MySQL 用 (is_read)。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 584,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "每次翻页（含 30s 自动轮询的首屏）都先跑一次 SELECT COUNT(*) FROM messages m WHERE <全部过滤条件>，即把整个文件夹再数一遍，还带 NOT EXISTS。翻到第 10 页等于把前 10 页的扫描重复 10 次；cursor 分页本来就是为了避免 COUNT，这里等于白搭。实测：external_imap_messages 为空时 1.8ms，3 万行时同一条变成约 14s（每页都全量数一次）。",
+  "evidence": "if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM messages m WHERE `+countWhere, countArgs...).Scan(&totalCount); err != nil",
+  "fix": "只在 offset==0 且客户端要 totalCount 时才算；cursor 分页下直接返回空 totalCount（前端已有 nextCursor 驱动）。若必须显示总数，改成维护 folders.total_count 计数器，或对 (mailbox_id,folder_id) 做 60s 缓存。"
+ },
+ {
+  "file": "apps/api/internal/app/personal_handlers.go",
+  "line": 829,
+  "severity": "P1",
+  "category": "n+1",
+  "problem": "清空回收站/垃圾箱先把该文件夹所有 id 拉进内存（无 LIMIT），再逐封 deleteMessage —— 每次 deleteMessage 是 SELECT folder_id + 删附件文件 + DELETE messages + SELECT+UPDATE folders 共约 5 条语句，即 5N 次往返 + N 次文件操作。5 万封 = 25 万条语句，串行几分钟；请求必然在 nginx 60s 超时后失败，但后台还在跑（用户重试会并发叠加）。863 行的 archiveReadInbox 同理（每封一次 moveMessageMaildir = 改名 + 2 条 UPDATE）。",
+  "evidence": "rows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=?`, mailboxID, folderID) ... for _, id := range ids { a.deleteMessage(ctx, id) }",
+  "fix": "改成批量 SQL + 一个事务：先 SELECT raw_path 批量删文件（os.Remove 仍在 Go 里做），再 DELETE FROM messages WHERE mailbox_id=? AND folder_id=?（一条搞定，级联删 attachments），最后 bumpFolderModSeq 一次；分批（每 1000 封一个事务）避免长事务锁库，并把这活丢到后台 job 里、接口立刻返回。"
+ },
+ {
+  "file": "apps/api/internal/app/delivery_queue_handlers.go",
+  "line": 99,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "投递队列页把 send_queue + status_webhook_outbox + telegram_notification_outbox 三张表 UNION ALL，先包一层算 COUNT(*)，再用 ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ? 取页。UNION 子查询里的 CASE 表达式让三张表都全扫，且 UNION 结果无法用索引排序，SQLite 每翻一页都要把全部行物化进临时 B 树并排序：三表各 10 万行 ≈ 每页 300ms+ 且临时文件写盘；OFFSET 越深越慢。",
+  "evidence": "`... FROM send_queue` UNION ALL `... FROM status_webhook_outbox` UNION ALL `... FROM telegram_notification_outbox`; SELECT COUNT(*) FROM (<union>) q WHERE ... ; base+\" ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?\"",
+  "fix": "分表分页（先按 queueType 走单表，各自有索引：send_queue(status,next_attempt_at,created_at)、outbox(delivered_at,next_attempt_at,created_at)），前端用 tab 而不是 all；必须合并时改成游标分页（WHERE (updated_at,id) < (?,?) ORDER BY updated_at DESC LIMIT ?）避免 OFFSET；COUNT 只在首次请求算并缓存 30s。"
+ },
+ {
+  "file": "apps/api/internal/app/telegram_notifications.go",
+  "line": 479,
+  "severity": "P1",
+  "category": "index",
+  "problem": "worker 每 10 秒先跑一条 DELETE FROM telegram_notification_outbox WHERE updated_at<? AND (delivered_at IS NOT NULL OR attempt_count>=?) 做 30 天保留期清理。现有索引是 (delivered_at,next_attempt_at,created_at)，对 updated_at 完全无用 —— 每 10 秒全表扫一次 outbox。10 万行 ≈ 每 10 秒 20-40ms，且这是写事务，会短暂独占写锁。",
+  "evidence": "_, _ = a.db.ExecContext(ctx, `DELETE FROM telegram_notification_outbox WHERE updated_at<? AND (delivered_at IS NOT NULL OR attempt_count>=?)`, ...)",
+  "fix": "CREATE INDEX IF NOT EXISTS idx_telegram_notification_outbox_updated ON telegram_notification_outbox(updated_at);（PG/MySQL 同名）。或者改成按 id 游标分批删（LIMIT 1000 循环），并把清理频率从 10s 降到 1h。"
+ },
+ {
+  "file": "apps/api/internal/app/status_webhook.go",
+  "line": 72,
+  "severity": "P1",
+  "category": "index",
+  "problem": "同样的模式：每轮（ticker）DELETE FROM status_webhook_outbox WHERE updated_at<? AND (...)，索引只有 (delivered_at,next_attempt_at,created_at) 和 (mailbox_id,created_at)，updated_at 上无索引 → 每次全表扫。",
+  "evidence": "_, _ = a.db.ExecContext(ctx, `DELETE FROM status_webhook_outbox WHERE updated_at<? AND (delivered_at IS NOT NULL OR attempt_count>=?)`, ...)",
+  "fix": "CREATE INDEX IF NOT EXISTS idx_status_webhook_outbox_updated ON status_webhook_outbox(updated_at); 或改为按 delivered_at 索引驱动：WHERE delivered_at IS NOT NULL AND delivered_at<?（能走现有索引），未投递的失败件单独按 attempt_count 清理。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 1865,
+  "severity": "P1",
+  "category": "index",
+  "problem": "cleanupStaleEvents 每 10 分钟对 smtp_send_events / imap_events / pop3_events 各跑一条 DELETE ... WHERE created_at<?。这三张表的索引都是 (user_id, created_at)，没有单独的 created_at，DELETE 无法走索引 → 每 10 分钟把三张表全扫一遍。IMAP 客户端每分钟轮询一次就会产生一行，10 万行 × 3 表 ≈ 每 10 分钟 100-200ms 的纯扫描 + 写放大。",
+  "evidence": "result, err := a.db.ExecContext(ctx, \"DELETE FROM \"+table+\" WHERE created_at<?\", cutoff)  // table ∈ {smtp_send_events, imap_events, pop3_events}",
+  "fix": "CREATE INDEX IF NOT EXISTS idx_smtp_send_events_created ON smtp_send_events(created_at); CREATE INDEX IF NOT EXISTS idx_imap_events_created ON imap_events(created_at); CREATE INDEX IF NOT EXISTS idx_pop3_events_created ON pop3_events(created_at);（MySQL 需给列长一点或改用 (created_at,id)）。"
+ },
+ {
+  "file": "apps/api/internal/app/permissions.go",
+  "line": 681,
+  "severity": "P1",
+  "category": "index",
+  "problem": "attachMailboxQuotaCounters 在每一个已认证请求上执行 (SELECT COUNT(*) FROM mailboxes WHERE user_id=users.id)，而 mailboxes 上只有 UNIQUE(address) 和 UNIQUE(domain_id,local_part)，user_id 无索引 → 每个请求全表扫 mailboxes。实测 EXPLAIN 为 SCAN mailboxes。500 个邮箱 ≈ 0.05ms/请求（还行），5 万个邮箱 ≈ 5ms/请求，100 rps 就吃掉半个核；配合单连接 SQLite 会把所有请求串起来。",
+  "evidence": "`SELECT mailboxes_created_total, mailbox_quota_bonus, (SELECT COUNT(*) FROM mailboxes WHERE user_id=users.id) FROM users WHERE id=?`  // EXPLAIN: SCAN mailboxes",
+  "fix": "CREATE INDEX IF NOT EXISTS idx_mailboxes_user ON mailboxes(user_id);（PG/MySQL 同名，schema_postgres.go 的 mailboxes 表后加一条 CREATE INDEX idx_mailboxes_user ON mailboxes(user_id)）。另外这个计数完全没必要每请求算，可以只在 /api/mailboxes 与配额校验路径上算，或加进 users 表计数器。"
+ },
+ {
+  "file": "apps/api/internal/app/admin_handlers.go",
+  "line": 786,
+  "severity": "P1",
+  "category": "unbounded",
+  "problem": "管理员消息搜索在 q<3 字或非 SQLite 时对全库 messages（不带 mailbox 条件时）做 9 个 LOWER(...) LIKE '%q%'，包含 body_text 与 4 个地址列。100 万封 × 20KB 正文 = 20GB 顺序读，单次查询 10s-1min；期间 SQLite 单连接被独占，全站不可用。",
+  "evidence": "where = append(where, \"(LOWER(m.subject) LIKE LOWER(?) OR ... OR LOWER(m.body_text) LIKE LOWER(?) OR LOWER(mb.address) LIKE LOWER(?) OR LOWER(u.email) LIKE LOWER(?))\")",
+  "fix": "与 P0 那条搜索同样处理（FTS / 至少 3 字 / 非 SQLite 用全文索引）；管理端再加硬约束：不带 mailboxId 的模糊搜索强制要求 3 字以上并 LIMIT；把 9 个 LIKE 拆成两段查询 UNION（先 FTS 拿 rowid，再按地址 LIKE 取并集）。"
+ },
+ {
+  "file": "deploy/all-in-one/nginx.conf",
+  "line": 1,
+  "severity": "P1",
+  "category": "config",
+  "problem": "整个 nginx 配置没有 gzip（也没有 brotli / gzip_static）。前端产物 apps/web/dist 共 1.7MB，其中 mail-*.js 587KB、button-*.js 361KB、index css 73KB；不压缩时首屏要传 1.6MB，gzip 后约 400KB（-75%）。API 的 JSON 列表（50 封邮件约 60-120KB）同样不压缩。移动网络下这意味着 3-8 秒的额外等待。",
+  "evidence": "server { listen 80; add_header ... ; client_max_body_size 64m; root /usr/share/nginx/html; }  // 全文无 gzip on / gzip_types / brotli",
+  "fix": "在 server 块外（http 级）加：gzip on; gzip_comp_level 5; gzip_min_length 1024; gzip_vary on; gzip_proxied any; gzip_types text/plain text/css application/javascript application/json application/xml image/svg+xml; 若镜像里装了 ngx_brotli 再加 brotli on; brotli_types ...。另建议构建时开 gzip_static（vite-plugin-compression 生成 .gz）。deploy/nginx/default.conf 同样需要（静态资源在 web 容器，那份配置连 root 都没有）。"
+ },
+ {
+  "file": "deploy/all-in-one/nginx.conf",
+  "line": 43,
+  "severity": "P1",
+  "category": "config",
+  "problem": "location / 直接 try_files 返回 index.html 和 assets，没有任何 expires/Cache-Control。Vite 产物文件名带内容 hash（mail-D0BqOhI4.js），本可以 immutable 缓存一年；现在只靠 ETag 走 304，每次冷启动/换网络都要重新验证 5-8 个请求，且 index.html 也可能被中间缓存。",
+  "evidence": "location / { try_files $uri $uri/ /index.html; }  // 无 expires / add_header Cache-Control",
+  "fix": "location /assets/ { expires 1y; add_header Cache-Control \"public, immutable\"; try_files $uri =404; } location = /index.html { add_header Cache-Control \"no-cache\"; } location / { try_files $uri $uri/ /index.html; }  并加 sendfile on; tcp_nopush on; open_file_cache max=10000 inactive=60s;"
+ },
+ {
+  "file": "deploy/all-in-one/nginx.conf",
+  "line": 19,
+  "severity": "P1",
+  "category": "config",
+  "problem": "/api/ 反向代理到 Go 时：proxy_http_version 1.1 但没清 Connection 头、也没有 upstream keepalive 块 → 每个 API 请求都新建一条到 127.0.0.1:8080 的 TCP 连接（TIME_WAIT 堆积 + 每请求多一次握手）；另外默认 proxy_buffering on 会把 /api/events 的 SSE 流缓存起来，事件延迟/成批到达，前端实时刷新变成 25s 心跳驱动；proxy_read_timeout 默认 60s，而后端有同步 IMAP、清空回收站这类分钟级请求，必然 504（且后端继续跑）。",
+  "evidence": "location /api/ { proxy_pass http://127.0.0.1:8080/api/; proxy_http_version 1.1; proxy_set_header Host $host; ... }",
+  "fix": "upstream lanqin_api { server 127.0.0.1:8080; keepalive 32; } 然后 proxy_pass http://lanqin_api/api/; proxy_set_header Connection \"\"; 单独给 SSE：location = /api/events { proxy_pass ...; proxy_buffering off; proxy_cache off; proxy_read_timeout 1h; proxy_set_header Connection \"\"; }；给长任务接口 proxy_read_timeout 300s 或把清空/规则应用改成 202 + 后台 job。proxy_request_buffering off 也可以省掉 64MB 上传的落盘拷贝。"
+ },
+ {
+  "file": "apps/api/internal/app/app.go",
+  "line": 147,
+  "severity": "P1",
+  "category": "config",
+  "problem": "SQLite 只设了 foreign_keys / journal_mode=WAL / busy_timeout，没设 synchronous、cache_size、temp_store、mmap_size。默认 synchronous=FULL（WAL 下每次 commit 都 fsync WAL），默认 page cache 只有 2MB —— 100 万封邮件的库（几 GB）等于每次都从磁盘读页。实测有索引的列表查询在本机也要 10-40ms，很大一部分是缺页。",
+  "evidence": "pragmas := []string{\"PRAGMA foreign_keys = ON\", \"PRAGMA journal_mode = WAL\", \"PRAGMA busy_timeout = 5000\"}",
+  "fix": "再加：PRAGMA synchronous = NORMAL（WAL 下官方推荐，掉电最多丢最后一个事务，不会损坏库）；PRAGMA cache_size = -131072（128MB）；PRAGMA temp_store = MEMORY; PRAGMA mmap_size = 268435456; PRAGMA wal_autocheckpoint = 2000; 并在启动后跑一次 PRAGMA optimize（或定期 ANALYZE），否则新加的索引长期没有统计信息。"
+ },
+ {
+  "file": "apps/api/internal/app/database.go",
+  "line": 75,
+  "severity": "P1",
+  "category": "config",
+  "problem": "SQLite 用 db.SetMaxOpenConns(1) 单连接 + SetMaxIdleConns(1)。这对写串行是对的，但把读也一起串了：任何一个慢查询（上面列的 COUNT(*)、LIKE 搜索、maildir 全表扫、清空回收站）都会让所有用户的所有请求排队，P99 直接被最慢查询决定。本地实测单条 30 行列表在缺索引时 442ms，等于全站 442ms 卡顿。",
+  "evidence": "// SQLite serializes writes. A single shared connection also ensures that connection-scoped PRAGMAs apply consistently.\ndb.SetMaxOpenConns(1)",
+  "fix": "改用 WAL 下的「1 写 + N 读」：开两个 *sql.DB（写连接 MaxOpenConns=1，读连接 MaxOpenConns=4-8 且每个连接执行一次 PRAGMA query_only），或让 MaxOpenConns=4 并把所有写操作用应用层 mutex/单连接池隔离；modernc sqlite 支持多连接 + WAL 并发读。前提是先把 P0 的慢查询修掉，否则多连接只是把排队变成锁竞争。"
+ },
+ {
+  "file": "apps/api/internal/app/admin_handlers.go",
+  "line": 51,
+  "severity": "P2",
+  "category": "unbounded",
+  "problem": "管理员用户列表无 LIMIT，并用 GROUP_CONCAT(mb.address) 把所有邮箱地址拼进一行，外加 COUNT 聚合。1 万用户 × 3 邮箱 ≈ 30 万字符结果集 + 全表 mailboxes 聚合；用户量再大就是几百 ms 和几十 MB 的 JSON。",
+  "evidence": "`SELECT u.id,...,COUNT(mb.id),COALESCE(GROUP_CONCAT(mb.address), '') FROM users u LEFT JOIN mailboxes mb ON mb.user_id=u.id GROUP BY ... ORDER BY u.created_at DESC`  // 无 LIMIT",
+  "fix": "加分页（LIMIT/OFFSET 或 cursor）+ 单独的 /api/admin/users/{id}/mailboxes 接口按需取；列表只返回 mailboxCount，不要拼地址串。1097 行的单用户版本可以保留 GROUP_CONCAT（单行开销可忽略）。"
+ },
+ {
+  "file": "apps/api/internal/app/external_imap.go",
+  "line": 607,
+  "severity": "P2",
+  "category": "n+1",
+  "problem": "外部 IMAP 文件夹列表对每个远程文件夹单独跑一条 COUNT/SUM 关联 external_imap_messages + messages。典型账号 20-50 个文件夹 = 20-50 条查询，每条都要走 messages 的 mailbox_id 范围；打开一次外部邮箱面板就是几十条串行往返。",
+  "evidence": "for _, folder := range folders { ... _ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0) FROM external_imap_messages em JOIN messages m ON m.id=em.local_message_id WHERE em.account_id=? AND em.remote_folder=? AND m.mailbox_id=?`, ...) }",
+  "fix": "一条查询搞定：SELECT em.remote_folder, COUNT(m.id), SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END) FROM external_imap_messages em JOIN messages m ON m.id=em.local_message_id WHERE em.account_id=? AND m.mailbox_id=? GROUP BY em.remote_folder，再在 Go 里映射到 folders。配合 idx_external_imap_messages_local 的修复效果更明显。"
+ },
+ {
+  "file": "apps/api/internal/app/permission_group_handlers.go",
+  "line": 79,
+  "severity": "P2",
+  "category": "n+1",
+  "problem": "权限组列表对每个组单独 SELECT COUNT(*) FROM user_permission_groups WHERE group_id=?，循环里发 N 条（组数一般 <50，但仍是 N+1，且每次都进 SQLite 的单连接队列）。",
+  "evidence": "for i := range items { if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM user_permission_groups WHERE group_id=?`, items[i].ID).Scan(&count); ... }",
+  "fix": "一条 GROUP BY 取全部：SELECT group_id,COUNT(*) FROM user_permission_groups GROUP BY group_id（走 idx_user_permission_groups_group 的覆盖索引），然后在 Go 里按 group_id 填数。permissions.go:1127 已经是 JOIN 聚合写法，可直接照抄。"
+ },
+ {
+  "file": "apps/api/internal/app/mail_handlers.go",
+  "line": 2359,
+  "severity": "P2",
+  "category": "n+1",
+  "problem": "usersForMailboxes 对每个变更邮箱发 2 条查询（owner + 共享接收者），再逐条 rows.Close。maildir 一轮同步可能触及上百个邮箱 → 200+ 条查询，只为了给 SSE 找推送对象。",
+  "evidence": "for _, mailboxID := range mailboxIDs { ... QueryRow(`SELECT user_id FROM mailboxes WHERE id=?`) ... rows, err := a.db.QueryContext(`SELECT shared_with_user_id FROM mailbox_shares WHERE mailbox_id=? ...`) }",
+  "fix": "批量：SELECT id,user_id FROM mailboxes WHERE id IN (?,...); SELECT mailbox_id,shared_with_user_id FROM mailbox_shares WHERE mailbox_id IN (?,...) AND revoked_at IS NULL AND left_at IS NULL AND (expires_at IS NULL OR expires_at>?)（IN 列表按 500 一批，SQLite 变量上限 999）。"
+ },
+ {
+  "file": "apps/api/internal/app/personal_handlers.go",
+  "line": 1041,
+  "severity": "P2",
+  "category": "n+1",
+  "problem": "applyInboundControls 在 1006 行已经调过 senderBlocked，1041 行又原样再调一次（同样的 user_id/mailbox_id/from），每封入站邮件白多一次查询；再叠加 999 行取 user_id、1002 行 senderAllowed、1010 行取规则、1023 行取整封（含 body_text）—— 单封入站邮件 6-7 条查询。",
+  "evidence": "if a.senderBlocked(ctx, userID, mailboxID, from) { a.moveBlockedMessageToSpam(ctx, messageID, mailboxID) }  // 与 1006 行重复",
+  "fix": "把 blocked/allowed 的结果存成局部变量（blocked := a.senderBlocked(...) 只算一次）；再进一步把 user_id / allowed / blocked / rules 合并成一次查询（rules 用 LEFT JOIN 或直接缓存 per-mailbox 规则 30s）。"
+ },
+ {
+  "file": "apps/api/internal/app/app.go",
+  "line": 1042,
+  "severity": "P2",
+  "category": "memory",
+  "problem": "rebuildHTMLOnlyMessageSnippets 在每次进程启动时（migrate() 里无条件调用）执行 SELECT id,body_html,snippet FROM messages WHERE trim(body_text)='' AND body_html<>''，把每封纯 HTML 邮件的整段 body_html 读进内存再算 snippet。10 万封纯 HTML 邮件 × 50KB = 5GB 顺序读 + 峰值每行一份 body；trim(body_text)='' 也无法用索引，全表扫。重启/滚动升级时启动时间被拖到分钟级。",
+  "evidence": "rows, err := a.db.QueryContext(ctx, `SELECT id,body_html,snippet FROM messages WHERE trim(body_text)='' AND body_html<>''`)",
+  "fix": "加幂等标记（system_settings 里记一个 schema 版本，跑过一次就跳过），或改成后台 job 分批（WHERE id>? ORDER BY id LIMIT 200）；SQL 侧先用 length(body_html)>0 之类可索引条件收窄（CREATE INDEX ... ON messages(id) WHERE body_html<>'' 意义不大，直接用版本门控更实际）。"
+ },
+ {
+  "file": "apps/api/internal/app/app.go",
+  "line": 894,
+  "severity": "P2",
+  "category": "unbounded",
+  "problem": "migrateMessageThreads 回填把 thread_id='' 的所有邮件读进内存（无 LIMIT），然后逐行 UPDATE（每条独立隐式事务，synchronous=FULL 下每次都 fsync）。100 万封老库首次升级 = 1M 次 fsync，启动期几十分钟到几小时，期间服务不可用。",
+  "evidence": "rows, err = a.db.QueryContext(ctx, `SELECT id,message_id,thread_id FROM messages WHERE thread_id='' ORDER BY received_at,id`) ... for _, item := range items { a.db.ExecContext(ctx, `UPDATE messages SET thread_id=? WHERE id=?`, ...) }",
+  "fix": "分批 + 事务：每 1000 行一个 tx，用 WHERE id IN (...) 一次 UPDATE（thread_id 可以在 Go 里算好）；或纯 SQL：UPDATE messages SET thread_id=lower(trim(message_id,'<>')) WHERE thread_id='' AND message_id<>''（一条语句，SQLite/PG 都支持），再单独处理 message_id 为空的行。"
+ },
+ {
+  "file": "apps/api/internal/app/imap_metadata.go",
+  "line": 157,
+  "severity": "P2",
+  "category": "n+1",
+  "problem": "backfillFolderIMAPUIDs 对每个 imap_uid=0 的邮件调一次 nextIMAPMetadata（SELECT folders + UPDATE folders）再 UPDATE messages，即 3 条语句/封、无事务。10 万封 = 30 万条语句 + 10 万次 folders 写（每次都是写事务），启动期把库写热。",
+  "evidence": "for _, messageID := range messageIDs { meta, err := a.nextIMAPMetadata(ctx, a.db, folderID); ... a.db.ExecContext(ctx, `UPDATE messages SET imap_uid=?,imap_modseq=? WHERE id=?`, ...) }",
+  "fix": "一次性算号：取 max(imap_uid)+1 作为起点，在 Go 里连续编号，然后一个事务里批量 UPDATE（或按 (folder_id,imap_uid) 唯一索引冲突重试）；folders.uid_next 只在最后 UPDATE 一次。"
+ },
+ {
+  "file": "apps/api/internal/app/imap_metadata.go",
+  "line": 198,
+  "severity": "P2",
+  "category": "config",
+  "problem": "nextIMAPMetadata 用全局 imapMetadataMu 串行化「读 uid_next → 写 uid_next+1」，而它在每封邮件 insert 的路径上（insertMessageWithDB:2491）。也就是说所有邮箱的所有入站邮件/导入在 UID 分配处排队，并且每封邮件多一次 folders 写事务（SQLite 写锁）。吞吐上限被这把锁 + fsync 钉死。",
+  "evidence": "imapMetadataMu.Lock(); defer imapMetadataMu.Unlock(); rowDB.QueryRowContext(`SELECT uid_next,highest_modseq FROM folders WHERE id=?`) ... db.ExecContext(`UPDATE folders SET uid_next=?,highest_modseq=...`)",
+  "fix": "改成一条原子 UPDATE ... RETURNING（PG/SQLite 3.35+ 都支持）：UPDATE folders SET uid_next=uid_next+1, highest_modseq=highest_modseq+1 WHERE id=? RETURNING uid_next-1, highest_modseq；MySQL 用 UPDATE ... 然后 SELECT ... FOR UPDATE 或 LAST_INSERT_ID 技巧。这样锁粒度降到行级，可以去掉全局 mutex。"
+ },
+ {
+  "file": "apps/api/internal/app/send_queue.go",
+  "line": 204,
+  "severity": "P2",
+  "category": "memory",
+  "problem": "recoverStaleSendQueueItems 一次 SELECT 就把 20 条队列记录的 mime_base64 全部读出来并逐条 base64 解码到内存（225 行）。单封上限 35MB（config.go:107 SubmissionMaxMessageMB），最坏情况 20×35MB×1.33 ≈ 930MB 常驻，直接 OOM。另外每条还 fs 检查两次 delivered marker（217 和 237 行）。",
+  "evidence": "`SELECT id,...,mime_base64,... FROM send_queue WHERE status=? AND ... LIMIT 20` ... mimeBytes, err := base64.StdEncoding.DecodeString(mimeBase64)",
+  "fix": "先只 SELECT id（轻量），确认需要恢复后再逐条按 id 取 mime_base64 并立刻发送/丢弃（峰值 1 封）；或把 MIME 正文从 DB 挪到磁盘（send_queue/<id>.eml），DB 只存路径。顺手去掉重复的 hasSendQueueDeliveredMarker 调用。"
+ },
+ {
+  "file": "apps/api/internal/app/app.go",
+  "line": 1309,
+  "severity": "P2",
+  "category": "memory",
+  "problem": "migrateLegacyBootstrapMailbox 对每个历史 admin 邮箱 SELECT id FROM messages WHERE mailbox_id=? 把全部 id 拉进切片再逐个删除（无 LIMIT、无事务）。虽然只在启动时对极少数遗留邮箱生效，但一旦命中大邮箱就是全量 id 驻留内存 + N 次 deleteMessage（每封 5 条语句）。",
+  "evidence": "messageRows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id=?`, item.id) ... for _, messageID := range messageIDs { a.deleteMessage(ctx, messageID) }",
+  "fix": "直接 DELETE FROM messages WHERE mailbox_id=?（级联删 attachments），文件清理单独走一次 SELECT raw_path 批量 os.Remove；或复用 deleteMessagesInFolder 的批量化实现。"
+ },
+ {
+  "file": "apps/api/cmd/server/main.go",
+  "line": 30,
+  "severity": "P2",
+  "category": "config",
+  "problem": "http.Server 只设了 ReadHeaderTimeout，没有 IdleTimeout / ReadTimeout。keep-alive 连接永不过期，慢客户端可以长期占住连接（每连接一个 goroutine + 16KB 左右缓冲），nginx→Go 的池化连接也会一直挂着；SSE 最多 8 条/用户 × 用户数 也是常驻连接。",
+  "evidence": "server := &http.Server{Addr: cfg.Addr, Handler: svc.Router(), ReadHeaderTimeout: 10 * time.Second}",
+  "fix": "加 IdleTimeout: 120 * time.Second（注意不要设 WriteTimeout，会掐断 /api/events 的 SSE；如需总超时，在 SSE handler 里用 http.ResponseController 单独延长）。同时在 nginx 侧配 keepalive_timeout 与 limit_conn 兜底。"
+ },
+ {
+  "file": "deploy/all-in-one/Dockerfile",
+  "line": 12,
+  "severity": "P2",
+  "category": "config",
+  "problem": "生产镜像的 go build 没有 -ldflags=\"-s -w\"，二进制里保留完整 DWARF 符号（通常 30-40% 体积，几十 MB），镜像层更大、冷启动拷贝更慢；api.Dockerfile 同样。Dockerfile.optimized 里反而有。属于构建配置不一致的低危项。",
+  "evidence": "RUN --mount=type=cache,target=/root/.cache/go-build \\\n    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/lanqin-api ./cmd/server",
+  "fix": "改成 go build -trimpath -ldflags=\"-s -w\" -o /out/lanqin-api ./cmd/server（api.Dockerfile 同步）。注意 -s -w 会让 pprof 符号变差点，若要保留可观测性就只加 -w。另外 Dockerfile.optimized 里 supervisord 配了 redis 程序但没装 redis-server，镜像起不来 —— 顺手对齐一下。"
+ }
+]

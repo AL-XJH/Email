@@ -1557,13 +1557,29 @@ func (a *App) applyRuleToExistingMessages(ctx context.Context, userID, mailboxID
 	if err != nil {
 		return 0, err
 	}
-	messages := []ruleMessage{}
-	var count int64
+	// 先把 id 收完、关掉游标，再逐条查详情。
+	//
+	// SQLite 只有一条连接（database.go 里 SetMaxOpenConns(1)），游标没关就再发
+	// 一条查询会永远拿不到连接：这里以前是在 rows.Next() 循环里调 ruleMessageByID，
+	// 等于把整个进程的数据库连接占死，任何「应用到已有邮件」的规则都能让站点挂住。
+	ids := make([]string, 0, 64)
 	for rows.Next() {
 		var messageID string
 		if err := rows.Scan(&messageID); err != nil {
-			return count, err
+			rows.Close()
+			return 0, err
 		}
+		ids = append(ids, messageID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	messages := make([]ruleMessage, 0, len(ids))
+	var count int64
+	for _, messageID := range ids {
 		msg, ok := a.ruleMessageByID(ctx, messageID)
 		if !ok {
 			continue
@@ -1573,10 +1589,6 @@ func (a *App) applyRuleToExistingMessages(ctx context.Context, userID, mailboxID
 		}
 		messages = append(messages, msg)
 	}
-	if err := rows.Err(); err != nil {
-		return count, err
-	}
-	rows.Close()
 	for _, msg := range messages {
 		if err := a.applyRuleActions(ctx, msg.MailboxID, msg.ID, rule.ID, existingActions, false); err != nil {
 			return count, err

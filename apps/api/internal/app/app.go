@@ -480,6 +480,7 @@ func (a *App) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_messages_received_id ON messages(received_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_id ON messages(mailbox_id, received_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_folder_read ON messages(folder_id, is_read)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_thread ON messages(mailbox_id, thread_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_starred_received_id ON messages(mailbox_id, received_at DESC, id DESC) WHERE is_starred=1`,
 		`DROP INDEX IF EXISTS idx_messages_mailbox_folder_received`,
 		`DROP INDEX IF EXISTS idx_messages_mailbox_starred_received`,
@@ -805,6 +806,9 @@ func (a *App) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := a.migrateMessagesFromName(ctx); err != nil {
+		return err
+	}
+	if err := a.migrateHotPathIndexes(ctx); err != nil {
 		return err
 	}
 	if err := a.migrateMessageAuthentication(ctx); err != nil {
@@ -1563,6 +1567,31 @@ func (a *App) migrateMessagesForUnregistered(ctx context.Context) error {
 	return nil
 }
 
+// migrateHotPathIndexes 补上热路径缺的索引。
+//
+// 这些索引必须等所有表都建好之后再建（external_imap_messages / 各种 outbox 在
+// 早期 schema 列表里还没出现），所以单独一步跑；全部 IF NOT EXISTS，每次启动都执行也没成本。
+func (a *App) migrateHotPathIndexes(ctx context.Context) error {
+	statements := []string{
+		// 列表每行都带 thread COUNT 子查询，没有这个索引时按邮箱全扫。
+		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_thread ON messages(mailbox_id, thread_id)`,
+		// 每个已认证请求都会按 user_id 查一次邮箱。
+		`CREATE INDEX IF NOT EXISTS idx_mailboxes_user ON mailboxes(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_attachments_message_size ON attachments(message_id, size_bytes)`,
+		`CREATE INDEX IF NOT EXISTS idx_telegram_outbox_updated ON telegram_notification_outbox(updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_status_outbox_updated ON status_webhook_outbox(updated_at)`,
+		// 原来的 local_message_id 索引带 WHERE local_message_id<>''，而所有查询都写成
+		// em.local_message_id=m.id，计划器证明不了这个谓词成立，索引完全用不上（实测 10ms → 28s）。
+		`CREATE INDEX IF NOT EXISTS idx_external_imap_messages_local_all ON external_imap_messages(local_message_id)`,
+	}
+	for _, stmt := range statements {
+		if _, err := a.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) migrateMessagesFromName(ctx context.Context) error {
 	rows, err := a.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
 	if err != nil {
@@ -1600,6 +1629,12 @@ func messageIndexes() []string {
 		`CREATE INDEX IF NOT EXISTS idx_messages_received_id ON messages(received_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_id ON messages(mailbox_id, received_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_folder_read ON messages(folder_id, is_read)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_thread ON messages(mailbox_id, thread_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_mailboxes_user ON mailboxes(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_attachments_message_size ON attachments(message_id, size_bytes)`,
+		`CREATE INDEX IF NOT EXISTS idx_telegram_outbox_updated ON telegram_notification_outbox(updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_status_outbox_updated ON status_webhook_outbox(updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_external_imap_messages_local_all ON external_imap_messages(local_message_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_starred_received_id ON messages(mailbox_id, received_at DESC, id DESC) WHERE is_starred=1`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_message_id ON messages(mailbox_id, message_id) WHERE message_id<>''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_mailbox_raw_path ON messages(mailbox_id, raw_path) WHERE raw_path <> '' AND mailbox_id IS NOT NULL`,

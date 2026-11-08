@@ -3,8 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
-	"math"
-	"sync"
+	"fmt"
 	"time"
 )
 
@@ -179,14 +178,25 @@ func (a *App) newUIDValidity() int64 {
 	return value
 }
 
-// imapMetadataMu 串行化 UID / MODSEQ 的分配。
-//
-// 这里是「读 uid_next → 写 uid_next+1 → 把读到的值写到 messages」三步，
-// 不在一个事务里。前端批量操作是 4 个并发请求，两个请求会读到同一个 uid_next，
-// 于是两封邮件拿到同一个 IMAP UID，第二个写 messages 时撞唯一索引，
-// 整批报「批量操作失败」——但前面几封其实已经删掉了，重试一次又「成功」。
-var imapMetadataMu sync.Mutex
+// imapClampSQL 返回该驱动下「不小于某值」的标量写法。
+// SQLite 是 MAX(a,b)（两参数版是标量函数），MySQL/Postgres 是 GREATEST(a,b)。
+func imapClampSQL(driver, column string, floor int) string {
+	if driver == databaseDriverSQLite {
+		return fmt.Sprintf("MAX(%s,%d)", column, floor)
+	}
+	return fmt.Sprintf("GREATEST(%s,%d)", column, floor)
+}
 
+// nextIMAPMetadata 领取一个新的 IMAP UID 与 MODSEQ。
+//
+// 老实现是「读 uid_next → 写回 +1 → 把读到的值写进 messages」三步，外面套一把进程内
+// 互斥锁。两个问题：
+//  1. 并发路径上仍然可能重复发号（批量删除第一次必然报错）；
+//  2. 锁会横在事务中间——事务占着唯一的 SQLite 连接等锁、持锁的协程等连接，互等之后
+//     整个进程的数据库连接被永久占死（删文件夹 / 发信事务 + 任意标记已读即可触发）。
+//
+// 现在 SQLite/Postgres 用单条 UPDATE ... RETURNING，既不发重号也没有锁；MySQL 没有
+// RETURNING，用事务内 SELECT ... FOR UPDATE 串行化。
 func (a *App) nextIMAPMetadata(ctx context.Context, db dbExecutor, folderID string) (imapMetadata, error) {
 	if folderID == "" {
 		return imapMetadata{}, nil
@@ -195,25 +205,50 @@ func (a *App) nextIMAPMetadata(ctx context.Context, db dbExecutor, folderID stri
 	if !ok {
 		return imapMetadata{}, nil
 	}
-	imapMetadataMu.Lock()
-	defer imapMetadataMu.Unlock()
-	var nextUID, highestModSeq int64
-	err := rowDB.QueryRowContext(ctx, `SELECT uid_next,highest_modseq FROM folders WHERE id=?`, folderID).Scan(&nextUID, &highestModSeq)
-	if err != nil {
+	if a.cfg.DBDriver == databaseDriverMySQL {
+		return a.nextIMAPMetadataMySQL(ctx, db, rowDB, folderID)
+	}
+	var meta imapMetadata
+	query := `UPDATE folders SET uid_next=` + imapClampSQL(a.cfg.DBDriver, "uid_next", 1) + `+1,` +
+		` highest_modseq=` + imapClampSQL(a.cfg.DBDriver, "highest_modseq", 0) + `+1` +
+		` WHERE id=? RETURNING uid_next-1, highest_modseq`
+	if err := rowDB.QueryRowContext(ctx, query, folderID).Scan(&meta.UID, &meta.ModSeq); err != nil {
 		return imapMetadata{}, err
 	}
-	if nextUID < 1 {
-		nextUID = 1
+	return meta, nil
+}
+
+// nextIMAPMetadataMySQL 在没有 RETURNING 的驱动上靠行锁串行化领取。
+func (a *App) nextIMAPMetadataMySQL(ctx context.Context, db dbExecutor, rowDB dbQueryer, folderID string) (imapMetadata, error) {
+	exec := db
+	var ownTx *sql.Tx
+	if sqlDB, ok := db.(*sql.DB); ok {
+		tx, err := sqlDB.BeginTx(ctx, nil)
+		if err != nil {
+			return imapMetadata{}, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		ownTx, exec = tx, tx
 	}
-	nextModSeq := highestModSeq + 1
-	if nextModSeq < 1 {
-		nextModSeq = 1
-	}
-	query := `UPDATE folders SET uid_next=?,highest_modseq=` + scalarMaxSQL(a.cfg.DBDriver, "highest_modseq", "?") + ` WHERE id=?`
-	if _, err := db.ExecContext(ctx, query, nextUID+1, nextModSeq, folderID); err != nil {
+	var current, modSeq int64
+	if err := rowDB.QueryRowContext(ctx, `SELECT uid_next,highest_modseq FROM folders WHERE id=? FOR UPDATE`, folderID).Scan(&current, &modSeq); err != nil {
 		return imapMetadata{}, err
 	}
-	return imapMetadata{UID: nextUID, ModSeq: nextModSeq}, nil
+	if current < 1 {
+		current = 1
+	}
+	if modSeq < 0 {
+		modSeq = 0
+	}
+	if _, err := exec.ExecContext(ctx, `UPDATE folders SET uid_next=?,highest_modseq=? WHERE id=?`, current+1, modSeq+1, folderID); err != nil {
+		return imapMetadata{}, err
+	}
+	if ownTx != nil {
+		if err := ownTx.Commit(); err != nil {
+			return imapMetadata{}, err
+		}
+	}
+	return imapMetadata{UID: current, ModSeq: modSeq + 1}, nil
 }
 
 func (a *App) bumpFolderModSeq(ctx context.Context, folderID string) (int64, error) {
@@ -228,21 +263,25 @@ func (a *App) bumpFolderModSeqWithDB(ctx context.Context, db dbExecutor, folderI
 	if !ok {
 		return 0, nil
 	}
-	imapMetadataMu.Lock()
-	defer imapMetadataMu.Unlock()
-	var current int64
-	if err := rowDB.QueryRowContext(ctx, `SELECT highest_modseq FROM folders WHERE id=?`, folderID).Scan(&current); err != nil {
+	if a.cfg.DBDriver == databaseDriverMySQL {
+		if _, err := db.ExecContext(ctx, `UPDATE folders SET highest_modseq=GREATEST(highest_modseq,0)+1 WHERE id=?`, folderID); err != nil {
+			return 0, err
+		}
+		var current int64
+		if err := rowDB.QueryRowContext(ctx, `SELECT highest_modseq FROM folders WHERE id=?`, folderID).Scan(&current); err != nil {
+			if err == sql.ErrNoRows {
+				return 0, nil
+			}
+			return 0, err
+		}
+		return current, nil
+	}
+	var next int64
+	query := `UPDATE folders SET highest_modseq=` + imapClampSQL(a.cfg.DBDriver, "highest_modseq", 0) + `+1 WHERE id=? RETURNING highest_modseq`
+	if err := rowDB.QueryRowContext(ctx, query, folderID).Scan(&next); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, nil
 		}
-		return 0, err
-	}
-	next := current + 1
-	if next < 1 || next == math.MaxInt64 {
-		next = current
-	}
-	query := `UPDATE folders SET highest_modseq=` + scalarMaxSQL(a.cfg.DBDriver, "highest_modseq", "?") + ` WHERE id=?`
-	if _, err := db.ExecContext(ctx, query, next, folderID); err != nil {
 		return 0, err
 	}
 	return next, nil

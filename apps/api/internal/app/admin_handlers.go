@@ -1197,5 +1197,13 @@ func (a *App) ensureFolder(ctx context.Context, mailboxID, folder string) (strin
 		}
 	}
 	_, err := a.db.ExecContext(ctx, `INSERT INTO folders(id,mailbox_id,name,role,sort_order,uid_validity,uid_next,highest_modseq,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, id, mailboxID, folder, role, sortOrder, a.newUIDValidity(), 1, 1, a.now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		// 并发下两个请求都查不到、都插入，其中一个必然撞 UNIQUE(mailbox_id,name)。
+		// 这不是错误，另一个请求已经建好了，回查一次即可（GET /mail/messages?folder=x
+		// 以前会在这种竞态下直接 500）。
+		if stringOnlyRow := a.db.QueryRowContext(ctx, `SELECT id FROM folders WHERE mailbox_id=? AND lower(name)=lower(?)`, mailboxID, folder).Scan(&id); stringOnlyRow == nil {
+			return id, nil
+		}
+	}
 	return id, err
 }

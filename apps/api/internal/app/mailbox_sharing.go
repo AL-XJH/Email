@@ -531,6 +531,24 @@ func (a *App) mailboxShareCanReadLabel(ctx context.Context, access *mailboxReadA
 	return count > 0
 }
 
+// mailShareVisibilitySQL 返回「这条 SQL 里哪些邮件对当前访问者可见」的附加条件。
+//
+// owner 和 scope=all 不需要过滤；只共享了部分文件夹/标签（scope=custom）时必须逐条过滤。
+// 线程接口以前漏了这一步：只校验了锚点那一封，然后按 mailbox_id 把整条线程（甚至整个
+// 邮箱的所有线程）返回，等于把没共享的 Sent / Drafts / 私人文件夹一起给了对方。
+func (a *App) mailShareVisibilitySQL(access *mailboxReadAccess, alias string) (string, []any) {
+	if access == nil || access.Owner || access.Scope == "all" {
+		return "", nil
+	}
+	clause := " AND (EXISTS (SELECT 1 FROM mailbox_share_folders msf WHERE msf.share_id=? AND msf.folder_id=" + alias + ".folder_id)" +
+		" OR EXISTS (SELECT 1 FROM message_labels ml JOIN mailbox_share_labels msl ON msl.label_id=ml.label_id WHERE ml.message_id=" + alias + ".id AND msl.share_id=?)"
+	args := []any{access.ShareID, access.ShareID}
+	if access.IncludeStarred {
+		clause += " OR " + alias + ".is_starred=1"
+	}
+	return clause + ")", args
+}
+
 func (a *App) mailboxShareCanReadMessage(ctx context.Context, access *mailboxReadAccess, messageID string) bool {
 	if access == nil {
 		return false

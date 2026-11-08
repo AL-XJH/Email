@@ -699,8 +699,14 @@ func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scan
 	if !fullScan && len(scannedDirs) == 0 {
 		return 0, nil, nil
 	}
+	// 根目录不可读时绝不能往下走：以前挂载丢了/路径配错，os.Stat 对每一封都返回
+	// 「不存在」，一轮全量扫描就会把整个邮箱的邮件行和附件文件全删掉。
+	if info, err := os.Stat(a.cfg.MaildirRoot); err != nil || !info.IsDir() {
+		a.log.Warn("skip maildir cleanup: maildir root unavailable", "root", a.cfg.MaildirRoot)
+		return 0, nil, nil
+	}
 	cutoff := a.now().UTC().Add(-5 * time.Minute).Format(time.RFC3339Nano)
-	rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,raw_path FROM messages WHERE mailbox_id IS NOT NULL AND mailbox_id<>'' AND raw_path<>'' AND updated_at<?`, cutoff)
+	rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,raw_path,COALESCE(folder_id,'') FROM messages WHERE mailbox_id IS NOT NULL AND mailbox_id<>'' AND raw_path<>'' AND updated_at<?`, cutoff)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -708,11 +714,12 @@ func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scan
 		ID        string
 		MailboxID string
 		RawPath   string
+		FolderID  string
 	}
 	var missing []item
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.ID, &it.MailboxID, &it.RawPath); err != nil {
+		if err := rows.Scan(&it.ID, &it.MailboxID, &it.RawPath, &it.FolderID); err != nil {
 			rows.Close()
 			return 0, nil, err
 		}
@@ -747,21 +754,27 @@ func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scan
 		return 0, nil, err
 	}
 	mailboxIDs := make([]string, 0, len(missing))
+	deleted := 0
 	for _, it := range missing {
-		a.deleteMessageFiles(ctx, it.ID)
-		var folderID sql.NullString
-		_ = a.db.QueryRowContext(ctx, `SELECT folder_id FROM messages WHERE id=?`, it.ID).Scan(&folderID)
-		if _, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, it.ID); err != nil {
-			return 0, nil, err
+		// 条件删除：扫描开始到这行之间的几秒里，用户可能刚把这封邮件移动/改名，
+		// raw_path 已经变了。以前只按 id 删，会把「已经搬走的活邮件」连附件一起删掉。
+		res, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=? AND raw_path=?`, it.ID, it.RawPath)
+		if err != nil {
+			return deleted, mailboxIDs, err
 		}
-		if folderID.Valid && folderID.String != "" {
-			if _, err := a.bumpFolderModSeq(ctx, folderID.String); err != nil {
-				return 0, nil, err
+		if changed, _ := res.RowsAffected(); changed == 0 {
+			continue
+		}
+		a.deleteMessageFiles(ctx, it.ID)
+		if it.FolderID != "" {
+			if _, err := a.bumpFolderModSeq(ctx, it.FolderID); err != nil {
+				return deleted, mailboxIDs, err
 			}
 		}
 		mailboxIDs = append(mailboxIDs, it.MailboxID)
+		deleted++
 	}
-	return len(missing), mailboxIDs, nil
+	return deleted, mailboxIDs, nil
 }
 
 func maildirFlagsFromPath(path, folderName string) (bool, bool) {
