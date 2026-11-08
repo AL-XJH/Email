@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -178,6 +179,14 @@ func (a *App) newUIDValidity() int64 {
 	return value
 }
 
+// imapMetadataMu 串行化 UID / MODSEQ 的分配。
+//
+// 这里是「读 uid_next → 写 uid_next+1 → 把读到的值写到 messages」三步，
+// 不在一个事务里。前端批量操作是 4 个并发请求，两个请求会读到同一个 uid_next，
+// 于是两封邮件拿到同一个 IMAP UID，第二个写 messages 时撞唯一索引，
+// 整批报「批量操作失败」——但前面几封其实已经删掉了，重试一次又「成功」。
+var imapMetadataMu sync.Mutex
+
 func (a *App) nextIMAPMetadata(ctx context.Context, db dbExecutor, folderID string) (imapMetadata, error) {
 	if folderID == "" {
 		return imapMetadata{}, nil
@@ -186,6 +195,8 @@ func (a *App) nextIMAPMetadata(ctx context.Context, db dbExecutor, folderID stri
 	if !ok {
 		return imapMetadata{}, nil
 	}
+	imapMetadataMu.Lock()
+	defer imapMetadataMu.Unlock()
 	var nextUID, highestModSeq int64
 	err := rowDB.QueryRowContext(ctx, `SELECT uid_next,highest_modseq FROM folders WHERE id=?`, folderID).Scan(&nextUID, &highestModSeq)
 	if err != nil {
@@ -217,6 +228,8 @@ func (a *App) bumpFolderModSeqWithDB(ctx context.Context, db dbExecutor, folderI
 	if !ok {
 		return 0, nil
 	}
+	imapMetadataMu.Lock()
+	defer imapMetadataMu.Unlock()
 	var current int64
 	if err := rowDB.QueryRowContext(ctx, `SELECT highest_modseq FROM folders WHERE id=?`, folderID).Scan(&current); err != nil {
 		if err == sql.ErrNoRows {
