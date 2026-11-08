@@ -462,7 +462,7 @@ function InfoLine({ label, value }: { label: string; value: React.ReactNode }) {
   useUiLanguage()
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+    <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
       <span>{uiText(label)}</span>
       <span className="min-w-0 truncate font-medium text-foreground">
         {typeof value === "string" ? uiText(value) : value}
@@ -1085,7 +1085,7 @@ function PermissionPicker({
                 {items.map((item) => (
                   <label
                     key={item.key}
-                    className="flex min-h-16 items-start gap-3 rounded-md border px-3 py-2"
+                    className="flex min-h-16 items-start gap-3 rounded-lg border px-3 py-2"
                   >
                     <Checkbox
                       checked={value.includes(item.key)}
@@ -2579,7 +2579,7 @@ function SystemSettingsSection({
       }}
       className="space-y-6"
     >
-      <div className="flex flex-wrap gap-2 rounded-lg border bg-card p-2">
+      <div className="flex flex-wrap gap-2 rounded-xl border bg-card p-2">
         {tabs.map((tab) => (
           <Button
             key={tab.key}
@@ -2792,7 +2792,7 @@ function SystemSettingsSection({
                         <label
                           key={domain.id}
                           className={cn(
-                            "flex min-h-11 items-center gap-3 rounded-md border px-3 py-2",
+                            "flex min-h-11 items-center gap-3 rounded-lg border px-3 py-2",
                             disabled && "cursor-not-allowed opacity-50"
                           )}
                         >
@@ -3244,7 +3244,7 @@ function RegistrationInvitesPanel() {
           </DialogContent>
         </Dialog>
       </div>
-      <div className="overflow-x-auto rounded-md border">
+      <div className="overflow-x-auto rounded-lg border">
         <Table>
           <TableHeader>
             <TableRow>
@@ -3939,7 +3939,7 @@ function AdminMessageDialog({
                 <div className="space-y-2">
                   {message.attachments.map((attachment) => (
                     <a
-                      className="flex items-center justify-between rounded-md border p-3 text-sm hover:bg-accent"
+                      className="flex items-center justify-between rounded-lg border p-3 text-sm hover:bg-accent"
                       href={`/api/admin/attachments/${attachment.id}`}
                       key={attachment.id}
                     >
@@ -4216,7 +4216,7 @@ function UserDetailsDialog({
             {quotaFields.map(({ label, value }) => (
               <div
                 key={label}
-                className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"
+                className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm"
               >
                 <dt className="text-muted-foreground">{uiText(label)}</dt>
                 <dd className="shrink-0 font-medium">{value}</dd>
@@ -4309,7 +4309,7 @@ function PermissionGroupPicker({
           return (
             <label
               key={group.id}
-              className="flex min-h-16 items-start gap-3 rounded-md border px-3 py-2"
+              className="flex min-h-16 items-start gap-3 rounded-lg border px-3 py-2"
             >
               <Checkbox
                 checked={checked}
@@ -5196,7 +5196,7 @@ function DNSRecordRow({ record }: { record: DNSRecord }) {
   const text = `${record.type} ${record.name} ${record.value}`
   const desc = dnsDescription(record)
   return (
-    <div className="rounded-lg border bg-card p-3">
+    <div className="rounded-xl border bg-card p-3">
       <div className="mb-2 flex items-center justify-between">
         <Badge variant="outline" className="font-mono">
           {record.type}

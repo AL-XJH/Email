@@ -91,7 +91,7 @@ export function LoginPage() {
             {publicSettings.data?.siteTitle || "LanQin Email"}
           </h1>
         </div>
-        <div className="rounded-lg border bg-background p-6 shadow-sm sm:p-7">
+        <div className="rounded-xl border bg-background p-6 shadow-sm sm:p-7">
           <div className="mb-6 flex items-center gap-2 text-sm font-medium text-muted-foreground">
             {challengeToken || linuxDoTwoFactorRequired ? (
               <KeyRound className="h-4 w-4" />

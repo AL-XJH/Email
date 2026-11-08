@@ -86,7 +86,7 @@ export function MailAttachment({
     <>
       <div
         data-lanqin-i18n-ignore
-        className="flex flex-wrap items-center gap-3 rounded-md border p-3 text-sm"
+        className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm"
       >
         <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -146,7 +146,7 @@ export function MailAttachment({
           <DialogHeader className="min-w-0 pr-6">
             <DialogTitle className="break-all">{filename}</DialogTitle>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-muted/30">
+          <div className="min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/30">
             {error ? (
               <p role="alert" className="p-6 text-sm">
                 {t(error)}

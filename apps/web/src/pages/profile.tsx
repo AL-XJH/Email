@@ -2257,14 +2257,14 @@ function ExternalImapSyncPanel({
       <div className="mt-3 space-y-2">
         <div className="text-xs font-medium text-muted-foreground">{uiText("最近同步记录")}</div>
         {runs.length === 0 && (
-          <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+          <div className="rounded-lg border bg-background p-3 text-sm text-muted-foreground">
             {uiText("暂无同步记录")}
           </div>
         )}
         {runs.slice(0, 6).map((run) => (
           <div
             key={run.id}
-            className="grid gap-2 rounded-md border bg-background p-3 text-sm md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
+            className="grid gap-2 rounded-lg border bg-background p-3 text-sm md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
           >
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -2590,7 +2590,7 @@ function ApiTokensSection({
                 {apiTokenScopeOptions.map(([value, label]) => (
                   <label
                     key={value}
-                    className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                    className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"
                   >
                     <Checkbox
                       checked={scopes.includes(value)}
@@ -2728,7 +2728,7 @@ function ApiTokensSection({
             {apiTokenScopeOptions.map(([value, label]) => (
               <label
                 key={value}
-                className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"
               >
                 <Checkbox
                   checked={editingScopes.includes(value)}
@@ -4267,9 +4267,9 @@ function MailboxSharingSection({ mailboxes }: { mailboxes: Mailbox[] }) {
 
   return (
     <div className="space-y-8">
-      <section className="overflow-hidden rounded-lg border bg-background">
+      <section className="overflow-hidden rounded-xl border bg-background">
         <div className="flex items-center gap-3 border-b px-5 py-4">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
             <UserPlus className="h-4 w-4" />
           </div>
           <div className="min-w-0">
@@ -4306,7 +4306,7 @@ function MailboxSharingSection({ mailboxes }: { mailboxes: Mailbox[] }) {
                   className="pl-9"
                 />
                 {!selectedUser && debouncedQuery.length >= 2 && (
-                  <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover p-1 shadow-md">
+                  <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-xl border bg-popover p-1 shadow-md">
                     {users.isFetching && (
                       <div className="px-3 py-2 text-sm text-muted-foreground">
                         {uiText("搜索中...")}
@@ -4322,7 +4322,7 @@ function MailboxSharingSection({ mailboxes }: { mailboxes: Mailbox[] }) {
                         key={item.id}
                         type="button"
                         variant="ghost"
-                        className="h-auto w-full justify-start gap-3 rounded-sm px-3 py-2 text-left"
+                        className="h-auto w-full justify-start gap-3 rounded-lg px-3 py-2 text-left"
                         onClick={() => {
                           setSelectedUser(item)
                           setUserQuery(item.email)
@@ -4386,7 +4386,7 @@ function MailboxSharingSection({ mailboxes }: { mailboxes: Mailbox[] }) {
           <div className="space-y-4">
             <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm font-medium">{uiText("共享范围")}</div>
-              <div className="grid w-full grid-cols-2 rounded-md border bg-muted/40 p-1 sm:w-auto">
+              <div className="grid w-full grid-cols-2 rounded-xl border bg-muted/40 p-1 sm:w-auto">
                 <Button
                   type="button"
                   size="sm"
@@ -4507,7 +4507,7 @@ function MailboxSharingSection({ mailboxes }: { mailboxes: Mailbox[] }) {
             <Users className="h-4 w-4" />
             {uiText("共享记录")}
           </div>
-          <div className="grid grid-cols-2 rounded-md border bg-muted/40 p-1">
+          <div className="grid grid-cols-2 rounded-xl border bg-muted/40 p-1">
             <Button
               type="button"
               size="sm"
@@ -4859,7 +4859,7 @@ function MailboxShareEditDialog({
             <div className="space-y-4">
               <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm font-medium">{uiText("共享范围")}</div>
-                <div className="grid w-full grid-cols-2 rounded-md border bg-muted/40 p-1 sm:w-auto">
+                <div className="grid w-full grid-cols-2 rounded-xl border bg-muted/40 p-1 sm:w-auto">
                   <Button
                     type="button"
                     size="sm"
@@ -5091,7 +5091,7 @@ function ScopeCheckbox({
   useUiLanguage()
 
   return (
-    <label className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-accent">
+    <label className="flex min-w-0 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent">
       <Checkbox checked={checked} onCheckedChange={(value) => onCheckedChange(value === true)} />
       <span className="truncate">{label}</span>
     </label>
@@ -5372,7 +5372,7 @@ function AccountHeader({
           type="button"
           variant="ghost"
           size="icon"
-          className="size-8 rounded-md text-muted-foreground"
+          className="size-8 rounded-lg text-muted-foreground"
           onClick={onToggleTheme}
         >
           {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
@@ -5381,7 +5381,7 @@ function AccountHeader({
           type="button"
           variant="ghost"
           size="icon"
-          className="size-8 rounded-md text-muted-foreground"
+          className="size-8 rounded-lg text-muted-foreground"
           onClick={onBack}
         >
           <ArrowLeft className="h-4 w-4" />

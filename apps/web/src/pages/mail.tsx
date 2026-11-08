@@ -2027,7 +2027,7 @@ export function MailPage() {
               type="button"
               variant="outline"
               size="icon"
-              className="h-9 w-9 shrink-0 rounded-md"
+              className="h-9 w-9 shrink-0 rounded-lg"
               onClick={copyCurrentMailbox}
               disabled={!selectedMailbox}
             >
@@ -2037,7 +2037,7 @@ export function MailPage() {
         </div>
         {canSendSelectedMailbox && (
           <Button
-            className={cn("mt-2 h-10 w-full rounded-md text-sm", sidebarCollapsed && "px-0")}
+            className={cn("mt-2 h-10 w-full rounded-lg text-sm", sidebarCollapsed && "px-0")}
             size={sidebarCollapsed ? "icon" : "default"}
             onClick={() => openCompose()}
             disabled={!selectedMailbox}
@@ -2408,7 +2408,7 @@ export function MailPage() {
       title={viewTitle}
       icon={
         mailView === "label" && selectedLabel ? (
-          <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
+          <Badge variant="outline" className="gap-1.5 rounded-lg font-normal">
             <span
               className="h-2 w-2 shrink-0 rounded-full"
               style={{ backgroundColor: labelDotColor(selectedLabel) }}
@@ -2502,7 +2502,7 @@ export function MailPage() {
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="relative inline-flex h-9 flex-none items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    className="relative inline-flex h-9 flex-none items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
                     <SlidersHorizontal className="h-4 w-4" />
                     <span className="hidden sm:inline">{uiText("筛选")}</span>
@@ -2565,7 +2565,7 @@ export function MailPage() {
                   </Button>
                 )}
               </div>
-              <div className="flex flex-none overflow-hidden rounded-md border border-border">
+              <div className="flex flex-none overflow-hidden rounded-lg border border-border">
                 <button
                   type="button"
                   onClick={() => setMailFilter("all")}
@@ -2798,7 +2798,7 @@ export function MailPage() {
                 </Button>
                 <div className="min-w-0 flex-1 truncate text-lg font-semibold">
                   {mailView === "label" && selectedLabel ? (
-                    <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
+                    <Badge variant="outline" className="gap-1.5 rounded-lg font-normal">
                       <span
                         className="h-2 w-2 shrink-0 rounded-full"
                         style={{
@@ -3389,7 +3389,7 @@ function ScheduledStatusBadge({ status }: { status: ScheduledSend["status"] }) {
   return (
     <Badge
       variant={status === "failed" ? "destructive" : status === "sending" ? "secondary" : "outline"}
-      className="h-5 shrink-0 rounded-md px-1.5 text-[11px] font-normal"
+      className="h-5 shrink-0 rounded-lg px-1.5 text-[11px] font-normal"
     >
       {uiText(label)}
     </Badge>
@@ -3547,7 +3547,7 @@ function SendQueueView({
             </div>
             <div
               className={cn(
-                "flex min-w-0 items-center rounded-md border bg-background px-2 shadow-sm focus-within:ring-1 focus-within:ring-ring",
+                "flex min-w-0 items-center rounded-lg border bg-background px-2 shadow-sm focus-within:ring-1 focus-within:ring-ring",
                 mobile ? "flex-col items-stretch gap-1 p-2" : "col-span-2 xl:col-span-1"
               )}
             >
@@ -3809,7 +3809,7 @@ function SendQueueStatusBadge({ status }: { status: SendQueueStatus }) {
   return (
     <Badge
       variant="outline"
-      className={cn("h-6 shrink-0 gap-1.5 rounded-md px-2 text-[11px] font-medium", styles)}
+      className={cn("h-6 shrink-0 gap-1.5 rounded-lg px-2 text-[11px] font-medium", styles)}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-current" />
       {uiText(label)}
@@ -3997,7 +3997,7 @@ function SidebarContextMenu({
   const itemClass = "h-auto w-full justify-start rounded px-2 py-1.5 text-left font-normal"
   return (
     <div
-      className="fixed z-[110] w-48 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+      className="fixed z-[110] w-48 rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-md"
       style={{ left: position.x, top: position.y }}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
@@ -4136,7 +4136,7 @@ function MessageContextMenu({
   const { message } = state
   const position = contextMenuPosition(state.x, state.y)
   const draft = message.folder === "Drafts"
-  const itemClass = "h-auto w-full justify-start rounded-sm px-3 py-2 text-left font-normal"
+  const itemClass = "h-auto w-full justify-start rounded-lg px-3 py-2 text-left font-normal"
 
   function item(
     label: string,
@@ -4170,7 +4170,7 @@ function MessageContextMenu({
 
   return (
     <div
-      className="fixed z-[110] w-52 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+      className="fixed z-[110] w-52 rounded-xl border bg-popover p-1 text-popover-foreground shadow-md"
       style={{ left: position.x, top: position.y }}
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
@@ -5202,7 +5202,7 @@ function CompactMessageRow({
             {(message.threadCount || 0) > 1 && (
               <Badge
                 variant="outline"
-                className="h-5 shrink-0 rounded-md px-1.5 text-[11px] font-normal text-muted-foreground"
+                className="h-5 shrink-0 rounded-lg px-1.5 text-[11px] font-normal text-muted-foreground"
                 title={uiText("会话邮件数")}
               >
                 {uiText("会话 {0} 封", [message.threadCount || 0])}
@@ -5214,7 +5214,7 @@ function CompactMessageRow({
             {scheduled && (
               <Badge
                 variant="secondary"
-                className="h-5 shrink-0 rounded-md px-1.5 text-[11px] font-normal"
+                className="h-5 shrink-0 rounded-lg px-1.5 text-[11px] font-normal"
               >
                 {uiText("已定时")}
               </Badge>
@@ -5225,7 +5225,7 @@ function CompactMessageRow({
             {hiddenLabelCount > 0 && (
               <Badge
                 variant="outline"
-                className="h-5 shrink-0 rounded-md px-1.5 text-[11px] font-normal text-muted-foreground"
+                className="h-5 shrink-0 rounded-lg px-1.5 text-[11px] font-normal text-muted-foreground"
               >
                 +{uiText("{0}", [hiddenLabelCount])}
               </Badge>
@@ -5367,7 +5367,7 @@ function AccountHeader({
           type="button"
           variant="ghost"
           size="icon"
-          className="size-8 rounded-md text-muted-foreground"
+          className="size-8 rounded-lg text-muted-foreground"
           aria-label={darkMode ? "切换到浅色" : "切换到深色"}
           onClick={onToggleTheme}
         >
@@ -5377,7 +5377,7 @@ function AccountHeader({
           type="button"
           variant="ghost"
           size="icon"
-          className="size-8 rounded-md text-muted-foreground"
+          className="size-8 rounded-lg text-muted-foreground"
           aria-label="设置"
           onClick={onSettings}
         >
@@ -5409,7 +5409,7 @@ function MailboxSwitcher({
         <Button
           variant="outline"
           className={cn(
-            "h-9 min-w-0 flex-1 justify-start gap-2 rounded-md bg-background px-2 text-left font-normal",
+            "h-9 min-w-0 flex-1 justify-start gap-2 rounded-lg bg-background px-2 text-left font-normal",
             collapsed && "w-8 flex-none justify-center px-0"
           )}
         >
@@ -5650,7 +5650,7 @@ function MessageMetaPanel({
                     <Badge
                       key={label.id}
                       variant="outline"
-                      className="label-badge group/badge gap-1.5 rounded-md font-normal"
+                      className="label-badge group/badge gap-1.5 rounded-lg font-normal"
                     >
                       <span
                         className="h-2 w-2 shrink-0 rounded-full"
@@ -5673,7 +5673,7 @@ function MessageMetaPanel({
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
-                      className="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md border text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      className="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-lg border text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       aria-label={uiText("添加标签")}
                     >
                       <Plus className="h-3 w-3" />
@@ -5737,7 +5737,7 @@ function AddressList({ values, empty = "无" }: { values: string[]; empty?: stri
       {values.map((value, index) => (
         <span
           key={`${value}-${index}`}
-          className="inline-flex max-w-full rounded-md bg-background px-2 py-0.5 text-xs text-foreground ring-1 ring-border"
+          className="inline-flex max-w-full rounded-lg bg-background px-2 py-0.5 text-xs text-foreground ring-1 ring-border"
         >
           <span className="truncate" title={value}>
             {value}
@@ -5871,7 +5871,7 @@ function MessageRow({
                   type="button"
                   data-copied={codeCopied ? "true" : undefined}
                   className={cn(
-                    "verification-code-chip inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-xs",
+                    "verification-code-chip inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-1.5 py-0.5 text-xs",
                     "transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out",
                     "active:scale-[0.94]",
                     codeCopied
@@ -5931,7 +5931,7 @@ function MailLabelBadge({ label }: { label: MailLabel }) {
 
   const colors = { backgroundColor: labelDotColor(label) }
   return (
-    <Badge variant="outline" className="shrink-0 gap-1.5 rounded-md font-normal">
+    <Badge variant="outline" className="shrink-0 gap-1.5 rounded-lg font-normal">
       <span
         className="h-2 w-2 shrink-0 rounded-full"
         style={{ backgroundColor: colors.backgroundColor }}
@@ -6398,7 +6398,7 @@ function ComposeDialog({
                   >
                     {uiText("密送")}
                   </Button>
-                  <div className="flex items-center gap-2 rounded-md px-2 py-1">
+                  <div className="flex items-center gap-2 rounded-lg px-2 py-1">
                     <Checkbox
                       id="compose-send-separately"
                       checked={sendSeparately}
@@ -6702,7 +6702,7 @@ const composerEmojiOptions = [
   "⭐",
 ]
 const composerMenuItemClass =
-  "min-h-9 rounded-md px-3 text-sm transition-colors data-[highlighted]:bg-primary/10 data-[highlighted]:font-semibold data-[highlighted]:text-foreground hover:bg-primary/10 hover:font-semibold hover:text-foreground"
+  "min-h-9 rounded-lg px-3 text-sm transition-colors data-[highlighted]:bg-primary/10 data-[highlighted]:font-semibold data-[highlighted]:text-foreground hover:bg-primary/10 hover:font-semibold hover:text-foreground"
 
 function normalizeFontName(value: string) {
   const cleaned = value.replace(/["']/g, "").split(",")[0]?.trim() || ""
@@ -7152,7 +7152,7 @@ function MailBodyComposer({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-8 gap-1 rounded-md px-2 font-normal hover:bg-accent hover:shadow-sm"
+              className="h-8 gap-1 rounded-lg px-2 font-normal hover:bg-accent hover:shadow-sm"
               onMouseDown={(event) => event.preventDefault()}
             >
               <Plus className="h-4 w-4" />
@@ -7191,7 +7191,7 @@ function MailBodyComposer({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">
+        <span className="rounded-lg border px-2 py-1 text-xs text-muted-foreground">
           {uiText("附件 {0}", [maxAttachmentText])}
         </span>
         <ToolbarTextButton
@@ -7206,7 +7206,7 @@ function MailBodyComposer({
               variant={emojiOpen ? "secondary" : "ghost"}
               size="sm"
               className={cn(
-                "h-8 gap-1.5 rounded-md px-2 font-normal hover:bg-accent hover:shadow-sm",
+                "h-8 gap-1.5 rounded-lg px-2 font-normal hover:bg-accent hover:shadow-sm",
                 emojiOpen && "border border-primary/30 bg-primary/10 text-primary"
               )}
               onMouseDown={(event) => event.preventDefault()}
@@ -7223,7 +7223,7 @@ function MailBodyComposer({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 rounded-md text-lg"
+                  className="h-8 w-8 rounded-lg text-lg"
                   onClick={() => insertEmoji(emoji)}
                 >
                   {emoji}
@@ -7270,7 +7270,7 @@ function MailBodyComposer({
                 variant="ghost"
                 size="sm"
                 className={cn(
-                  "h-8 min-w-[112px] justify-between rounded-md border border-transparent px-2 font-normal hover:border-border hover:bg-accent hover:shadow-sm",
+                  "h-8 min-w-[112px] justify-between rounded-lg border border-transparent px-2 font-normal hover:border-border hover:bg-accent hover:shadow-sm",
                   activeFont && "border-primary/35 bg-primary/10 text-primary shadow-sm"
                 )}
                 onMouseDown={(event) => event.preventDefault()}
@@ -7302,7 +7302,7 @@ function MailBodyComposer({
                 variant="ghost"
                 size="sm"
                 className={cn(
-                  "h-8 min-w-[84px] justify-between rounded-md border border-transparent px-2 font-normal hover:border-border hover:bg-accent hover:shadow-sm",
+                  "h-8 min-w-[84px] justify-between rounded-lg border border-transparent px-2 font-normal hover:border-border hover:bg-accent hover:shadow-sm",
                   activeFontSize !== "3" && "border-primary/35 bg-primary/10 text-primary shadow-sm"
                 )}
                 onMouseDown={(event) => event.preventDefault()}
@@ -7367,7 +7367,7 @@ function MailBodyComposer({
                 variant="ghost"
                 size="icon"
                 className={cn(
-                  "h-8 w-8 rounded-md border border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground hover:shadow-sm",
+                  "h-8 w-8 rounded-lg border border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground hover:shadow-sm",
                   activeColor && "border-primary/35 bg-primary/10 text-primary shadow-sm"
                 )}
                 title={uiText("文字颜色")}
@@ -7413,7 +7413,7 @@ function MailBodyComposer({
                 variant="ghost"
                 size="icon"
                 className={cn(
-                  "h-8 w-8 rounded-md border border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground hover:shadow-sm",
+                  "h-8 w-8 rounded-lg border border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground hover:shadow-sm",
                   activeHighlight && "border-primary/35 bg-primary/10 text-primary shadow-sm"
                 )}
                 title={uiText("高亮")}
@@ -7443,7 +7443,7 @@ function MailBodyComposer({
                         : "opacity-0"
                     )}
                   />
-                  <span className="h-3 w-3 rounded-sm border" style={{ backgroundColor: color }} />
+                  <span className="h-3 w-3 rounded-full border" style={{ backgroundColor: color }} />
                   {uiText(label)}
                 </DropdownMenuItem>
               ))}
@@ -7528,7 +7528,7 @@ function MailBodyComposer({
           "composer-editor relative flex min-h-[240px] min-w-0 flex-1 border-b focus-within:bg-card/40 sm:min-h-[280px]",
           "[&_.ProseMirror]:min-h-[240px] [&_.ProseMirror]:w-full [&_.ProseMirror]:flex-1 [&_.ProseMirror]:overflow-y-auto [&_.ProseMirror]:px-4 [&_.ProseMirror]:py-4 [&_.ProseMirror]:text-base [&_.ProseMirror]:leading-7 [&_.ProseMirror]:outline-none sm:[&_.ProseMirror]:min-h-[280px] sm:[&_.ProseMirror]:px-6 sm:[&_.ProseMirror]:py-5",
           "[&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left [&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0 [&_.ProseMirror_p.is-editor-empty:first-child::before]:text-muted-foreground [&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]",
-          "[&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_blockquote]:border-l-4 [&_.ProseMirror_blockquote]:border-border [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground [&_.ProseMirror_pre]:rounded-md [&_.ProseMirror_pre]:bg-muted [&_.ProseMirror_pre]:p-3",
+          "[&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_blockquote]:border-l-4 [&_.ProseMirror_blockquote]:border-border [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:bg-muted [&_.ProseMirror_pre]:p-3",
           empty && "bg-background"
         )}
       >
@@ -7560,7 +7560,7 @@ function MailBodyComposer({
               <Badge
                 key={`${file.name}-${file.size}-${index}`}
                 variant="outline"
-                className="h-8 gap-2 rounded-md px-2 font-normal"
+                className="h-8 gap-2 rounded-lg px-2 font-normal"
               >
                 <Paperclip className="h-3.5 w-3.5" />
                 <span className="max-w-48 truncate">{file.name}</span>
@@ -7569,7 +7569,7 @@ function MailBodyComposer({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-5 w-5 rounded-md"
+                  className="h-5 w-5 rounded-lg"
                   onClick={() => onRemoveFile(index)}
                 >
                   <X className="h-3.5 w-3.5" />
@@ -7600,7 +7600,7 @@ function MailBodyComposer({
             <DialogTitle>{uiText("邮件预览")}</DialogTitle>
           </DialogHeader>
           <div
-            className="mail-html max-h-[60vh] overflow-y-auto rounded-md border bg-background p-5 text-sm leading-7"
+            className="mail-html max-h-[60vh] overflow-y-auto rounded-lg border bg-background p-5 text-sm leading-7"
             dangerouslySetInnerHTML={{
               __html: sanitizeComposerHtml(editor?.getHTML() || "") || "<p></p>",
             }}
@@ -7632,7 +7632,7 @@ function ToolbarTextButton({
       variant={active ? "secondary" : "ghost"}
       size="sm"
       className={cn(
-        "h-8 gap-1.5 rounded-md px-2 font-normal transition-all hover:bg-accent hover:text-foreground hover:shadow-sm",
+        "h-8 gap-1.5 rounded-lg px-2 font-normal transition-all hover:bg-accent hover:text-foreground hover:shadow-sm",
         active && "border border-primary/30 bg-primary/10 text-primary shadow-sm"
       )}
       title={uiText(label)}
@@ -8009,7 +8009,7 @@ function ToolbarButton({
       variant="ghost"
       size="icon"
       className={cn(
-        "h-8 w-8 rounded-md border border-transparent text-muted-foreground transition-all hover:border-border hover:bg-accent hover:text-foreground hover:shadow-sm",
+        "h-8 w-8 rounded-lg border border-transparent text-muted-foreground transition-all hover:border-border hover:bg-accent hover:text-foreground hover:shadow-sm",
         active &&
           "border-primary/35 bg-primary/10 text-primary shadow-sm hover:bg-primary/15 hover:text-primary"
       )}

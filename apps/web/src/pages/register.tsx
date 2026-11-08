@@ -104,18 +104,18 @@ export function RegisterPage() {
             {publicSettings.data?.siteTitle || "LanQin Email"}
           </h1>
         </div>
-        <div className="rounded-lg border bg-background p-6 shadow-sm sm:p-7">
+        <div className="rounded-xl border bg-background p-6 shadow-sm sm:p-7">
           <div className="mb-6 flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <UserPlus className="h-4 w-4" />
             {linuxDoRegistration ? uiText("补全 Linux.do 注册信息") : uiText("注册账号")}
           </div>
           {linuxDoRegistration && pendingLinuxDo.isLoading ? (
-            <div className="rounded-md bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
+            <div className="rounded-lg bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
               {uiText("正在加载已验证的 Linux.do 账号...")}
             </div>
           ) : linuxDoRegistration && pendingLinuxDo.isError ? (
             <div className="space-y-5">
-              <div className="rounded-md bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
+              <div className="rounded-lg bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
                 {uiText(errorMessage(pendingLinuxDo.error))}
               </div>
               <Button type="button" variant="outline" className="h-11 w-full text-base" asChild>
@@ -127,7 +127,7 @@ export function RegisterPage() {
             </div>
           ) : linuxDoRegistration && pendingLinuxDo.isSuccess && domains.length === 0 ? (
             <div className="space-y-5">
-              <div className="rounded-md bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
+              <div className="rounded-lg bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
                 {uiText("当前没有可用于注册的邮箱域名")}
               </div>
               <Button type="button" variant="outline" className="h-11 w-full text-base" asChild>
@@ -142,7 +142,7 @@ export function RegisterPage() {
             !publicSettings.data.openRegistration &&
             !publicSettings.data.inviteRegistrationEnabled ? (
             <div className="space-y-5">
-              <div className="rounded-md bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
+              <div className="rounded-lg bg-muted/40 px-4 py-3 text-center text-sm text-muted-foreground">
                 {uiText("当前未开放注册")}
               </div>
               <Button type="button" variant="outline" className="h-11 w-full text-base" asChild>
@@ -165,7 +165,7 @@ export function RegisterPage() {
               }}
             >
               {linuxDoRegistration && pendingLinuxDo.data && (
-                <div className="rounded-md bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                <div className="rounded-lg bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
                   {uiText("已验证 Linux.do 用户{0}", [" "])}
                   <span className="font-medium text-foreground">
                     @{pendingLinuxDo.data.username}

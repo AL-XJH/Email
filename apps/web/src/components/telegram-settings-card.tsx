@@ -81,7 +81,7 @@ export function TelegramSettingsCard({
       </CardHeader>
       <CardContent className="space-y-4">
         {unavailable && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {uiText("服务端尚未配置通知加密密钥。")}
           </div>
         )}
