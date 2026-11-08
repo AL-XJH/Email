@@ -168,7 +168,22 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 
 	knownFiles := map[string]knownMaildirFile{}
 	if len(pending) > 0 {
-		knownFiles, err = a.knownMaildirFiles(ctx)
+		// 只取这次真正要扫的目录里的已知文件：以前每来一封新邮件就把
+		// messages 全表（含所有 raw_path）读进内存，邮箱越大越慢。
+		folderIDs := make([]string, 0, len(pending))
+		seenFolders := make(map[string]struct{}, len(pending))
+		for _, item := range pending {
+			id := item.target.Folder.ID
+			if id == "" {
+				continue
+			}
+			if _, ok := seenFolders[id]; ok {
+				continue
+			}
+			seenFolders[id] = struct{}{}
+			folderIDs = append(folderIDs, id)
+		}
+		knownFiles, err = a.knownMaildirFilesInFolders(ctx, folderIDs)
 		if err != nil {
 			return counts, err
 		}
@@ -305,6 +320,40 @@ func statMaildirDirectory(path string) (maildirDirectorySignature, error) {
 		return maildirDirectorySignature{}, fmt.Errorf("maildir path is not a directory: %s", path)
 	}
 	return maildirDirectorySignature{Exists: true, ModTimeNano: info.ModTime().UnixNano(), Size: info.Size()}, nil
+}
+
+// knownMaildirFilesInFolders 是 knownMaildirFiles 的范围版：只查指定文件夹。
+// 文件夹太多（一次全量扫描）时退回全表，避免拼出几百个占位符。
+func (a *App) knownMaildirFilesInFolders(ctx context.Context, folderIDs []string) (map[string]knownMaildirFile, error) {
+	if len(folderIDs) == 0 {
+		return map[string]knownMaildirFile{}, nil
+	}
+	if len(folderIDs) > 64 {
+		return a.knownMaildirFiles(ctx)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(folderIDs)), ",")
+	args := make([]any, 0, len(folderIDs))
+	for _, id := range folderIDs {
+		args = append(args, id)
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT COALESCE(mailbox_id,''),COALESCE(folder_id,''),raw_path,is_read,is_starred FROM messages WHERE raw_path<>'' AND folder_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	files := map[string]knownMaildirFile{}
+	for rows.Next() {
+		var path string
+		var state knownMaildirFile
+		var read, starred int
+		if err := rows.Scan(&state.MailboxID, &state.FolderID, &path, &read, &starred); err != nil {
+			return nil, err
+		}
+		state.IsRead = intBool(read)
+		state.IsStarred = intBool(starred)
+		files[path] = state
+	}
+	return files, rows.Err()
 }
 
 func (a *App) knownMaildirFiles(ctx context.Context) (map[string]knownMaildirFile, error) {
