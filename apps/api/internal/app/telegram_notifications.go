@@ -66,6 +66,12 @@ type telegramNotificationPayload struct {
 	URL   string   `json:"url,omitempty"`
 	// Code 是识别出的验证码，仅用于给消息挂「复制验证码」按钮。
 	Code string `json:"code,omitempty"`
+	// 下面四个是原文，发送前如果判定为外文会在 worker 里翻成中文重新拼 Parts。
+	// 存原文而不是只存译文：翻译失败还能退回原文发，重试也不用重新收信。
+	Subject string `json:"subject,omitempty"`
+	Body    string `json:"body,omitempty"`
+	Mailbox string `json:"mailbox,omitempty"`
+	From    string `json:"from,omitempty"`
 }
 
 type telegramAPIResponse struct {
@@ -320,13 +326,18 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	// 验证码常在第 2、3 才出现，摘要里没有，所以正文一起扫。
 	code := extractVerificationCode(subject, bodyText)
 	// 直接推整封正文：纯文本优先，纯 HTML 邮件先转成可读文本。
+	body := emailPlainBody(bodyText, bodyHTML, snippet)
 	parts := telegramMessageParts(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, code,
-		emailPlainBody(bodyText, bodyHTML, snippet), telegramNotificationTextBudget)
+		body, telegramNotificationTextBudget)
 	payload := telegramNotificationPayload{
-		Text:  parts[0],
-		Parts: parts,
-		URL:   a.telegramMessageURL(mailboxID, messageID),
-		Code:  code,
+		Text:    parts[0],
+		Parts:   parts,
+		URL:     a.telegramMessageURL(mailboxID, messageID),
+		Code:    code,
+		Subject: subject,
+		Body:    body,
+		Mailbox: mailboxAddress,
+		From:    strings.TrimSpace(fromName + " " + fromAddress),
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	eventKey := "telegram:" + ruleID + ":" + messageID
@@ -505,6 +516,8 @@ func (a *App) processDueTelegramNotifications(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// 外文邮件先翻成中文再发；翻不动就原样发。
+		payload = a.translateTelegramPayload(ctx, payload)
 		if err := a.deliverTelegramMessage(ctx, settings, payload); err != nil {
 			a.failTelegramNotification(ctx, value.id, value.userID, value.attempt, value.leaseToken, err)
 			continue
