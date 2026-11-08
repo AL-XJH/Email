@@ -49,8 +49,8 @@ func (s *SubmissionServers) Shutdown(ctx context.Context) error {
 
 func (a *App) NewSubmissionServers(tlsConfig *tls.Config) *SubmissionServers {
 	return &SubmissionServers{
-		Plain: a.newSubmissionServer(a.cfg.SubmissionAddr, tlsConfig),
-		TLS:   a.newSubmissionServer(a.cfg.SubmissionTLSAddr, tlsConfig),
+		Plain: a.newSubmissionServer(a.config().SubmissionAddr, tlsConfig),
+		TLS:   a.newSubmissionServer(a.config().SubmissionTLSAddr, tlsConfig),
 	}
 }
 
@@ -61,11 +61,11 @@ func (a *App) newSubmissionServer(addr string, tlsConfig *tls.Config) *smtpserve
 	}
 	s := smtpserver.NewServer(submissionBackend{app: a})
 	s.Addr = addr
-	s.Domain = a.cfg.PublicHostname
+	s.Domain = a.config().PublicHostname
 	s.TLSConfig = tlsConfig
 	s.AllowInsecureAuth = false
 	s.MaxRecipients = defaultSubmissionMaxRecipients
-	s.MaxMessageBytes = int64(a.cfg.SubmissionMaxMessageMB) * 1024 * 1024
+	s.MaxMessageBytes = int64(a.config().SubmissionMaxMessageMB) * 1024 * 1024
 	s.ReadTimeout = smtpSessionTimeout
 	s.WriteTimeout = smtpSessionTimeout
 	s.ErrorLog = log.New(submissionLogWriter{log: a.log}, "smtp/submission ", 0)
@@ -267,7 +267,7 @@ func (a *App) submitSMTPMessage(ctx context.Context, user *User, mb *Mailbox, ma
 			return err
 		}
 	}
-	if sentID != "" && strings.TrimSpace(a.cfg.SMTPHost) == "" {
+	if sentID != "" && strings.TrimSpace(a.config().SMTPHost) == "" {
 		return a.deliverLocalRecipients(ctx, sentID, recipients, msg, attachments)
 	}
 	return nil
@@ -410,7 +410,7 @@ func (a *App) insertSentDedupeKeyWithDB(ctx context.Context, db dbExecutor, mail
 	if strings.TrimSpace(messageID) == "" {
 		return nil
 	}
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO sent_message_dedupe_keys(mailbox_id,folder_id,message_id,created_at) VALUES(?,?,?,?)`, `(mailbox_id,folder_id,message_id)`)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO sent_message_dedupe_keys(mailbox_id,folder_id,message_id,created_at) VALUES(?,?,?,?)`, `(mailbox_id,folder_id,message_id)`)
 	res, err := db.ExecContext(ctx, query, mailboxID, folderID, messageID, a.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err

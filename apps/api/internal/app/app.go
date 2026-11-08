@@ -16,17 +16,55 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
+// config 返回当前配置快照。配置在运行期只有「管理员改设置」这一处会整体替换，
+// 用 atomic.Pointer 发布新快照，读方永远拿到一个完整、不可变的 Config，
+// 不会出现「新 SMTPHost + 旧 SMTPPort」这种撕裂读（以前的 a.cfg = next 是裸写，
+// -race 直接报数据竞争，极端情况还会因为 string 头被撕裂而 panic）。
+func (a *App) config() *Config {
+	if ptr := a.cfgPtr.Load(); ptr != nil {
+		return ptr
+	}
+	return &Config{}
+}
+
+// now 返回当前时间。用 atomic 指针发布，测试里换时钟（a.setNow）不会和
+// 后台 worker 的读取撞成数据竞争（-race 以前会在这里报 24 个测试失败）。
+func (a *App) now() time.Time {
+	if f := a.nowFn.Load(); f != nil {
+		return (*f)()
+	}
+	return time.Now()
+}
+
+// setNow 替换时钟，主要用于测试。
+func (a *App) setNow(f func() time.Time) {
+	a.nowFn.Store(&f)
+}
+
+// setConfig 发布一份新配置。传进来的是值，内部取地址保存，调用方之后改局部变量不会影响它。
+func (a *App) setConfig(cfg Config) {
+	a.cfgPtr.Store(&cfg)
+}
+
+// updateConfig 复制当前配置、改一份、再原子发布（测试和少量内部场景用）。
+func (a *App) updateConfig(mutate func(cfg *Config)) {
+	next := *a.config()
+	mutate(&next)
+	a.setConfig(next)
+}
+
 type App struct {
 	collectionMu       sync.Mutex
-	cfg                Config
+	cfgPtr             atomic.Pointer[Config]
 	db                 *sql.DB
 	log                *slog.Logger
-	now                func() time.Time
+	nowFn              atomic.Pointer[func() time.Time]
 	policy             *HTMLPolicy
 	workerCancel       context.CancelFunc
 	workerWG           sync.WaitGroup
@@ -72,7 +110,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	a := &App{cfg: cfg, db: db, log: logger, now: time.Now, policy: NewHTMLPolicy(), health: &appHealthState{}, maildirHealth: newMaildirSyncHealthTracker(), telegramAPIBaseURL: defaultTelegramAPIBaseURL, workerID: newID("worker")}
+	a := &App{db: db, log: logger, policy: NewHTMLPolicy(), health: &appHealthState{}, maildirHealth: newMaildirSyncHealthTracker(), telegramAPIBaseURL: defaultTelegramAPIBaseURL, workerID: newID("worker")}
+	a.setConfig(cfg)
+	a.setNow(time.Now)
 	a.externalIMAP = a
 	a.linuxDoOAuth = newLinuxDoHTTPClient()
 	if cfg.DBDriver == databaseDriverSQLite {
@@ -101,7 +141,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	workerCtx, cancel := context.WithCancel(context.Background())
 	a.workerCancel = cancel
 	a.startWorker(func() { a.scheduledSendWorker(workerCtx) })
-	if strings.TrimSpace(a.cfg.MaildirRoot) != "" {
+	if strings.TrimSpace(a.config().MaildirRoot) != "" {
 		a.startWorker(func() { a.maildirWorker(workerCtx) })
 	}
 	a.startWorker(func() { a.sendQueueWorker(workerCtx) })
@@ -109,10 +149,10 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	a.startWorker(func() { a.externalIMAPWorker(workerCtx) })
 	a.startWorker(func() { a.smtpEventsCleanupWorker(workerCtx) })
 	a.startWorker(func() { a.sessionCleanupWorker(workerCtx) })
-	if strings.TrimSpace(a.cfg.StatusWebhookURL) != "" {
+	if strings.TrimSpace(a.config().StatusWebhookURL) != "" {
 		a.startWorker(func() { a.statusWebhookWorker(workerCtx) })
 	}
-	if strings.TrimSpace(a.cfg.NotificationSecretKey) != "" {
+	if strings.TrimSpace(a.config().NotificationSecretKey) != "" {
 		a.startWorker(func() { a.telegramNotificationWorker(workerCtx) })
 	}
 	return a, nil
@@ -158,8 +198,8 @@ func (a *App) configureSQLite(ctx context.Context) error {
 }
 
 func (a *App) migrate(ctx context.Context) error {
-	if a.cfg.DBDriver != databaseDriverSQLite {
-		if err := initializeExternalSchema(ctx, a.db, a.cfg.DBDriver); err != nil {
+	if a.config().DBDriver != databaseDriverSQLite {
+		if err := initializeExternalSchema(ctx, a.db, a.config().DBDriver); err != nil {
 			return err
 		}
 		return a.ensureDefaultPermissionGroups(ctx)
@@ -1274,7 +1314,7 @@ func (a *App) migratePermissionGroupLimits(ctx context.Context) error {
 // Current seed() creates mailboxes with display_name = admin email, so this migration
 // has no effect on fresh installs. It only cleans up after upgrades from pre-v1.0 schema.
 func (a *App) migrateLegacyBootstrapMailbox(ctx context.Context) error {
-	adminEmail := normalizeEmail(a.cfg.AdminEmail)
+	adminEmail := normalizeEmail(a.config().AdminEmail)
 	if adminEmail == "" || !strings.Contains(adminEmail, "@") {
 		return nil
 	}
@@ -1653,7 +1693,7 @@ func (a *App) seed(ctx context.Context) error {
 		return a.ensureConfiguredAdminSuperAdmin(ctx)
 	}
 
-	adminPassword := a.cfg.AdminPassword
+	adminPassword := a.config().AdminPassword
 	if adminPassword == "" {
 		buf := make([]byte, 16)
 		if _, err := rand.Read(buf); err != nil {
@@ -1668,7 +1708,7 @@ func (a *App) seed(ctx context.Context) error {
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	userID := newID("usr")
-	adminEmail := normalizeEmail(a.cfg.AdminEmail)
+	adminEmail := normalizeEmail(a.config().AdminEmail)
 	if adminEmail == "" || !strings.Contains(adminEmail, "@") {
 		return errors.New("invalid admin email")
 	}
@@ -1709,7 +1749,7 @@ func (a *App) seed(ctx context.Context) error {
 }
 
 func (a *App) ensureConfiguredAdminSuperAdmin(ctx context.Context) error {
-	adminEmail := normalizeEmail(a.cfg.AdminEmail)
+	adminEmail := normalizeEmail(a.config().AdminEmail)
 	if adminEmail == "" || !strings.Contains(adminEmail, "@") {
 		return nil
 	}
@@ -1991,10 +2031,10 @@ func (a *App) seedWelcomeMessage(ctx context.Context, mailboxID string) error {
 	bodyHTML := "<p>你的自建邮箱 Webmail 已经初始化完成。</p><p>请尽快修改默认管理员密码，并配置 MX/SPF/DKIM/DMARC。</p>"
 	if tpl, err := a.mailTemplate(ctx, "welcome"); err == nil {
 		rendered := renderMailTemplate(tpl, templateRenderData{
-			To:             a.cfg.AdminEmail,
+			To:             a.config().AdminEmail,
 			From:           "system@lanqin.local",
-			PublicHostname: a.cfg.PublicHostname,
-			PublicBaseURL:  a.cfg.PublicBaseURL,
+			PublicHostname: a.config().PublicHostname,
+			PublicBaseURL:  a.config().PublicBaseURL,
 			Time:           now,
 		})
 		subject, bodyText, bodyHTML = rendered.Subject, rendered.Text, rendered.HTML
@@ -2007,7 +2047,7 @@ func (a *App) seedWelcomeMessage(ctx context.Context, mailboxID string) error {
 		Subject:    subject,
 		From:       "system@lanqin.local",
 		FromName:   "LanQin Email",
-		To:         []string{a.cfg.AdminEmail},
+		To:         []string{a.config().AdminEmail},
 		SentAt:     now,
 		ReceivedAt: now,
 		Snippet:    snippetFrom(bodyText, bodyHTML),
@@ -2022,6 +2062,6 @@ func (a *App) seedWelcomeMessage(ctx context.Context, mailboxID string) error {
 // lockUserQuotaRowTx serializes concurrent quota checks for one user. See
 // lockUserQuotaRowSQL for why counting without this is unsafe on every driver.
 func (a *App) lockUserQuotaRowTx(ctx context.Context, tx *sql.Tx, userID string) error {
-	_, err := tx.ExecContext(ctx, lockUserQuotaRowSQL(a.cfg.DBDriver), userID)
+	_, err := tx.ExecContext(ctx, lockUserQuotaRowSQL(a.config().DBDriver), userID)
 	return err
 }

@@ -30,10 +30,10 @@ func (f *fakeLinuxDoOAuthClient) ExchangeProfile(context.Context, string, string
 }
 
 func enableLinuxDoForTest(a *App, registration bool, client linuxDoOAuthClient) {
-	a.cfg.LinuxDoSSOEnabled = true
-	a.cfg.LinuxDoRegistrationEnabled = registration
-	a.cfg.LinuxDoClientID = "client-id"
-	a.cfg.LinuxDoClientSecret = "client-secret"
+	a.updateConfig(func(cfg *Config) { cfg.LinuxDoSSOEnabled = true })
+	a.updateConfig(func(cfg *Config) { cfg.LinuxDoRegistrationEnabled = registration })
+	a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientID = "client-id" })
+	a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientSecret = "client-secret" })
 	a.linuxDoOAuth = client
 }
 
@@ -233,13 +233,13 @@ func TestLinuxDoBoundLoginAndLocalTwoFactor(t *testing.T) {
 	if rec.Code != http.StatusFound || redirectResult(t, rec) != "success" {
 		t.Fatalf("login status=%d location=%s", rec.Code, rec.Header().Get("Location"))
 	}
-	_ = responseCookie(t, rec, a.cfg.CookieName)
+	_ = responseCookie(t, rec, a.config().CookieName)
 
 	secret := "JBSWY3DPEHPK3PXP"
 	if _, err := a.db.Exec("UPDATE users SET two_factor_enabled=1,two_factor_secret=? WHERE id=?", secret, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.TwoFactorEnabled = false
+	a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = false })
 	state, err = a.createLinuxDoState(context.Background(), "login", "")
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +261,7 @@ func TestLinuxDoBoundLoginAndLocalTwoFactor(t *testing.T) {
 	if ok.Code != http.StatusOK {
 		t.Fatalf("2fa status=%d body=%s", ok.Code, ok.Body.String())
 	}
-	_ = responseCookie(t, ok, a.cfg.CookieName)
+	_ = responseCookie(t, ok, a.config().CookieName)
 	replay := serveLinuxDoRequest(t, a, http.MethodPost, "/api/auth/linuxdo/2fa", map[string]string{"code": code}, challengeCookie)
 	if replay.Code != http.StatusUnauthorized {
 		t.Fatalf("replayed 2fa challenge status=%d", replay.Code)
@@ -336,7 +336,7 @@ func TestLinuxDoRegistrationIsTransactionalAndSingleUse(t *testing.T) {
 	if replay.Code != http.StatusUnauthorized {
 		t.Fatalf("registration replay status=%d", replay.Code)
 	}
-	a.cfg.ReservedMailboxPrefixes = "reserved"
+	a.updateConfig(func(cfg *Config) { cfg.ReservedMailboxPrefixes = "reserved" })
 	reservedProfile := linuxDoProfile{Subject: "registration-2", Username: "reserved-user", DisplayName: "Reserved"}
 	reservedToken, err := a.createLinuxDoRegistrationChallenge(context.Background(), reservedProfile)
 	if err != nil {
@@ -361,7 +361,7 @@ func TestLinuxDoLinkAndUnlinkRequireReauthentication(t *testing.T) {
 	if err := a.issueSession(sessionRecorder, httptest.NewRequest(http.MethodGet, "/", nil), user.ID); err != nil {
 		t.Fatal(err)
 	}
-	sessionCookie := responseCookie(t, sessionRecorder, a.cfg.CookieName)
+	sessionCookie := responseCookie(t, sessionRecorder, a.config().CookieName)
 	wrong := serveLinuxDoRequest(t, a, http.MethodPost, "/api/me/auth/linuxdo/link", map[string]string{"currentPassword": "wrong"}, sessionCookie)
 	if wrong.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong password link status=%d", wrong.Code)
@@ -433,7 +433,7 @@ func TestLinuxDoSettingsHideAndPreserveClientSecret(t *testing.T) {
 	if code := admin.do(http.MethodPost, "/api/admin/settings", payload, &updated); code != http.StatusOK {
 		t.Fatalf("blank secret update status=%d body=%v", code, updated)
 	}
-	if a.cfg.LinuxDoClientSecret != "top-secret" {
+	if a.config().LinuxDoClientSecret != "top-secret" {
 		t.Fatal("blank Client Secret did not preserve the configured value")
 	}
 	var stored string

@@ -21,7 +21,7 @@ func TestSecureCookiesPublicURL(t *testing.T) {
 		{"http://", false, true},
 		{"", true, false},
 	} {
-		a := &App{cfg: Config{PublicBaseURL: tc.url, AllowInsecureHTTP: tc.allow}}
+		a := newTestAppWithConfigValue(Config{PublicBaseURL: tc.url, AllowInsecureHTTP: tc.allow})
 		if got := a.secureCookies(); got != tc.secure {
 			t.Errorf("URL %q allow=%v: secure=%v want %v", tc.url, tc.allow, got, tc.secure)
 		}
@@ -30,8 +30,8 @@ func TestSecureCookiesPublicURL(t *testing.T) {
 
 func TestHTTPLoginCookieAuthenticatesMe(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.AllowInsecureHTTP = false
-	a.cfg.PublicBaseURL = "http://mail.example.test"
+	a.updateConfig(func(cfg *Config) { cfg.AllowInsecureHTTP = false })
+	a.updateConfig(func(cfg *Config) { cfg.PublicBaseURL = "http://mail.example.test" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	jar, err := cookiejar.New(nil)
@@ -49,7 +49,7 @@ func TestHTTPLoginCookieAuthenticatesMe(t *testing.T) {
 	}
 	found := false
 	for _, cookie := range response.Cookies() {
-		if cookie.Name == a.cfg.CookieName {
+		if cookie.Name == a.config().CookieName {
 			found = true
 			if cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/" {
 				t.Fatal("unexpected session cookie attributes")

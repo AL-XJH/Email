@@ -49,7 +49,7 @@ func TestFaviconUploadServeAndDelete(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("upload code=%d", resp.StatusCode)
 	}
-	if saved, err := os.ReadFile(filepath.Join(a.cfg.DataDir, "favicon.ico")); err != nil || !bytes.Equal(saved, data) {
+	if saved, err := os.ReadFile(filepath.Join(a.config().DataDir, "favicon.ico")); err != nil || !bytes.Equal(saved, data) {
 		t.Fatalf("saved ICO mismatch: err=%v", err)
 	}
 	if code := admin.do("GET", "/api/favicon.ico", nil, nil); code != http.StatusOK {
@@ -78,7 +78,7 @@ func TestFaviconUploadServeAndDelete(t *testing.T) {
 	if code := admin.do("DELETE", "/api/admin/settings/favicon", nil, nil); code != http.StatusOK {
 		t.Fatalf("delete code=%d", code)
 	}
-	if _, err := os.Stat(filepath.Join(a.cfg.DataDir, "favicon.ico")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(a.config().DataDir, "favicon.ico")); !os.IsNotExist(err) {
 		t.Fatalf("favicon remains after delete: %v", err)
 	}
 }
@@ -105,12 +105,12 @@ func TestSiteTitleSettingPersistsAndIsPublic(t *testing.T) {
 	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || public.SiteTitle != "我的邮箱" {
 		t.Fatalf("public title code=%d title=%q", code, public.SiteTitle)
 	}
-	a.cfg.SiteTitle = ""
+	a.updateConfig(func(cfg *Config) { cfg.SiteTitle = "" })
 	if err := a.loadPersistedSystemSettings(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if a.cfg.SiteTitle != "我的邮箱" {
-		t.Fatalf("persisted title = %q", a.cfg.SiteTitle)
+	if a.config().SiteTitle != "我的邮箱" {
+		t.Fatalf("persisted title = %q", a.config().SiteTitle)
 	}
 	payload["siteTitle"] = strings.Repeat("a", 81)
 	if code := admin.do("POST", "/api/admin/settings", payload, nil); code != http.StatusBadRequest {

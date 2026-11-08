@@ -66,12 +66,12 @@ type maildirScanTarget struct {
 }
 
 func (a *App) maildirWorker(ctx context.Context) {
-	interval := time.Duration(a.cfg.MaildirScanSeconds) * time.Second
+	interval := time.Duration(a.config().MaildirScanSeconds) * time.Second
 	if interval <= 0 {
 		interval = defaultMaildirScanSeconds * time.Second
 	}
 	a.maildirHealth.markWorkerStarted(nil)
-	a.log.Info("maildir sync worker started", "root", a.cfg.MaildirRoot, "interval", interval.String())
+	a.log.Info("maildir sync worker started", "root", a.config().MaildirRoot, "interval", interval.String())
 	if counts, err := a.syncMaildirOnceTracked(ctx, interval); err != nil {
 		a.log.Warn("initial maildir sync failed", "error", err)
 	} else if n := counts.total(); n > 0 {
@@ -121,7 +121,7 @@ func (a *App) syncMaildirOnce(ctx context.Context) (int, error) {
 }
 
 func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, error) {
-	root := strings.TrimSpace(a.cfg.MaildirRoot)
+	root := strings.TrimSpace(a.config().MaildirRoot)
 	if root == "" {
 		return maildirSyncCounts{}, nil
 	}
@@ -357,7 +357,7 @@ func (a *App) maildirMailboxes(ctx context.Context) ([]maildirMailbox, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if a.cfg.CatchAllEnabled {
+	if a.config().CatchAllEnabled {
 		domainRows, err := a.db.QueryContext(ctx, `SELECT name FROM domains WHERE status='active' ORDER BY name`)
 		if err != nil {
 			return nil, err
@@ -393,7 +393,7 @@ func (a *App) syncUnregisteredMaildir(ctx context.Context, mb maildirMailbox) (i
 }
 
 func (a *App) syncUnregisteredMaildirDetailed(ctx context.Context, mb maildirMailbox, knownFiles map[string]knownMaildirFile, seenFiles map[string]struct{}) (maildirSyncCounts, error) {
-	base := filepath.Join(strings.TrimSpace(a.cfg.MaildirRoot), mb.Domain, mb.LocalPart, "Maildir")
+	base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), mb.Domain, mb.LocalPart, "Maildir")
 	counts := maildirSyncCounts{}
 	for _, sub := range []string{"new", "cur"} {
 		select {
@@ -693,7 +693,7 @@ func (a *App) removeDuplicateMaildirMessage(ctx context.Context, rawPath, mailbo
 // returns the mailboxes it touched, so the resulting sync event only wakes the clients
 // that can actually see the deletion.
 func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scannedDirs map[string]struct{}, fullScan bool) (int, []string, error) {
-	if strings.TrimSpace(a.cfg.MaildirRoot) == "" {
+	if strings.TrimSpace(a.config().MaildirRoot) == "" {
 		return 0, nil, nil
 	}
 	if !fullScan && len(scannedDirs) == 0 {
@@ -701,8 +701,8 @@ func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scan
 	}
 	// 根目录不可读时绝不能往下走：以前挂载丢了/路径配错，os.Stat 对每一封都返回
 	// 「不存在」，一轮全量扫描就会把整个邮箱的邮件行和附件文件全删掉。
-	if info, err := os.Stat(a.cfg.MaildirRoot); err != nil || !info.IsDir() {
-		a.log.Warn("skip maildir cleanup: maildir root unavailable", "root", a.cfg.MaildirRoot)
+	if info, err := os.Stat(a.config().MaildirRoot); err != nil || !info.IsDir() {
+		a.log.Warn("skip maildir cleanup: maildir root unavailable", "root", a.config().MaildirRoot)
 		return 0, nil, nil
 	}
 	cutoff := a.now().UTC().Add(-5 * time.Minute).Format(time.RFC3339Nano)

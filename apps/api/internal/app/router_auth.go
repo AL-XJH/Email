@@ -273,8 +273,8 @@ func (a *App) registerOpenAPIRoutes(r chi.Router) {
 // read middleware.GetClientIP(ctx).
 func (a *App) clientIPMiddleware() func(http.Handler) http.Handler {
 	source := middleware.ClientIPFromRemoteAddr
-	if a.cfg.TrustedProxyCount > 0 {
-		source = middleware.ClientIPFromXFFTrustedProxies(a.cfg.TrustedProxyCount)
+	if a.config().TrustedProxyCount > 0 {
+		source = middleware.ClientIPFromXFFTrustedProxies(a.config().TrustedProxyCount)
 	}
 	return func(next http.Handler) http.Handler {
 		return source(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -292,8 +292,8 @@ func (a *App) corsMiddleware(next http.Handler) http.Handler {
 		// The localhost allowance is a development affordance: a page on the user's
 		// own machine would otherwise be unable to talk to the API. In production it
 		// only widens the attack surface, so it is tied to insecure-HTTP mode.
-		allowed := origin != "" && origin == a.cfg.PublicBaseURL
-		if !allowed && origin != "" && a.cfg.AllowInsecureHTTP {
+		allowed := origin != "" && origin == a.config().PublicBaseURL
+		if !allowed && origin != "" && a.config().AllowInsecureHTTP {
 			allowed = strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")
 		}
 		if allowed {
@@ -354,7 +354,7 @@ func currentUser(r *http.Request) *User {
 }
 
 func (a *App) authenticateRequest(r *http.Request) (*User, error) {
-	cookie, err := r.Cookie(a.cfg.CookieName)
+	cookie, err := r.Cookie(a.config().CookieName)
 	if err != nil || cookie.Value == "" {
 		return nil, errors.New("no session")
 	}
@@ -409,7 +409,7 @@ func (a *App) authenticateAPIToken(r *http.Request) (*User, map[string]bool, err
 	lastUsed, lastUsedErr := time.Parse(time.RFC3339Nano, lastUsedAt.String)
 	cutoff := nowTime.Add(-time.Minute)
 	if !lastUsedAt.Valid || lastUsedErr != nil || lastUsed.Before(cutoff) {
-		_, _ = a.db.ExecContext(r.Context(), apiTokenLastUsedUpdateSQL(a.cfg.DBDriver), now, tokenID, cutoff.Format(time.RFC3339Nano))
+		_, _ = a.db.ExecContext(r.Context(), apiTokenLastUsedUpdateSQL(a.config().DBDriver), now, tokenID, cutoff.Format(time.RFC3339Nano))
 	}
 	scopes := map[string]bool{}
 	for _, scope := range jsonDecodeSlice(scopesJSON) {

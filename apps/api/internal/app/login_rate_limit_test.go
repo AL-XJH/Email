@@ -68,7 +68,7 @@ func doLoginTestRequest(t *testing.T, serverURL, clientIP string, payload map[st
 func TestLoginRateLimitPasswordAccountAndSuccessReset(t *testing.T) {
 	a := newTestAppBehindProxy(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	a.now = func() time.Time { return now }
+	a.setNow(func() time.Time { return now })
 	server := httptest.NewServer(a.Router())
 	defer server.Close()
 
@@ -134,7 +134,7 @@ func TestLoginRateLimitPasswordAccountAndSuccessReset(t *testing.T) {
 func TestLoginRateLimitIPAddressAcrossAccounts(t *testing.T) {
 	a := newTestAppBehindProxy(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	a.now = func() time.Time { return now }
+	a.setNow(func() time.Time { return now })
 	server := httptest.NewServer(a.Router())
 	defer server.Close()
 
@@ -173,9 +173,9 @@ func TestLoginRateLimitIPAddressAcrossAccounts(t *testing.T) {
 
 func TestLoginRateLimitTOTPAndSuccessfulCleanup(t *testing.T) {
 	a := newTestAppBehindProxy(t)
-	a.cfg.TwoFactorEnabled = true
+	a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = true })
 	now := time.Now().UTC().Truncate(time.Second)
-	a.now = func() time.Time { return now }
+	a.setNow(func() time.Time { return now })
 	secret, err := newTOTPSecret()
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestLoginAuditDoesNotLogCredentialsOrTokens(t *testing.T) {
 	if _, err := a.db.Exec(`UPDATE users SET two_factor_secret=?, two_factor_enabled=1 WHERE email=?`, secret, "admin@lanqin.local"); err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.TwoFactorEnabled = true
+	a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = true })
 	challengeToken, err := a.createLoginChallenge(context.Background(), mustAdminUserID(t, a))
 	if err != nil {
 		t.Fatal(err)

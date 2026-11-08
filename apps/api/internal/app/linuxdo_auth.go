@@ -186,11 +186,11 @@ func linuxDoSubject(raw json.RawMessage) (string, error) {
 }
 
 func (a *App) linuxDoCallbackURL() string {
-	return strings.TrimRight(strings.TrimSpace(a.cfg.PublicBaseURL), "/") + "/api/auth/linuxdo/callback"
+	return strings.TrimRight(strings.TrimSpace(a.config().PublicBaseURL), "/") + "/api/auth/linuxdo/callback"
 }
 
 func (a *App) linuxDoEnabled() bool {
-	return validateLinuxDoSettings(a.cfg) == nil && a.cfg.LinuxDoSSOEnabled
+	return validateLinuxDoSettings(*a.config()) == nil && a.config().LinuxDoSSOEnabled
 }
 
 func validateLinuxDoSettings(cfg Config) error {
@@ -221,7 +221,7 @@ func (a *App) handleLinuxDoLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.setLinuxDoCookie(w, "state", state, "/api/auth/linuxdo/callback", linuxDoOAuthStateTTL)
-	http.Redirect(w, r, a.linuxDoOAuth.AuthorizationURL(a.cfg.LinuxDoClientID, a.linuxDoCallbackURL(), state), http.StatusFound)
+	http.Redirect(w, r, a.linuxDoOAuth.AuthorizationURL(a.config().LinuxDoClientID, a.linuxDoCallbackURL(), state), http.StatusFound)
 }
 
 func (a *App) handleLinuxDoLinkStart(w http.ResponseWriter, r *http.Request) {
@@ -248,7 +248,7 @@ func (a *App) handleLinuxDoLinkStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.setLinuxDoCookie(w, "state", state, "/api/auth/linuxdo/callback", linuxDoOAuthStateTTL)
-	respondJSON(w, http.StatusOK, map[string]string{"url": a.linuxDoOAuth.AuthorizationURL(a.cfg.LinuxDoClientID, a.linuxDoCallbackURL(), state)})
+	respondJSON(w, http.StatusOK, map[string]string{"url": a.linuxDoOAuth.AuthorizationURL(a.config().LinuxDoClientID, a.linuxDoCallbackURL(), state)})
 }
 
 func (a *App) handleLinuxDoCallback(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +283,7 @@ func (a *App) handleLinuxDoCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	profile, err := a.linuxDoOAuth.ExchangeProfile(ctx, code, a.linuxDoCallbackURL(), a.cfg.LinuxDoClientID, a.cfg.LinuxDoClientSecret)
+	profile, err := a.linuxDoOAuth.ExchangeProfile(ctx, code, a.linuxDoCallbackURL(), a.config().LinuxDoClientID, a.config().LinuxDoClientSecret)
 	if err != nil {
 		if errors.Is(err, errLinuxDoIneligible) {
 			a.redirectLinuxDoResult(w, r, target, "ineligible")
@@ -346,7 +346,7 @@ func (a *App) finishLinuxDoLogin(w http.ResponseWriter, r *http.Request, profile
 		a.redirectLinuxDoResult(w, r, "/login", "lookup")
 		return
 	}
-	if !a.cfg.LinuxDoRegistrationEnabled {
+	if !a.config().LinuxDoRegistrationEnabled {
 		a.redirectLinuxDoResult(w, r, "/login", "unbound")
 		return
 	}
@@ -360,7 +360,7 @@ func (a *App) finishLinuxDoLogin(w http.ResponseWriter, r *http.Request, profile
 }
 
 func (a *App) handleLinuxDoPendingRegistration(w http.ResponseWriter, r *http.Request) {
-	if !a.linuxDoEnabled() || !a.cfg.LinuxDoRegistrationEnabled {
+	if !a.linuxDoEnabled() || !a.config().LinuxDoRegistrationEnabled {
 		respondError(w, http.StatusForbidden, "Linux.do 注册未启用")
 		return
 	}
@@ -382,7 +382,7 @@ func (a *App) handleLinuxDoPendingRegistration(w http.ResponseWriter, r *http.Re
 }
 
 func (a *App) handleLinuxDoRegister(w http.ResponseWriter, r *http.Request) {
-	if !a.linuxDoEnabled() || !a.cfg.LinuxDoRegistrationEnabled {
+	if !a.linuxDoEnabled() || !a.config().LinuxDoRegistrationEnabled {
 		respondError(w, http.StatusForbidden, "Linux.do 注册未启用")
 		return
 	}
@@ -415,7 +415,7 @@ func (a *App) handleLinuxDoRegister(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	for _, reserved := range parseReservedPrefixes(a.cfg.ReservedMailboxPrefixes) {
+	for _, reserved := range parseReservedPrefixes(a.config().ReservedMailboxPrefixes) {
 		if localPart == reserved {
 			respondError(w, http.StatusForbidden, "该前缀已被保留，请使用其他前缀")
 			return
@@ -723,7 +723,7 @@ func (a *App) activePublicDomains(ctx context.Context) ([]PublicDomain, error) {
 }
 
 func (a *App) linuxDoCookieName(kind string) string {
-	return a.cfg.CookieName + "_linuxdo_" + kind
+	return a.config().CookieName + "_linuxdo_" + kind
 }
 
 func (a *App) setLinuxDoCookie(w http.ResponseWriter, kind, value, path string, ttl time.Duration) {
@@ -735,7 +735,7 @@ func (a *App) clearLinuxDoCookie(w http.ResponseWriter, kind, path string) {
 }
 
 func (a *App) redirectLinuxDoResult(w http.ResponseWriter, r *http.Request, path, result string) {
-	base, err := url.Parse(strings.TrimSpace(a.cfg.PublicBaseURL))
+	base, err := url.Parse(strings.TrimSpace(a.config().PublicBaseURL))
 	if err != nil || base.Host == "" {
 		respondError(w, http.StatusInternalServerError, "invalid public base URL")
 		return
@@ -755,7 +755,7 @@ func (a *App) redirectLinuxDoResult(w http.ResponseWriter, r *http.Request, path
 // administrator may leave stale after deleting a group, and blocking registration
 // on that would be a worse outcome than granting only the groups that remain.
 func (a *App) linuxDoRegistrationGroupIDs(ctx context.Context, tx *sql.Tx) []string {
-	configured := cleanIDList(strings.Split(a.cfg.LinuxDoRegistrationGroupIDs, ","))
+	configured := cleanIDList(strings.Split(a.config().LinuxDoRegistrationGroupIDs, ","))
 	if len(configured) == 0 {
 		return nil
 	}

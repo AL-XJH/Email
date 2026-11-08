@@ -45,6 +45,15 @@ const (
 	testFileRemoveInterval = 25 * time.Millisecond
 )
 
+// newTestAppWithConfigValue 造一个只带配置的 App（不连数据库），
+// 给那些只依赖配置的单元测试用（比如 dialer、cookie 策略）。
+func newTestAppWithConfigValue(cfg Config) *App {
+	a := &App{}
+	a.setNow(time.Now)
+	a.setConfig(cfg)
+	return a
+}
+
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 	dir := newTestDir(t)
@@ -964,7 +973,7 @@ func TestExternalIMAPDisabledByDefaultAndAdminSettings(t *testing.T) {
 	if settings.ExternalIMAPGmailClientID != "gmail-client" || settings.ExternalIMAPOutlookClientID != "outlook-client" {
 		t.Fatalf("oauth client ids not saved: %+v", settings)
 	}
-	if a.cfg.ExternalIMAPSecretKey != "test-secret" || a.cfg.ExternalIMAPGmailClientSecret != "gmail-secret" || a.cfg.ExternalIMAPOutlookClientSecret != "outlook-secret" {
+	if a.config().ExternalIMAPSecretKey != "test-secret" || a.config().ExternalIMAPGmailClientSecret != "gmail-secret" || a.config().ExternalIMAPOutlookClientSecret != "outlook-secret" {
 		t.Fatalf("secret settings not persisted in config")
 	}
 	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || !public.ExternalIMAPEnabled {
@@ -974,8 +983,8 @@ func TestExternalIMAPDisabledByDefaultAndAdminSettings(t *testing.T) {
 
 func TestExternalIMAPRejectsPrivateHostsByDefault(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.ExternalIMAPEnabled = true
-	a.cfg.ExternalIMAPSecretKey = "test-secret"
+	a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPEnabled = true })
+	a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPSecretKey = "test-secret" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -1272,8 +1281,8 @@ func TestMailRulesConditionGroupsAndActions(t *testing.T) {
 func TestMailRuleAutomaticForwardQueuesOnceAndKeepsInboxCopy(t *testing.T) {
 	a := newTestApp(t)
 	stopTestWorkers(a)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "1"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "1" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -1696,7 +1705,7 @@ func TestOpenRegistrationCreatesLoginUserOnly(t *testing.T) {
 		t.Fatalf("closed registration code=%d body=%v", code, out)
 	}
 
-	a.cfg.OpenRegistration = true
+	a.updateConfig(func(cfg *Config) { cfg.OpenRegistration = true })
 	var registered struct {
 		User User `json:"user"`
 	}
@@ -2156,8 +2165,8 @@ func TestHTMLPolicyPreservesEmailLayoutStyles(t *testing.T) {
 
 func TestMailSendQueuesSMTPFailureForRetry(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "1"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "1" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -2217,8 +2226,8 @@ func TestMailSendRejectsUnauthorizedFrom(t *testing.T) {
 
 func TestMailSendRollsBackSentCopyWhenQueueInsertFails(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SMTPHost = "postfix"
-	a.cfg.SMTPPort = "25"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "postfix" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "25" })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	if _, err := a.db.ExecContext(context.Background(), `DROP TABLE send_queue`); err != nil {
 		t.Fatal(err)
@@ -2417,8 +2426,8 @@ func TestOpenAPIDomainAndMailboxCRUD(t *testing.T) {
 func TestOpenAPISendStatusAndMailboxMessages(t *testing.T) {
 	a := newTestApp(t)
 	stopTestWorkers(a)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "25"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "25" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -2532,9 +2541,9 @@ func TestOpenAPISendStatusAndMailboxMessages(t *testing.T) {
 func TestOpenAPIV1ScopesIdempotencyAndDeliveryEvents(t *testing.T) {
 	a := newTestApp(t)
 	stopTestWorkers(a)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "25"
-	a.cfg.DeliveryWebhookSecret = "delivery-test-secret"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "25" })
+	a.updateConfig(func(cfg *Config) { cfg.DeliveryWebhookSecret = "delivery-test-secret" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 
@@ -2616,7 +2625,7 @@ func TestOpenAPIV1ScopesIdempotencyAndDeliveryEvents(t *testing.T) {
 	}{Events: []deliveryWebhookEvent{{ID: "provider-event-1", Provider: "test-provider", MessageID: first.MessageID, Recipient: recipient.Address, Status: "bounced", Reason: "550 mailbox unavailable", OccurredAt: a.now().UTC().Format(time.RFC3339Nano)}}}
 	body, _ := json.Marshal(eventPayload)
 	timestamp := strconv.FormatInt(a.now().UTC().Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(a.cfg.DeliveryWebhookSecret))
+	mac := hmac.New(sha256.New, []byte(a.config().DeliveryWebhookSecret))
 	_, _ = mac.Write([]byte(timestamp + "."))
 	_, _ = mac.Write(body)
 	webhookHeaders := map[string]string{"X-LanQin-Timestamp": timestamp, "X-LanQin-Signature": "sha256=" + hex.EncodeToString(mac.Sum(nil))}
@@ -2625,7 +2634,7 @@ func TestOpenAPIV1ScopesIdempotencyAndDeliveryEvents(t *testing.T) {
 		t.Fatalf("invalid delivery webhook signature code=%d", code)
 	}
 	oldTimestamp := strconv.FormatInt(a.now().UTC().Add(-10*time.Minute).Unix(), 10)
-	oldMAC := hmac.New(sha256.New, []byte(a.cfg.DeliveryWebhookSecret))
+	oldMAC := hmac.New(sha256.New, []byte(a.config().DeliveryWebhookSecret))
 	_, _ = oldMAC.Write([]byte(oldTimestamp + "."))
 	_, _ = oldMAC.Write(body)
 	oldHeaders := map[string]string{"X-LanQin-Timestamp": oldTimestamp, "X-LanQin-Signature": "sha256=" + hex.EncodeToString(oldMAC.Sum(nil))}
@@ -2805,9 +2814,9 @@ func TestStatusWebhookOutboxDeliveryRetryAndSSRFProtection(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer receiver.Close()
-	a.cfg.StatusWebhookURL = receiver.URL
-	a.cfg.StatusWebhookSecret = "outbound-test-secret"
-	a.cfg.StatusWebhookAllowPrivateHosts = true
+	a.updateConfig(func(cfg *Config) { cfg.StatusWebhookURL = receiver.URL })
+	a.updateConfig(func(cfg *Config) { cfg.StatusWebhookSecret = "outbound-test-secret" })
+	a.updateConfig(func(cfg *Config) { cfg.StatusWebhookAllowPrivateHosts = true })
 
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	a.recordSendAudit(context.Background(), sendAuditFailed, sendQueueStatusFailed, sendAuditInput{QueueID: "snd_test", UserID: user.ID, MailboxID: mb.ID, SentMessageID: "mail_test", Source: sendSourceOpenAPI, MailFrom: mb.Address, Recipients: []string{"recipient@example.test"}, Error: "test failure"})
@@ -2843,8 +2852,8 @@ func TestStatusWebhookOutboxDeliveryRetryAndSSRFProtection(t *testing.T) {
 
 	privateTLS := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer privateTLS.Close()
-	a.cfg.StatusWebhookURL = privateTLS.URL
-	a.cfg.StatusWebhookAllowPrivateHosts = false
+	a.updateConfig(func(cfg *Config) { cfg.StatusWebhookURL = privateTLS.URL })
+	a.updateConfig(func(cfg *Config) { cfg.StatusWebhookAllowPrivateHosts = false })
 	if _, err := a.validatedStatusWebhookURL(context.Background()); err == nil || !strings.Contains(err.Error(), "private or local") {
 		t.Fatalf("private webhook target should be rejected, err=%v", err)
 	}
@@ -2854,8 +2863,8 @@ func TestSendQueueRecoversStaleSendingItems(t *testing.T) {
 	a := newTestApp(t)
 	stopTestWorkers(a)
 	host, port, received := startCapturingSMTP(t, 1)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	now := a.now().UTC()
 	mimeBytes := []byte("From: admin@lanqin.local\r\nTo: person@example.com\r\nSubject: stale\r\n\r\nbody")
@@ -2904,8 +2913,8 @@ func TestSendQueueStaleDeliveredMarkerDoesNotRedeliver(t *testing.T) {
 	a := newTestApp(t)
 	stopTestWorkers(a)
 	host, port, received := startCapturingSMTP(t, 1)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	now := a.now().UTC()
 	mimeBytes := []byte("From: admin@lanqin.local\r\nTo: person@example.com\r\nSubject: marker\r\n\r\nbody")
@@ -2958,8 +2967,8 @@ func TestSendQueueStaleDeliveredMarkerDoesNotRedeliver(t *testing.T) {
 
 func TestSendQueueAPIPermissionIsolation(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "25"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "25" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -3033,8 +3042,8 @@ func TestSendQueueAPIPermissionIsolation(t *testing.T) {
 
 func TestSendQueueAPIFiltersStableCursorAndMessageDetailLink(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "25"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "25" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	client := &testClient{t: t, server: ts}
@@ -3165,8 +3174,8 @@ func TestSendQueueAPIFiltersStableCursorAndMessageDetailLink(t *testing.T) {
 func TestSendQueueAPIRetryAndCancel(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startCapturingSMTP(t, 1)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	client := &testClient{t: t, server: ts}
@@ -3420,8 +3429,8 @@ func TestSubmissionAuthRequiresMailboxPasswordAndSendPermission(t *testing.T) {
 func TestSubmissionSendsRelayAndStoresSentCopy(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startCapturingSMTP(t, 2)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	raw := strings.Join([]string{
 		"From: Admin <admin@lanqin.local>",
 		"To: person@example.com",
@@ -3517,8 +3526,8 @@ func TestSerializeMessageUsesStableHeaderOrder(t *testing.T) {
 
 func TestSubmissionRelayFailureKeepsSentCopyAndRetries(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "1"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "1" })
 	user, mb, err := a.authenticateSubmission(context.Background(), "admin@lanqin.local", "ChangeMe123!")
 	if err != nil {
 		t.Fatal(err)
@@ -3549,8 +3558,8 @@ func TestSubmissionRelayFailureKeepsSentCopyAndRetries(t *testing.T) {
 func TestSubmissionSentCopyDedupesByMessageID(t *testing.T) {
 	a := newTestApp(t)
 	host, port, _ := startCapturingSMTP(t, 4)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	user, mb, err := a.authenticateSubmission(context.Background(), "admin@lanqin.local", "ChangeMe123!")
 	if err != nil {
 		t.Fatal(err)
@@ -3623,8 +3632,8 @@ func TestInsertSentMessageOnceFailsWhenDedupeKeyHasNoMessage(t *testing.T) {
 
 func TestSubmissionRequeuesTerminalFailedDuplicateMessageID(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SMTPHost = "127.0.0.1"
-	a.cfg.SMTPPort = "1"
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = "127.0.0.1" })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = "1" })
 	user, mb, err := a.authenticateSubmission(context.Background(), "admin@lanqin.local", "ChangeMe123!")
 	if err != nil {
 		t.Fatal(err)
@@ -3638,8 +3647,8 @@ func TestSubmissionRequeuesTerminalFailedDuplicateMessageID(t *testing.T) {
 	}
 
 	host, port, received := startCapturingSMTP(t, 1)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	if err := a.submitSMTPMessage(context.Background(), user, mb, mb.Address, []string{"person@example.com"}, strings.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -3664,8 +3673,8 @@ func TestSubmissionRequeuesTerminalFailedDuplicateMessageID(t *testing.T) {
 func TestSubmissionRequeuesDeliveredDuplicateMessageID(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startCapturingSMTP(t, 2)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	user, mb, err := a.authenticateSubmission(context.Background(), "admin@lanqin.local", "ChangeMe123!")
 	if err != nil {
 		t.Fatal(err)
@@ -3706,8 +3715,8 @@ func TestSubmissionRequeuesDeliveredDuplicateMessageID(t *testing.T) {
 func TestSubmissionRequeuesCanceledDuplicateMessageID(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startCapturingSMTP(t, 1)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	user, mb, err := a.authenticateSubmission(context.Background(), "admin@lanqin.local", "ChangeMe123!")
 	if err != nil {
 		t.Fatal(err)
@@ -3857,9 +3866,9 @@ func TestSendQueueMessageIDMigrationDropsDuplicatesBeforeUniqueIndex(t *testing.
 
 func TestSubmissionTLSConfigRequiresCertificateFiles(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.SubmissionAddr = ":587"
-	a.cfg.SubmissionTLSAddr = ":465"
-	if _, err := LoadServerTLSConfig(a.cfg); err == nil {
+	a.updateConfig(func(cfg *Config) { cfg.SubmissionAddr = ":587" })
+	a.updateConfig(func(cfg *Config) { cfg.SubmissionTLSAddr = ":465" })
+	if _, err := LoadServerTLSConfig(*a.config()); err == nil {
 		t.Fatal("submission TLS config should require certificate files")
 	}
 }
@@ -3867,9 +3876,9 @@ func TestSubmissionTLSConfigRequiresCertificateFiles(t *testing.T) {
 func TestSubmissionTLSConfigReloadsCertificateFiles(t *testing.T) {
 	a := newTestApp(t)
 	certPath, keyPath := writeTestCertificateFiles(t, "first.example.test")
-	a.cfg.TLSCertFile = certPath
-	a.cfg.TLSKeyFile = keyPath
-	tlsConfig, err := LoadServerTLSConfig(a.cfg)
+	a.updateConfig(func(cfg *Config) { cfg.TLSCertFile = certPath })
+	a.updateConfig(func(cfg *Config) { cfg.TLSKeyFile = keyPath })
+	tlsConfig, err := LoadServerTLSConfig(*a.config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3912,12 +3921,12 @@ func TestSubmissionTLSConfigReloadsCertificateFiles(t *testing.T) {
 func TestSubmissionServersAcceptStartTLSAndImplicitTLS(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startCapturingSMTP(t, 2)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	certPath, keyPath := writeTestCertificateFiles(t, "mail.example.test")
-	a.cfg.TLSCertFile = certPath
-	a.cfg.TLSKeyFile = keyPath
-	tlsConfig, err := LoadServerTLSConfig(a.cfg)
+	a.updateConfig(func(cfg *Config) { cfg.TLSCertFile = certPath })
+	a.updateConfig(func(cfg *Config) { cfg.TLSKeyFile = keyPath })
+	tlsConfig, err := LoadServerTLSConfig(*a.config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3988,8 +3997,8 @@ func TestSubmissionServersAcceptStartTLSAndImplicitTLS(t *testing.T) {
 func TestAdminSMTPTestEndpoint(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startFakeSMTP(t)
-	a.cfg.SMTPHost = host
-	a.cfg.SMTPPort = port
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -4138,10 +4147,10 @@ func TestUserMailSignaturesDefaultResolution(t *testing.T) {
 
 func TestUserTwoFactorSetupAndLogin(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.TwoFactorEnabled = true
+	a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = true })
 	// One accepted code burns its 30-second step, so each use below needs a new step.
 	clock := time.Now().UTC().Truncate(time.Second)
-	a.now = func() time.Time { return clock }
+	a.setNow(func() time.Time { return clock })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	client := &testClient{t: t, server: ts}
@@ -4229,7 +4238,7 @@ func TestDNSRecords(t *testing.T) {
 		t.Fatalf("unexpected records: %+v", records)
 	}
 
-	a.cfg.PublicHostname = d.Name
+	a.updateConfig(func(cfg *Config) { cfg.PublicHostname = d.Name })
 	if sameHostRecords := a.dnsRecordsFor(d); len(sameHostRecords) != 4 {
 		t.Fatalf("same-host records=%d, want 4: %+v", len(sameHostRecords), sameHostRecords)
 	}
@@ -4642,7 +4651,7 @@ func TestMaildirSyncImportsRFC822(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	a.cfg.MaildirRoot = root
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = root })
 	var domainID string
 	if err := a.db.QueryRowContext(ctx, `SELECT id FROM domains WHERE name=?`, "lanqin.local").Scan(&domainID); err != nil {
 		t.Fatal(err)
@@ -4723,7 +4732,7 @@ func TestMaildirImportStoresAuthenticationResults(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	a.cfg.MaildirRoot = root
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = root })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 
@@ -4804,7 +4813,7 @@ func TestMaildirSyncDoesNotRewriteUnchangedFiles(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	a.cfg.MaildirRoot = root
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = root })
 	_, mailbox := defaultAdminUserAndMailbox(t, a)
 	mailboxID := mailbox.ID
 	clearMailboxMessagesForTest(t, a, mailboxID)
@@ -4847,7 +4856,7 @@ func TestMaildirSyncDoesNotRewriteUnchangedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := parseTime(before)
-	a.now = func() time.Time { return base.Add(time.Hour) }
+	a.setNow(func() time.Time { return base.Add(time.Hour) })
 	if count, err := a.syncMaildirOnce(ctx); err != nil || count != 0 {
 		t.Fatalf("second sync count=%d err=%v", count, err)
 	}
@@ -4923,8 +4932,8 @@ func TestMaildirSyncHealthAfterTrackedSync(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	a.cfg.MaildirRoot = root
-	a.cfg.MaildirScanSeconds = 45
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = root })
+	a.updateConfig(func(cfg *Config) { cfg.MaildirScanSeconds = 45 })
 	adminUser, _, err := a.userByEmail(ctx, "admin@lanqin.local")
 	if err != nil {
 		t.Fatal(err)
@@ -4976,7 +4985,7 @@ func TestMaildirSyncHealthAfterTrackedSync(t *testing.T) {
 	if counts.Imported != 1 || counts.FilesScanned != 1 {
 		t.Fatalf("counts=%+v, want imported=1 filesScanned=1", counts)
 	}
-	health := a.maildirHealth.snapshot(a.cfg)
+	health := a.maildirHealth.snapshot(*a.config())
 	if !health.Configured || !health.Enabled {
 		t.Fatalf("configured health=%+v, want enabled", health)
 	}
@@ -4998,7 +5007,7 @@ func TestMaildirSyncImportsSentFolder(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	a.cfg.MaildirRoot = root
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = root })
 	adminUser, _, err := a.userByEmail(ctx, "admin@lanqin.local")
 	if err != nil {
 		t.Fatal(err)
@@ -5071,7 +5080,7 @@ func TestMaildirSyncImportsSentFolder(t *testing.T) {
 func TestWebmailSentWritesMaildirSent(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
 
@@ -5111,7 +5120,7 @@ func TestWebmailSentWritesMaildirSent(t *testing.T) {
 func TestMaildirSyncBackfillsSQLiteOnlySent(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
 
@@ -5154,7 +5163,7 @@ func TestMaildirSyncBackfillsSQLiteOnlySent(t *testing.T) {
 
 func TestDraftWritesAndUpdatesMaildirDrafts(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	srv := httptest.NewServer(a.Router())
 	defer srv.Close()
 	client := &testClient{t: t, server: srv}
@@ -5207,7 +5216,7 @@ func TestDraftWritesAndUpdatesMaildirDrafts(t *testing.T) {
 func TestMoveAndDeleteMessageUpdateMaildir(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	srv := httptest.NewServer(a.Router())
 	defer srv.Close()
 	client := &testClient{t: t, server: srv}
@@ -5260,7 +5269,7 @@ func TestMoveAndDeleteMessageUpdateMaildir(t *testing.T) {
 func TestMessageFlagsUpdateMaildir(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	srv := httptest.NewServer(a.Router())
 	defer srv.Close()
 	client := &testClient{t: t, server: srv}
@@ -5306,7 +5315,7 @@ func TestMessageFlagsUpdateMaildir(t *testing.T) {
 func TestIMAPUIDAndModSeqProgression(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	srv := httptest.NewServer(a.Router())
 	defer srv.Close()
 	client := &testClient{t: t, server: srv}
@@ -5399,7 +5408,7 @@ func TestIMAPUIDAndModSeqProgression(t *testing.T) {
 func TestMaildirSyncUpdatesMovedMessageState(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
 
@@ -5445,7 +5454,7 @@ func TestMaildirSyncUpdatesMovedMessageState(t *testing.T) {
 func TestMaildirSyncKeepsDistinctCopiesWithSameMessageID(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
 
@@ -5474,7 +5483,7 @@ func TestMaildirSyncKeepsDistinctCopiesWithSameMessageID(t *testing.T) {
 func TestMaildirSyncUpdatesFlagsFromIMAP(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
 
@@ -5515,7 +5524,7 @@ func TestMaildirSyncUpdatesFlagsFromIMAP(t *testing.T) {
 func TestMaildirSyncDeletesMissingMessage(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	user, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
 

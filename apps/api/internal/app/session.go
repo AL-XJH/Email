@@ -12,7 +12,7 @@ import (
 // Use the administrator-configured public URL, not proxy/request headers: TLS
 // may terminate upstream, and clients must not be able to downgrade cookies.
 func (a *App) secureCookies() bool {
-	base, err := url.Parse(strings.TrimSpace(a.cfg.PublicBaseURL))
+	base, err := url.Parse(strings.TrimSpace(a.config().PublicBaseURL))
 	if err == nil && base.Hostname() != "" && base.User == nil {
 		switch base.Scheme {
 		case "https":
@@ -21,19 +21,19 @@ func (a *App) secureCookies() bool {
 			return false
 		}
 	}
-	return !a.cfg.AllowInsecureHTTP
+	return !a.config().AllowInsecureHTTP
 }
 
 func (a *App) issueSession(w http.ResponseWriter, r *http.Request, userID string) error {
 	token := randomToken()
 	sessionID := newID("ses")
-	expires := a.now().UTC().Add(time.Duration(a.cfg.SessionTTLHours) * time.Hour)
+	expires := a.now().UTC().Add(time.Duration(a.config().SessionTTLHours) * time.Hour)
 	if _, err := a.db.ExecContext(r.Context(), `INSERT INTO sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)`,
 		sessionID, userID, hashToken(token), expires.Format(time.RFC3339Nano), a.now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     a.cfg.CookieName,
+		Name:     a.config().CookieName,
 		Value:    token,
 		Path:     "/",
 		Expires:  expires,

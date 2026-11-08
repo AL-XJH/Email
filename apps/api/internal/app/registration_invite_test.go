@@ -8,8 +8,8 @@ import (
 
 func TestInvitationRegistrationLifecycle(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.InviteRegistrationEnabled = true
-	a.cfg.ReservedMailboxPrefixes = "admin,root"
+	a.updateConfig(func(cfg *Config) { cfg.InviteRegistrationEnabled = true })
+	a.updateConfig(func(cfg *Config) { cfg.ReservedMailboxPrefixes = "admin,root" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -74,7 +74,7 @@ func TestInvitationRegistrationLifecycle(t *testing.T) {
 		t.Fatalf("exhausted invite counts code=%d item=%+v", code, list.Items[0])
 	}
 
-	a.cfg.OpenRegistration = true
+	a.updateConfig(func(cfg *Config) { cfg.OpenRegistration = true })
 	if code, body := register(&testClient{t: t, server: ts}, "open@example.test", ""); code != http.StatusCreated {
 		t.Fatalf("open registration should not require invite code=%d body=%v", code, body)
 	}

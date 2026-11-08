@@ -92,7 +92,7 @@ func (a *App) localRecipientTargets(ctx context.Context, recipients []string) (m
 			if target != "" {
 				targets[target] = true
 				matched = true
-			} else if a.cfg.CatchAllEnabled && a.isLocalDomainAddress(ctx, address) && !seenUnknown[address] {
+			} else if a.config().CatchAllEnabled && a.isLocalDomainAddress(ctx, address) && !seenUnknown[address] {
 				unknown = append(unknown, address)
 				seenUnknown[address] = true
 				matched = true
@@ -112,7 +112,7 @@ func (a *App) localRecipientTargets(ctx context.Context, recipients []string) (m
 		}
 		if target != "" {
 			targets[target] = true
-		} else if !matched && a.cfg.CatchAllEnabled && a.isLocalDomainAddress(ctx, address) && !seenUnknown[address] {
+		} else if !matched && a.config().CatchAllEnabled && a.isLocalDomainAddress(ctx, address) && !seenUnknown[address] {
 			unknown = append(unknown, address)
 			seenUnknown[address] = true
 		}
@@ -152,7 +152,7 @@ func (a *App) deliverLocalRecipients(ctx context.Context, sourceID string, recip
 	jobs := []string{}
 	for target := range targets {
 		id := newID("ldj")
-		query := upsertSQL(a.cfg.DBDriver, "INSERT INTO local_delivery_jobs(id,source_id,target_mailbox_id,payload,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?,?)", "(source_id,target_mailbox_id)", "source_id=excluded.source_id", "source_id=VALUES(source_id)")
+		query := upsertSQL(a.config().DBDriver, "INSERT INTO local_delivery_jobs(id,source_id,target_mailbox_id,payload,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?,?)", "(source_id,target_mailbox_id)", "source_id=excluded.source_id", "source_id=VALUES(source_id)")
 		if _, err = tx.ExecContext(ctx, query, id, sourceID, target, string(payload), now, now, now); err != nil {
 			return err
 		}
@@ -283,7 +283,7 @@ func (a *App) completeLocalDelivery(ctx context.Context, id, token string) error
 		if !committed && createdMessageID != "" {
 			_ = tx.Rollback()
 			// Only this transaction's newly generated attachment directory.
-			_ = os.RemoveAll(filepath.Join(a.cfg.DataDir, "attachments", createdMessageID))
+			_ = os.RemoveAll(filepath.Join(a.config().DataDir, "attachments", createdMessageID))
 		}
 	}()
 	// Row lock protects insertion and its durable id from concurrent lease recovery.

@@ -98,7 +98,7 @@ func (a *App) checkSchemaReady(ctx context.Context) error {
 			return err
 		}
 	}
-	if a.cfg.DBDriver == databaseDriverSQLite {
+	if a.config().DBDriver == databaseDriverSQLite {
 		return nil
 	}
 	var count, version int
@@ -112,11 +112,11 @@ func (a *App) checkSchemaReady(ctx context.Context) error {
 }
 
 func (a *App) checkStorageReady() error {
-	attachmentsDir := filepath.Join(a.cfg.DataDir, "attachments")
+	attachmentsDir := filepath.Join(a.config().DataDir, "attachments")
 	if err := checkDirectoryWritable(attachmentsDir); err != nil {
 		return err
 	}
-	maildirRoot := strings.TrimSpace(a.cfg.MaildirRoot)
+	maildirRoot := strings.TrimSpace(a.config().MaildirRoot)
 	if maildirRoot == "" {
 		return nil
 	}

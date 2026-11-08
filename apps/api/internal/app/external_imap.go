@@ -134,7 +134,7 @@ type externalIMAPOAuthState struct {
 }
 
 func (a *App) externalIMAPWorker(ctx context.Context) {
-	interval := time.Duration(a.cfg.ExternalIMAPSyncSeconds) * time.Second
+	interval := time.Duration(a.config().ExternalIMAPSyncSeconds) * time.Second
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -151,7 +151,7 @@ func (a *App) externalIMAPWorker(ctx context.Context) {
 }
 
 func (a *App) syncDueExternalIMAPAccounts(ctx context.Context) {
-	if !a.cfg.ExternalIMAPEnabled {
+	if !a.config().ExternalIMAPEnabled {
 		return
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT id FROM external_imap_accounts WHERE enabled=1 AND storage_mode=? ORDER BY COALESCE(last_sync_at, created_at) ASC LIMIT 10`, externalIMAPStorageLocal)
@@ -191,7 +191,7 @@ func (a *App) syncDueExternalIMAPAccounts(ctx context.Context) {
 
 func (a *App) requireExternalIMAPEnabled(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !a.cfg.ExternalIMAPEnabled {
+		if !a.config().ExternalIMAPEnabled {
 			respondError(w, http.StatusForbidden, "external imap is disabled")
 			return
 		}
@@ -561,7 +561,7 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusInternalServerError, "failed to save oauth account")
 		return
 	}
-	http.Redirect(w, r, strings.TrimRight(a.cfg.PublicBaseURL, "/")+"/profile?tab=mailboxes", http.StatusFound)
+	http.Redirect(w, r, strings.TrimRight(a.config().PublicBaseURL, "/")+"/profile?tab=mailboxes", http.StatusFound)
 }
 
 func (a *App) handleMailExternalAccounts(w http.ResponseWriter, r *http.Request) {
@@ -937,7 +937,7 @@ func (a *App) normalizeExternalIMAPPayload(ctx context.Context, req externalIMAP
 }
 
 func (a *App) validateExternalIMAPHost(ctx context.Context, host string) error {
-	if a.cfg.ExternalIMAPAllowPrivateHosts {
+	if a.config().ExternalIMAPAllowPrivateHosts {
 		return nil
 	}
 	if strings.EqualFold(host, "localhost") {
@@ -969,7 +969,7 @@ func (a *App) validateExternalIMAPHost(ctx context.Context, host string) error {
 // is the only point where the check cannot be raced.
 func (a *App) externalIMAPDialer() *net.Dialer {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	if a.cfg.ExternalIMAPAllowPrivateHosts {
+	if a.config().ExternalIMAPAllowPrivateHosts {
 		return dialer
 	}
 	dialer.Control = func(_, address string, _ syscall.RawConn) error {
@@ -1035,7 +1035,7 @@ func (a *App) decryptExternalIMAPPassword(ciphertext string) (string, error) {
 }
 
 func (a *App) externalIMAPKey() ([]byte, error) {
-	secret := strings.TrimSpace(a.cfg.ExternalIMAPSecretKey)
+	secret := strings.TrimSpace(a.config().ExternalIMAPSecretKey)
 	if secret == "" {
 		return nil, errors.New("LANQIN_EXTERNAL_IMAP_SECRET_KEY is required")
 	}
@@ -1050,15 +1050,15 @@ type externalIMAPOAuthProvider struct {
 }
 
 func (a *App) externalIMAPOAuthConfig(provider string) (*oauth2.Config, externalIMAPOAuthProvider, error) {
-	callback := strings.TrimRight(a.cfg.PublicBaseURL, "/") + "/api/external-imap-oauth/" + provider + "/callback"
+	callback := strings.TrimRight(a.config().PublicBaseURL, "/") + "/api/external-imap-oauth/" + provider + "/callback"
 	switch provider {
 	case externalIMAPOAuthGmail:
-		if a.cfg.ExternalIMAPGmailClientID == "" || a.cfg.ExternalIMAPGmailClientSecret == "" {
+		if a.config().ExternalIMAPGmailClientID == "" || a.config().ExternalIMAPGmailClientSecret == "" {
 			return nil, externalIMAPOAuthProvider{}, errors.New("gmail oauth is not configured")
 		}
 		return &oauth2.Config{
-			ClientID:     a.cfg.ExternalIMAPGmailClientID,
-			ClientSecret: a.cfg.ExternalIMAPGmailClientSecret,
+			ClientID:     a.config().ExternalIMAPGmailClientID,
+			ClientSecret: a.config().ExternalIMAPGmailClientSecret,
 			RedirectURL:  callback,
 			Scopes:       []string{"openid", "email", "profile", "https://mail.google.com/"},
 			Endpoint: oauth2.Endpoint{
@@ -1067,12 +1067,12 @@ func (a *App) externalIMAPOAuthConfig(provider string) (*oauth2.Config, external
 			},
 		}, externalIMAPOAuthProvider{Name: "Gmail", Host: "imap.gmail.com", Port: 993}, nil
 	case externalIMAPOAuthOutlook:
-		if a.cfg.ExternalIMAPOutlookClientID == "" || a.cfg.ExternalIMAPOutlookClientSecret == "" {
+		if a.config().ExternalIMAPOutlookClientID == "" || a.config().ExternalIMAPOutlookClientSecret == "" {
 			return nil, externalIMAPOAuthProvider{}, errors.New("outlook oauth is not configured")
 		}
 		return &oauth2.Config{
-			ClientID:     a.cfg.ExternalIMAPOutlookClientID,
-			ClientSecret: a.cfg.ExternalIMAPOutlookClientSecret,
+			ClientID:     a.config().ExternalIMAPOutlookClientID,
+			ClientSecret: a.config().ExternalIMAPOutlookClientSecret,
 			RedirectURL:  callback,
 			Scopes:       []string{"openid", "email", "profile", "offline_access", "https://outlook.office.com/IMAP.AccessAsUser.All"},
 			Endpoint: oauth2.Endpoint{
@@ -1238,7 +1238,16 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 	if err != nil {
 		return a.finishExternalIMAPRun(ctx, run, "failed", err)
 	}
+	// 客户端自己带命令级超时（响应 30s、字面量 5min、写 30s），但一次同步可能遍历
+	// 几十个文件夹，每轮都在超时内也可能跑很久。这里按 context 的 deadline 在文件夹之间
+	// 主动收手，别让 worker 的一个账号卡住整条定时链路。
+	deadlineHit := false
 	for _, folder := range folders {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			a.log.Warn("external imap sync stopped early", "account", account.ID, "error", ctxErr)
+			deadlineHit = true
+			break
+		}
 		imported, skipped, failed, err := a.syncExternalIMAPFolder(ctx, account, client, folder)
 		run.Imported += imported
 		run.Skipped += skipped
@@ -1249,7 +1258,7 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 		}
 	}
 	status := "ok"
-	if run.Failed > 0 {
+	if run.Failed > 0 || deadlineHit {
 		status = "partial"
 	}
 	return a.finishExternalIMAPRun(ctx, run, status, nil)
@@ -1387,9 +1396,9 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 			break
 		}
 	}
-	query := upsertSQL(a.cfg.DBDriver, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,last_sync_at,created_at,updated_at)
+	query := upsertSQL(a.config().DBDriver, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,last_sync_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder)`,
-		`local_folder_id=excluded.local_folder_id,uid_validity=excluded.uid_validity,last_uid=`+scalarMaxSQL(a.cfg.DBDriver, "last_uid", "excluded.last_uid")+`,last_sync_at=excluded.last_sync_at,updated_at=excluded.updated_at`,
+		`local_folder_id=excluded.local_folder_id,uid_validity=excluded.uid_validity,last_uid=`+scalarMaxSQL(a.config().DBDriver, "last_uid", "excluded.last_uid")+`,last_sync_at=excluded.last_sync_at,updated_at=excluded.updated_at`,
 		`local_folder_id=VALUES(local_folder_id),uid_validity=VALUES(uid_validity),last_uid=GREATEST(last_uid,VALUES(last_uid)),last_sync_at=VALUES(last_sync_at),updated_at=VALUES(updated_at)`)
 	_, _ = a.db.ExecContext(ctx, query,
 		account.ID, folder.Name, localFolderID, folder.UIDValidity, lastUID, now, now, now)
@@ -1459,7 +1468,7 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 		return "", err
 	}
 	defer tx.Rollback()
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,is_read,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder,uid_validity,uid)`)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,is_read,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder,uid_validity,uid)`)
 	res, err := tx.ExecContext(ctx, query, account.ID, folder, item.UIDValidity, item.UID, msg.MessageID, boolInt(item.IsRead), now, now)
 	if err != nil {
 		return "", err
@@ -2225,7 +2234,8 @@ func fetchBufferToExternalMessage(folder string, uidValidity uint32, msg *imapcl
 }
 
 func parseExternalIMAPRawForSnippet(raw []byte) (storedMessage, []AttachmentInput, error) {
-	tmp := &App{now: time.Now, policy: NewHTMLPolicy()}
+	tmp := &App{policy: NewHTMLPolicy()}
+	tmp.setNow(time.Now)
 	return tmp.parseMaildirMessage(raw, "")
 }
 

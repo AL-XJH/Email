@@ -246,7 +246,7 @@ func (a *App) decryptTOTPSecret(stored string) (string, error) {
 // The value is domain-separated so this key cannot coincide with the one protecting
 // Telegram tokens even though both derive from the same secret.
 func (a *App) totpSecretEncryptionKey() ([]byte, bool) {
-	trimmed := strings.TrimSpace(a.cfg.NotificationSecretKey)
+	trimmed := strings.TrimSpace(a.config().NotificationSecretKey)
 	if trimmed == "" {
 		return nil, false
 	}
@@ -279,7 +279,7 @@ func (a *App) loadUserAuthByID(ctx context.Context, id string) (*User, string, e
 }
 
 func (a *App) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.TwoFactorEnabled {
+	if !a.config().TwoFactorEnabled {
 		respondError(w, http.StatusBadRequest, "双因素认证已关闭")
 		return
 	}
@@ -319,7 +319,7 @@ func (a *App) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleTwoFactorEnable(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.TwoFactorEnabled {
+	if !a.config().TwoFactorEnabled {
 		respondError(w, http.StatusBadRequest, "双因素认证已关闭")
 		return
 	}

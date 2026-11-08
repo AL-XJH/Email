@@ -121,7 +121,7 @@ func (a *App) recordLoginFailure(ctx context.Context, account, clientIP string) 
 }
 
 func (a *App) upsertLoginFailure(ctx context.Context, tx *sql.Tx, subject loginRateLimitSubject, nowValue, cutoff, blockedUntil string) error {
-	if a.cfg.DBDriver == databaseDriverMySQL {
+	if a.config().DBDriver == databaseDriverMySQL {
 		_, err := tx.ExecContext(ctx, `INSERT INTO login_rate_limits(scope,subject_hash,failure_count,window_started_at,blocked_until,updated_at)
 			VALUES(?,?,1,?,'',?)
 			ON DUPLICATE KEY UPDATE

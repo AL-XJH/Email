@@ -12,7 +12,7 @@ func TestAdminDeliveryQueueListAndMutationsRedactAndGuardState(t *testing.T) {
 	defer server.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var adminID string
-	if err := a.db.QueryRow(`SELECT id FROM users WHERE email=?`, a.cfg.AdminEmail).Scan(&adminID); err != nil {
+	if err := a.db.QueryRow(`SELECT id FROM users WHERE email=?`, a.config().AdminEmail).Scan(&adminID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.db.Exec(`INSERT INTO telegram_notification_outbox(id,event_key,user_id,mailbox_id,message_id,rule_id,payload_json,attempt_count,next_attempt_at,last_error,created_at,updated_at,lease_owner,lease_token,lease_until)

@@ -186,7 +186,7 @@ func (w *base64LineWriter) close() error {
 }
 
 func (a *App) sendSMTP(from string, recipients []string, mimeBytes []byte) error {
-	return sendSMTPWithConfig(a.cfg, from, recipients, mimeBytes)
+	return sendSMTPWithConfig(*a.config(), from, recipients, mimeBytes)
 }
 
 func sendSMTPWithConfig(cfg Config, from string, recipients []string, mimeBytes []byte) error {

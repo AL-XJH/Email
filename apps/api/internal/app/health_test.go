@@ -86,7 +86,7 @@ func TestReadinessReportsDatabaseFailureWithoutDetails(t *testing.T) {
 func TestReadinessReportsStorageFailureWithoutLeakingPath(t *testing.T) {
 	a := newTestApp(t)
 	secretPath := filepath.Join(t.TempDir(), "sensitive-storage-name", "missing")
-	a.cfg.DataDir = secretPath
+	a.updateConfig(func(cfg *Config) { cfg.DataDir = secretPath })
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	res := httptest.NewRecorder()

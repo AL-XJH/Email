@@ -136,7 +136,7 @@ func TestAPITokenLastUsedWriteIsThrottled(t *testing.T) {
 	}
 
 	current := time.Now().UTC().Truncate(time.Millisecond)
-	a.now = func() time.Time { return current }
+	a.setNow(func() time.Time { return current })
 	openAdmin := &testClient{t: t, server: ts, bearer: token}
 	if code := openAdmin.do("GET", "/api/open/domains", nil, &map[string]any{}); code != http.StatusOK {
 		t.Fatalf("first bearer request code=%d", code)

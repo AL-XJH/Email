@@ -11,7 +11,7 @@ import (
 const maxFaviconSize = 256 * 1024
 
 func (a *App) faviconPath() string {
-	return filepath.Join(a.cfg.DataDir, "favicon.ico")
+	return filepath.Join(a.config().DataDir, "favicon.ico")
 }
 
 func (a *App) handleGetFavicon(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +51,7 @@ func (a *App) handleUploadFavicon(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errors.New("file must be a valid ICO under 256 KB"))
 		return
 	}
-	if err := os.MkdirAll(a.cfg.DataDir, 0o755); err != nil {
+	if err := os.MkdirAll(a.config().DataDir, 0o755); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create favicon directory")
 		return
 	}

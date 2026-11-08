@@ -766,7 +766,7 @@ func (a *App) handleAddMessageLabel(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO message_labels(message_id,label_id,created_at) VALUES(?,?,?)`, `(message_id,label_id)`)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO message_labels(message_id,label_id,created_at) VALUES(?,?,?)`, `(message_id,label_id)`)
 	_, err = a.db.ExecContext(r.Context(), query, msg.ID, label.ID, a.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to add label")
@@ -1015,7 +1015,7 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 		return nil, fmt.Errorf("failed to enqueue delivery: %w", err)
 	}
 
-	if strings.TrimSpace(a.cfg.SMTPHost) == "" {
+	if strings.TrimSpace(a.config().SMTPHost) == "" {
 		if err := a.deliverLocalRecipients(ctx, sentID, allRecipients, base, req.Attachments); err != nil {
 			return nil, fmt.Errorf("failed to persist local delivery: %w", err)
 		}
@@ -1139,7 +1139,7 @@ func (a *App) checkAndRecordProtocolRate(ctx context.Context, user *User, mb *Ma
 // directly. Responses deliberately do not distinguish "no such user" from
 // "disabled" so the endpoint cannot be used to enumerate mailboxes.
 func (a *App) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
-	if secret := strings.TrimSpace(a.cfg.AuthPolicySecret); secret != "" {
+	if secret := strings.TrimSpace(a.config().AuthPolicySecret); secret != "" {
 		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("key")), []byte(secret)) != 1 {
 			respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
 			return
@@ -2573,7 +2573,7 @@ func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageI
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(a.cfg.DataDir, "attachments", messageID)
+	dir := filepath.Join(a.config().DataDir, "attachments", messageID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -2754,7 +2754,7 @@ func (a *App) deleteMessageFiles(ctx context.Context, messageID string) {
 	}
 	// A failure here leaves files on disk with no database row pointing at them.
 	// Nothing retries, so the warning is the only trace an operator gets.
-	if err := os.RemoveAll(filepath.Join(a.cfg.DataDir, "attachments", messageID)); err != nil {
+	if err := os.RemoveAll(filepath.Join(a.config().DataDir, "attachments", messageID)); err != nil {
 		a.log.Warn("failed to remove attachment directory", "error", err, "message_id", messageID)
 	}
 }

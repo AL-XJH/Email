@@ -160,7 +160,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "登录失败，请稍后重试")
 		return
 	}
-	if a.cfg.TwoFactorEnabled && user.TwoFactorEnabled {
+	if a.config().TwoFactorEnabled && user.TwoFactorEnabled {
 		challengeToken, err := a.createLoginChallenge(r.Context(), user.ID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "验证码生成失败，请稍后重试")
@@ -199,7 +199,7 @@ func (a *App) loadLoginUserByEmail(ctx context.Context, email string) (*User, st
 }
 
 func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.OpenRegistration && !a.cfg.InviteRegistrationEnabled {
+	if !a.config().OpenRegistration && !a.config().InviteRegistrationEnabled {
 		respondError(w, http.StatusForbidden, "当前未开放注册")
 		return
 	}
@@ -220,7 +220,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "人机验证失败，请重试")
 		return
 	}
-	if !a.cfg.OpenRegistration {
+	if !a.config().OpenRegistration {
 		if err := a.validateRegistrationInvite(r.Context(), req.InviteCode); err != nil {
 			if errors.Is(err, errRegistrationInviteInvalid) {
 				respondError(w, http.StatusForbidden, "邀请码无效或可用次数已耗尽")
@@ -266,7 +266,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if mailboxDomainID != "" && mailboxLocalPart != "" {
-		for _, reserved := range parseReservedPrefixes(a.cfg.ReservedMailboxPrefixes) {
+		for _, reserved := range parseReservedPrefixes(a.config().ReservedMailboxPrefixes) {
 			if mailboxLocalPart == reserved {
 				respondError(w, http.StatusForbidden, "该前缀已被保留，请使用其他前缀")
 				return
@@ -294,7 +294,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var inviteGroupIDs []string
-	if !a.cfg.OpenRegistration {
+	if !a.config().OpenRegistration {
 		granted, err := a.consumeRegistrationInviteTx(r.Context(), tx, req.InviteCode)
 		if err != nil {
 			switch {
@@ -375,10 +375,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(a.cfg.CookieName); err == nil {
+	if cookie, err := r.Cookie(a.config().CookieName); err == nil {
 		_, _ = a.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE token_hash=?`, hashToken(cookie.Value))
 	}
-	http.SetCookie(w, &http.Cookie{Name: a.cfg.CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: a.config().CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -467,7 +467,7 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// current session is kept alive to avoid logging the user out of the page they
 	// are on.
 	keep := ""
-	if cookie, err := r.Cookie(a.cfg.CookieName); err == nil {
+	if cookie, err := r.Cookie(a.config().CookieName); err == nil {
 		keep = hashToken(cookie.Value)
 	}
 	if err := revokeUserSessionsTx(r.Context(), tx, user.ID, keep); err != nil {

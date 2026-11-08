@@ -34,10 +34,11 @@ var (
 )
 
 const (
-	translateBatchTexts  = 16   // 一次批量请求最多带多少段文本
-	translateBatchRunes  = 4000 // 一次批量请求最多多少字符（URL/表单都别撑爆）
-	translateMyMemoryMax = 450  // MyMemory 单次上限经验值
-	translateCacheSize   = 2000 // 译文缓存条数
+	translateBatchTexts       = 16   // 一次批量请求最多带多少段文本
+	translateBatchRunes       = 4000 // 一次批量请求最多多少字符（URL/表单都别撑爆）
+	translateMyMemoryMax      = 450  // MyMemory 单次上限经验值
+	translateMyMemoryMaxItems = 40   // 兜底逐条翻译的条数上限，别让一封 HTML 邮件打成几千次外呼
+	translateCacheSize        = 2000 // 译文缓存条数
 )
 
 type translateMailMessageRequest struct {
@@ -79,7 +80,7 @@ func translateCachePut(target, text, translated string) {
 }
 
 func (a *App) handleTranslateMailMessage(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.MailTranslateEnabled {
+	if !a.config().MailTranslateEnabled {
 		respondError(w, http.StatusForbidden, "mail translation is disabled")
 		return
 	}
@@ -110,7 +111,7 @@ func (a *App) translateMailContent(w http.ResponseWriter, r *http.Request, bodyT
 		respondError(w, http.StatusBadRequest, "message has no translatable text")
 		return
 	}
-	maxChars := a.cfg.MailTranslateMaxChars
+	maxChars := a.config().MailTranslateMaxChars
 	if maxChars <= 0 {
 		maxChars = 8000
 	}
@@ -135,7 +136,7 @@ func (a *App) translateMailContent(w http.ResponseWriter, r *http.Request, bodyT
 }
 
 func (a *App) handleTranslateExternalIMAPMessage(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.MailTranslateEnabled {
+	if !a.config().MailTranslateEnabled {
 		respondError(w, http.StatusForbidden, "mail translation is disabled")
 		return
 	}
@@ -255,12 +256,21 @@ func (a *App) translateTexts(ctx context.Context, texts []string, target string)
 		}
 	}
 
-	// 3. MyMemory，逐条（短文本才行）
+	// 3. MyMemory，逐条（短文本才行）。
+	//
+	// 必须设上限：一封 HTML 邮件能切出几千个文本节点，每个节点一次串行外呼，
+	// 落到这一级（云厂商 IP 上 gtx 基本全 429）时就是几千次请求、几十分钟，
+	// 一个前台请求占死一个 goroutine，还会连带拖慢 Telegram 翻译。
+	attempted := 0
 	for _, i := range pending {
+		if attempted >= translateMyMemoryMaxItems {
+			break
+		}
 		trimmed := strings.TrimSpace(texts[i])
 		if utf8.RuneCountInString(trimmed) > translateMyMemoryMax {
 			continue
 		}
+		attempted++
 		value, merr := myMemoryTranslate(ctx, trimmed, target)
 		if merr != nil {
 			failures = append(failures, "mymemory: "+merr.Error())
@@ -269,10 +279,17 @@ func (a *App) translateTexts(ctx context.Context, texts []string, target string)
 		out[i] = value
 		translateCachePut(target, trimmed, value)
 	}
+	// 只要有一段真的翻出来了就算成功。以前用「译文 == 原文」判断失败，
+	// 但专有名词、`Re:` 这种短句翻完本来就等于原文，会被误判成整单失败（502）。
+	translatedAny := false
 	for _, i := range pending {
-		if out[i] == texts[i] {
-			return out, source, fmt.Errorf("%s", strings.Join(failures, "; "))
+		if out[i] != texts[i] {
+			translatedAny = true
+			break
 		}
+	}
+	if !translatedAny {
+		return out, source, fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return out, source, nil
 }

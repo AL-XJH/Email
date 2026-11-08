@@ -687,7 +687,7 @@ func openAPISendStatusFromQueue(item SendQueueEntry, mailboxAddress string) open
 
 func (a *App) reserveOpenAPISendIdempotency(ctx context.Context, userID, key, requestHash string) (openAPISendStatus, bool, error) {
 	_, _ = a.db.ExecContext(ctx, `DELETE FROM send_idempotency_keys WHERE created_at<?`, a.now().UTC().Add(-24*time.Hour).Format(time.RFC3339Nano))
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO send_idempotency_keys(user_id,idempotency_key,request_hash,created_at) VALUES(?,?,?,?)`, `(user_id,idempotency_key)`)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO send_idempotency_keys(user_id,idempotency_key,request_hash,created_at) VALUES(?,?,?,?)`, `(user_id,idempotency_key)`)
 	res, err := a.db.ExecContext(ctx, query, userID, key, requestHash, a.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return openAPISendStatus{}, false, err

@@ -106,7 +106,7 @@ func (a *App) handleGetTelegramSettings(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *App) handleSaveTelegramSettings(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(a.cfg.NotificationSecretKey) == "" {
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
 		respondError(w, http.StatusServiceUnavailable, "Telegram notifications are not available")
 		return
 	}
@@ -168,7 +168,7 @@ func (a *App) handleSaveTelegramSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer tx.Rollback()
-	query := upsertSQL(a.cfg.DBDriver, `INSERT INTO telegram_notification_settings(user_id,bot_token_ciphertext,bot_username,chat_id,enabled,last_error,created_at,updated_at)
+	query := upsertSQL(a.config().DBDriver, `INSERT INTO telegram_notification_settings(user_id,bot_token_ciphertext,bot_username,chat_id,enabled,last_error,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, `(user_id)`,
 		`bot_token_ciphertext=excluded.bot_token_ciphertext,bot_username=excluded.bot_username,chat_id=excluded.chat_id,enabled=excluded.enabled,last_error='',updated_at=excluded.updated_at`,
 		`bot_token_ciphertext=VALUES(bot_token_ciphertext),bot_username=VALUES(bot_username),chat_id=VALUES(chat_id),enabled=VALUES(enabled),last_error='',updated_at=VALUES(updated_at)`)
@@ -221,7 +221,7 @@ func (a *App) handleDeleteTelegramSettings(w http.ResponseWriter, r *http.Reques
 }
 
 func (a *App) handleTestTelegramSettings(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(a.cfg.NotificationSecretKey) == "" {
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
 		respondError(w, http.StatusServiceUnavailable, "Telegram notifications are not available")
 		return
 	}
@@ -261,7 +261,7 @@ func (a *App) handleTestTelegramSettings(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *App) telegramSettingsSnapshot(ctx context.Context, userID string) (TelegramSettings, error) {
-	out := TelegramSettings{Available: strings.TrimSpace(a.cfg.NotificationSecretKey) != ""}
+	out := TelegramSettings{Available: strings.TrimSpace(a.config().NotificationSecretKey) != ""}
 	record, err := a.telegramSettingsRecord(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, nil
@@ -300,7 +300,7 @@ func (a *App) telegramSettingsRecord(ctx context.Context, userID string) (telegr
 }
 
 func (a *App) telegramConfiguredForUser(ctx context.Context, userID string) (bool, error) {
-	if strings.TrimSpace(a.cfg.NotificationSecretKey) == "" {
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
 		return false, nil
 	}
 	var count int
@@ -341,7 +341,7 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	eventKey := "telegram:" + ruleID + ":" + messageID
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO telegram_notification_outbox(id,event_key,user_id,mailbox_id,message_id,rule_id,payload_json,next_attempt_at,created_at,updated_at)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO telegram_notification_outbox(id,event_key,user_id,mailbox_id,message_id,rule_id,payload_json,next_attempt_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`, `(event_key)`)
 	_, err = a.db.ExecContext(ctx, query, newID("tgn"), eventKey, userID, mailboxID, messageID, ruleID, jsonEncode(payload), now, now, now)
 	return err
@@ -439,7 +439,7 @@ func cutPlainText(value string, max int) (string, string) {
 }
 
 func (a *App) telegramMessageURL(mailboxID, messageID string) string {
-	base, err := url.Parse(strings.TrimSpace(a.cfg.PublicBaseURL))
+	base, err := url.Parse(strings.TrimSpace(a.config().PublicBaseURL))
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return ""
 	}
@@ -453,7 +453,7 @@ func (a *App) telegramMessageURL(mailboxID, messageID string) string {
 }
 
 func (a *App) telegramNotificationWorker(ctx context.Context) {
-	if strings.TrimSpace(a.cfg.NotificationSecretKey) == "" {
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
 		return
 	}
 	a.log.Info("Telegram notification worker started")
@@ -473,7 +473,7 @@ func (a *App) telegramNotificationWorker(ctx context.Context) {
 }
 
 func (a *App) processDueTelegramNotifications(ctx context.Context) error {
-	if strings.TrimSpace(a.cfg.NotificationSecretKey) == "" {
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
 		return nil
 	}
 	_, _ = a.db.ExecContext(ctx, `DELETE FROM telegram_notification_outbox WHERE updated_at<? AND (delivered_at IS NOT NULL OR attempt_count>=?)`, a.now().UTC().Add(-30*24*time.Hour).Format(time.RFC3339Nano), telegramNotificationMaxAttempts)
@@ -763,7 +763,7 @@ func (a *App) decryptNotificationSecret(value string) (string, error) {
 }
 
 func (a *App) notificationEncryptionKey() ([]byte, error) {
-	secret := strings.TrimSpace(a.cfg.NotificationSecretKey)
+	secret := strings.TrimSpace(a.config().NotificationSecretKey)
 	if secret == "" {
 		return nil, errors.New("LANQIN_NOTIFICATION_SECRET_KEY is required")
 	}

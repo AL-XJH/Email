@@ -67,7 +67,7 @@ type sendQueueItem struct {
 }
 
 func (a *App) enqueueSend(ctx context.Context, in sendQueueInput) (string, error) {
-	if strings.TrimSpace(a.cfg.SMTPHost) == "" {
+	if strings.TrimSpace(a.config().SMTPHost) == "" {
 		return "", nil
 	}
 	now := in.Now.UTC()
@@ -78,7 +78,7 @@ func (a *App) enqueueSend(ctx context.Context, in sendQueueInput) (string, error
 	messageID := strings.TrimSpace(in.MessageID)
 	mimeBase64 := base64.StdEncoding.EncodeToString(in.MIMEBytes)
 	recipientsJSON := jsonEncode(dedupeEmails(in.Recipients))
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO send_queue(id,user_id,mailbox_id,sent_message_id,message_id,source,mail_from,header_from,recipients_json,mime_base64,status,next_attempt_at,created_at,updated_at)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO send_queue(id,user_id,mailbox_id,sent_message_id,message_id,source,mail_from,header_from,recipients_json,mime_base64,status,next_attempt_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, `(mailbox_id,source,message_id) WHERE message_id<>''`)
 	_, err := a.db.ExecContext(ctx, query,
 		id, in.UserID, in.MailboxID, in.SentMessageID, messageID, in.Source, normalizeEmail(in.MailFrom), normalizeEmail(in.HeaderFrom), recipientsJSON, mimeBase64, sendQueueStatusQueued, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
@@ -150,7 +150,7 @@ func (a *App) sendQueueWorker(ctx context.Context) {
 }
 
 func (a *App) processDueSendQueue(ctx context.Context) error {
-	if strings.TrimSpace(a.cfg.SMTPHost) == "" {
+	if strings.TrimSpace(a.config().SMTPHost) == "" {
 		return nil
 	}
 	if err := a.recoverStaleSendQueueItems(ctx); err != nil {
@@ -409,7 +409,7 @@ func (a *App) sendQueueDeliveredMarkerPath(id string) string {
 	if safeID == "" || safeID == "." {
 		safeID = "unknown"
 	}
-	return filepath.Join(a.cfg.DataDir, sendQueueDeliveredMarkerDir, safeID+".marker")
+	return filepath.Join(a.config().DataDir, sendQueueDeliveredMarkerDir, safeID+".marker")
 }
 
 func (a *App) writeSendQueueDeliveredMarker(id string) error {

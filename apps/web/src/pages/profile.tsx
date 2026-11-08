@@ -82,6 +82,7 @@ import { cn, formatBytes } from "@/lib/utils"
 import { applyTheme, getInitialTheme } from "@/lib/theme"
 import { DisplayMode, useDisplayMode } from "@/lib/display-mode"
 import { useMe } from "@/hooks/use-me"
+import { hasAdminAccess } from "@/lib/permissions"
 import { useLogout } from "@/hooks/use-logout"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { validatePasswordConfirm } from "@/lib/validation"
@@ -1188,6 +1189,8 @@ function ProfileOverview({
       </Card>
 
       {showStats && <StatsSummary stats={stats} />}
+
+      <AdminConsoleCard />
 
       <Card>
         <CardHeader>
@@ -5246,6 +5249,33 @@ function StatsSection({
         </>
       )}
     </div>
+  )
+}
+
+// 后台管理入口：放在「数据统计」下面，只有拿得到 /admin 权限的人才显示。
+function AdminConsoleCard() {
+  const me = useMe()
+  const navigate = useNavigate()
+  useUiLanguage()
+
+  if (!me.data?.user || !hasAdminAccess(me.data.user)) return null
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Settings className="h-4 w-4" />
+            {uiText("后台管理")}
+          </CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {uiText("域名、邮箱账号、权限组、黑白名单、投递与系统设置都在这里。")}
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => navigate("/admin")}>
+          {uiText("进入后台")}
+        </Button>
+      </CardHeader>
+    </Card>
   )
 }
 

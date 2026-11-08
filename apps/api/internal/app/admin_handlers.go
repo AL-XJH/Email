@@ -654,8 +654,21 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	res, err := a.db.ExecContext(r.Context(), `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,updated_at=? WHERE id=?`,
-		userID, displayName, req.QuotaMB, status, a.now().UTC().Format(time.RFC3339Nano), id)
+	// 换了主人就把邮箱密码换掉：mailboxes.password_hash 是 SMTP/IMAP 认证用的，
+	// 不换的话前主人还能用这个地址继续发信、读信。
+	stamp := a.now().UTC().Format(time.RFC3339Nano)
+	query := `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,updated_at=? WHERE id=?`
+	args := []any{userID, displayName, req.QuotaMB, status, stamp, id}
+	if userID != existingMailbox.UserID {
+		query = `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,password_hash=?,updated_at=? WHERE id=?`
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(randomToken()), bcrypt.DefaultCost)
+		if hashErr != nil {
+			respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+			return
+		}
+		args = []any{userID, displayName, req.QuotaMB, status, string(hash), stamp, id}
+	}
+	res, err := a.db.ExecContext(r.Context(), query, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
 		return

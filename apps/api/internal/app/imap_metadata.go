@@ -165,7 +165,7 @@ func (a *App) backfillFolderIMAPUIDs(ctx context.Context, folderID string) error
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(imap_uid),0),COALESCE(MAX(imap_modseq),1) FROM messages WHERE folder_id=?`, folderID).Scan(&maxUID, &maxModSeq); err != nil {
 		return err
 	}
-	query := `UPDATE folders SET uid_next=` + scalarMaxSQL(a.cfg.DBDriver, "uid_next", "?") + `,highest_modseq=` + scalarMaxSQL(a.cfg.DBDriver, "highest_modseq", "?") + ` WHERE id=?`
+	query := `UPDATE folders SET uid_next=` + scalarMaxSQL(a.config().DBDriver, "uid_next", "?") + `,highest_modseq=` + scalarMaxSQL(a.config().DBDriver, "highest_modseq", "?") + ` WHERE id=?`
 	_, err = a.db.ExecContext(ctx, query, maxUID+1, maxModSeq, folderID)
 	return err
 }
@@ -205,12 +205,12 @@ func (a *App) nextIMAPMetadata(ctx context.Context, db dbExecutor, folderID stri
 	if !ok {
 		return imapMetadata{}, nil
 	}
-	if a.cfg.DBDriver == databaseDriverMySQL {
+	if a.config().DBDriver == databaseDriverMySQL {
 		return a.nextIMAPMetadataMySQL(ctx, db, rowDB, folderID)
 	}
 	var meta imapMetadata
-	query := `UPDATE folders SET uid_next=` + imapClampSQL(a.cfg.DBDriver, "uid_next", 1) + `+1,` +
-		` highest_modseq=` + imapClampSQL(a.cfg.DBDriver, "highest_modseq", 0) + `+1` +
+	query := `UPDATE folders SET uid_next=` + imapClampSQL(a.config().DBDriver, "uid_next", 1) + `+1,` +
+		` highest_modseq=` + imapClampSQL(a.config().DBDriver, "highest_modseq", 0) + `+1` +
 		` WHERE id=? RETURNING uid_next-1, highest_modseq`
 	if err := rowDB.QueryRowContext(ctx, query, folderID).Scan(&meta.UID, &meta.ModSeq); err != nil {
 		return imapMetadata{}, err
@@ -263,7 +263,7 @@ func (a *App) bumpFolderModSeqWithDB(ctx context.Context, db dbExecutor, folderI
 	if !ok {
 		return 0, nil
 	}
-	if a.cfg.DBDriver == databaseDriverMySQL {
+	if a.config().DBDriver == databaseDriverMySQL {
 		if _, err := db.ExecContext(ctx, `UPDATE folders SET highest_modseq=GREATEST(highest_modseq,0)+1 WHERE id=?`, folderID); err != nil {
 			return 0, err
 		}
@@ -277,7 +277,7 @@ func (a *App) bumpFolderModSeqWithDB(ctx context.Context, db dbExecutor, folderI
 		return current, nil
 	}
 	var next int64
-	query := `UPDATE folders SET highest_modseq=` + imapClampSQL(a.cfg.DBDriver, "highest_modseq", 0) + `+1 WHERE id=? RETURNING highest_modseq`
+	query := `UPDATE folders SET highest_modseq=` + imapClampSQL(a.config().DBDriver, "highest_modseq", 0) + `+1 WHERE id=? RETURNING highest_modseq`
 	if err := rowDB.QueryRowContext(ctx, query, folderID).Scan(&next); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, nil

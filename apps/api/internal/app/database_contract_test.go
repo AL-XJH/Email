@@ -109,12 +109,12 @@ func assertExternalDatabaseContract(t *testing.T, a *App) {
 	defer cancel()
 
 	var adminID string
-	if err := a.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email=?`, a.cfg.AdminEmail).Scan(&adminID); err != nil {
+	if err := a.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email=?`, a.config().AdminEmail).Scan(&adminID); err != nil {
 		t.Fatalf("load seeded administrator: %v", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := a.db.ExecContext(ctx, `INSERT INTO users(id,email,display_name,role,password_hash,disabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?)`, newID("usr"), a.cfg.AdminEmail, "Duplicate", "user", "unused", 0, now, now)
+		VALUES(?,?,?,?,?,?,?,?)`, newID("usr"), a.config().AdminEmail, "Duplicate", "user", "unused", 0, now, now)
 	if !isUniqueViolation(err) {
 		t.Fatalf("duplicate email error=%v, want unique violation", err)
 	}
@@ -124,7 +124,7 @@ func assertExternalDatabaseContract(t *testing.T, a *App) {
 	}
 
 	groupID := newID("grp")
-	systemColumn := permissionGroupSystemColumnSQL(a.cfg.DBDriver)
+	systemColumn := permissionGroupSystemColumnSQL(a.config().DBDriver)
 	if _, err := a.db.ExecContext(ctx, `INSERT INTO permission_groups(id,name,description,permissions_json,limits_json,`+systemColumn+`,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, groupID, groupID, "", "[]", "{}", 0, now, now); err != nil {
 		t.Fatalf("insert permission group: %v", err)

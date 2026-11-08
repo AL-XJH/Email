@@ -31,7 +31,7 @@ type deliveryWebhookEvent struct {
 }
 
 func (a *App) handleOpenAPIDeliveryWebhook(w http.ResponseWriter, r *http.Request) {
-	secret := strings.TrimSpace(a.cfg.DeliveryWebhookSecret)
+	secret := strings.TrimSpace(a.config().DeliveryWebhookSecret)
 	if secret == "" {
 		respondError(w, http.StatusServiceUnavailable, "delivery webhook is not configured")
 		return
@@ -139,7 +139,7 @@ func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebh
 	id := newID("dev")
 	createdAt := a.now().UTC()
 	reason := strings.TrimSpace(event.Reason)
-	query := insertIgnoreSQL(a.cfg.DBDriver, `INSERT INTO delivery_events(id,external_id,provider,queue_id,sent_message_id,rfc_message_id,recipient,status,reason,occurred_at,created_at)
+	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO delivery_events(id,external_id,provider,queue_id,sent_message_id,rfc_message_id,recipient,status,reason,occurred_at,created_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, `(provider,external_id)`)
 	res, err := tx.ExecContext(r.Context(), query, id, event.ID, event.Provider, queueID, sentMessageID, rfcMessageID, event.Recipient, event.Status, reason, occurredAt.UTC().Format(time.RFC3339Nano), createdAt.Format(time.RFC3339Nano))
 	if err != nil {

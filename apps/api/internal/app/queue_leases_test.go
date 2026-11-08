@@ -18,7 +18,10 @@ func TestTelegramOutboxLeaseAllowsOnlyOneConcurrentClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workers := []*App{{db: a.db, now: a.now, workerID: "worker-a"}, {db: a.db, now: a.now, workerID: "worker-b"}}
+	workers := []*App{{db: a.db, workerID: "worker-a"}, {db: a.db, workerID: "worker-b"}}
+	for _, worker := range workers {
+		worker.setNow(a.now)
+	}
 	start := make(chan struct{})
 	results := make(chan error, len(workers))
 	var wg sync.WaitGroup
@@ -69,7 +72,8 @@ func TestOutboxExpiredLeaseCanBeReclaimedAndRejectsStaleUpdate(t *testing.T) {
 	if _, err := a.db.Exec(`UPDATE telegram_notification_outbox SET lease_until=? WHERE id=?`, now.Add(-time.Second).Format(time.RFC3339Nano), first.id); err != nil {
 		t.Fatal(err)
 	}
-	secondWorker := &App{db: a.db, now: a.now, workerID: "worker-second"}
+	secondWorker := &App{db: a.db, workerID: "worker-second"}
+	secondWorker.setNow(a.now)
 	second, err := secondWorker.claimTelegramNotification(context.Background(), first.id)
 	if err != nil {
 		t.Fatalf("reclaim expired lease: %v", err)
@@ -105,7 +109,8 @@ func TestStatusWebhookAndSendQueueLeaseOwnership(t *testing.T) {
 	if _, err := a.db.Exec(`UPDATE status_webhook_outbox SET lease_until=? WHERE id=?`, now.Add(-time.Second).Format(time.RFC3339Nano), webhook.id); err != nil {
 		t.Fatal(err)
 	}
-	other := &App{db: a.db, now: a.now, workerID: "worker-other"}
+	other := &App{db: a.db, workerID: "worker-other"}
+	other.setNow(a.now)
 	reclaimedWebhook, err := other.claimStatusWebhook(context.Background(), webhook.id)
 	if err != nil {
 		t.Fatalf("reclaim webhook: %v", err)

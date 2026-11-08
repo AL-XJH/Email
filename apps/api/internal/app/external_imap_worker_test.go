@@ -35,7 +35,7 @@ func TestSyncDueExternalIMAPAccountsReleasesConnectionBeforeSync(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			a := newTestApp(t)
 			stopTestWorkers(a)
-			a.cfg.ExternalIMAPEnabled = true
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPEnabled = true })
 			if got := a.db.Stats().MaxOpenConnections; got != 1 {
 				t.Fatalf("SQLite max open connections = %d, want 1", got)
 			}

@@ -17,10 +17,10 @@ func (a *App) collectionMutationLock(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.collectionMu.Lock()
 		defer a.collectionMu.Unlock()
-		if a.cfg.DBDriver != databaseDriverSQLite {
+		if a.config().DBDriver != databaseDriverSQLite {
 			// A dedicated connection avoids holding the final pooled connection
 			// while the handler needs that pool to perform the protected write.
-			lockDB, err := openDatabase(r.Context(), a.cfg)
+			lockDB, err := openDatabase(r.Context(), *a.config())
 			if err != nil {
 				respondError(w, 503, "collection configuration busy")
 				return
@@ -32,7 +32,7 @@ func (a *App) collectionMutationLock(next http.Handler) http.Handler {
 				return
 			}
 			defer conn.Close()
-			unlock, err := lockExternalSchema(r.Context(), conn, a.cfg.DBDriver)
+			unlock, err := lockExternalSchema(r.Context(), conn, a.config().DBDriver)
 			if err != nil {
 				respondError(w, 503, "collection configuration busy")
 				return

@@ -79,7 +79,7 @@ func TestTelegramSettingsEncryptsTokenAndSupportsTestDelivery(t *testing.T) {
 		t.Fatalf("saved settings=%+v", saved)
 	}
 	var ciphertext string
-	if err := a.db.QueryRow(`SELECT bot_token_ciphertext FROM telegram_notification_settings WHERE user_id=(SELECT id FROM users WHERE email=?)`, a.cfg.AdminEmail).Scan(&ciphertext); err != nil {
+	if err := a.db.QueryRow(`SELECT bot_token_ciphertext FROM telegram_notification_settings WHERE user_id=(SELECT id FROM users WHERE email=?)`, a.config().AdminEmail).Scan(&ciphertext); err != nil {
 		t.Fatal(err)
 	}
 	if ciphertext == "" || ciphertext == testTelegramBotToken || strings.Contains(ciphertext, testTelegramBotToken) {
@@ -116,7 +116,7 @@ func TestTelegramSettingsEncryptsTokenAndSupportsTestDelivery(t *testing.T) {
 func TestTelegramRuleOutboxIsIdempotentAndRetriesRateLimit(t *testing.T) {
 	a := newTelegramTestApp(t)
 	now := time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
-	a.now = func() time.Time { return now }
+	a.setNow(func() time.Time { return now })
 	requestCount := 0
 	var deliveredBody map[string]any
 	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +326,7 @@ func TestTelegramSettingsAreUserScopedAndCleanupOnlyPendingOutbox(t *testing.T) 
 func TestTelegramWorkerHandlesTransientAndPermanentFailuresWithoutLeakingContent(t *testing.T) {
 	a := newTelegramTestApp(t)
 	now := time.Date(2026, time.August, 29, 14, 0, 0, 0, time.UTC)
-	a.now = func() time.Time { return now }
+	a.setNow(func() time.Time { return now })
 	responses := 0
 	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		responses++

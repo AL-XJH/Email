@@ -119,16 +119,16 @@ func (a *App) handleGetSystemSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePublicSettings(w http.ResponseWriter, r *http.Request) {
-	enabled := a.cfg.TurnstileEnabled && strings.TrimSpace(a.cfg.TurnstileSiteKey) != "" && strings.TrimSpace(a.cfg.TurnstileSecretKey) != ""
-	refreshSeconds := a.cfg.MailRefreshSeconds
+	enabled := a.config().TurnstileEnabled && strings.TrimSpace(a.config().TurnstileSiteKey) != "" && strings.TrimSpace(a.config().TurnstileSecretKey) != ""
+	refreshSeconds := a.config().MailRefreshSeconds
 	if refreshSeconds <= 0 {
 		refreshSeconds = 30
 	}
 	linuxDoEnabled := a.linuxDoEnabled()
-	settings := PublicSettings{OpenRegistration: a.cfg.OpenRegistration, InviteRegistrationEnabled: a.cfg.InviteRegistrationEnabled, TurnstileEnabled: enabled, TurnstileSiteKey: a.cfg.TurnstileSiteKey, PublicHostname: a.cfg.PublicHostname, SiteTitle: a.cfg.SiteTitle, MailAutoRefresh: a.cfg.MailAutoRefresh, MailRefreshMs: refreshSeconds * 1000, ExternalIMAPEnabled: a.cfg.ExternalIMAPEnabled, LinuxDoSSOEnabled: linuxDoEnabled, LinuxDoRegistrationEnabled: linuxDoEnabled && a.cfg.LinuxDoRegistrationEnabled}
+	settings := PublicSettings{OpenRegistration: a.config().OpenRegistration, InviteRegistrationEnabled: a.config().InviteRegistrationEnabled, TurnstileEnabled: enabled, TurnstileSiteKey: a.config().TurnstileSiteKey, PublicHostname: a.config().PublicHostname, SiteTitle: a.config().SiteTitle, MailAutoRefresh: a.config().MailAutoRefresh, MailRefreshMs: refreshSeconds * 1000, ExternalIMAPEnabled: a.config().ExternalIMAPEnabled, LinuxDoSSOEnabled: linuxDoEnabled, LinuxDoRegistrationEnabled: linuxDoEnabled && a.config().LinuxDoRegistrationEnabled}
 
 	// Include available domains for mailbox creation during registration
-	if a.cfg.OpenRegistration || a.cfg.InviteRegistrationEnabled || (linuxDoEnabled && a.cfg.LinuxDoRegistrationEnabled) {
+	if a.config().OpenRegistration || a.config().InviteRegistrationEnabled || (linuxDoEnabled && a.config().LinuxDoRegistrationEnabled) {
 		rows, err := a.db.QueryContext(r.Context(), `SELECT id, name FROM domains WHERE status='active' ORDER BY name`)
 		if err == nil {
 			defer rows.Close()
@@ -151,7 +151,7 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 		badRequest(w, err)
 		return
 	}
-	next := a.cfg
+	next := *a.config()
 	next.PublicHostname = normalizeHostname(req.PublicHostname)
 	if next.PublicHostname == "" {
 		badRequest(w, errors.New("publicHostname is required"))
@@ -266,7 +266,7 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusInternalServerError, "failed to save settings")
 		return
 	}
-	a.cfg = next
+	a.setConfig(next)
 	respondJSON(w, http.StatusOK, a.systemSettingsSnapshot())
 }
 
@@ -276,7 +276,7 @@ func (a *App) handleTestSMTP(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	cfg := a.cfg
+	cfg := *a.config()
 	if strings.TrimSpace(cfg.SMTPHost) == "" {
 		badRequest(w, errors.New("SMTP 主机未设置"))
 		return
@@ -344,49 +344,49 @@ func (a *App) handleTestSMTP(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) systemSettingsSnapshot() SystemSettings {
 	return SystemSettings{
-		PublicHostname:                     a.cfg.PublicHostname,
-		PublicBaseURL:                      a.cfg.PublicBaseURL,
-		SiteTitle:                          a.cfg.SiteTitle,
-		SMTPHost:                           a.cfg.SMTPHost,
-		SMTPPort:                           a.cfg.SMTPPort,
-		SMTPUsername:                       a.cfg.SMTPUsername,
-		SMTPPasswordSet:                    strings.TrimSpace(a.cfg.SMTPPassword) != "",
-		SMTPRequireTLS:                     a.cfg.SMTPRequireTLS,
-		MaildirRoot:                        a.cfg.MaildirRoot,
-		MaildirScanSeconds:                 a.cfg.MaildirScanSeconds,
-		SessionTTLHours:                    a.cfg.SessionTTLHours,
-		AllowInsecureHTTP:                  a.cfg.AllowInsecureHTTP,
-		OpenRegistration:                   a.cfg.OpenRegistration,
-		InviteRegistrationEnabled:          a.cfg.InviteRegistrationEnabled,
-		TwoFactorEnabled:                   a.cfg.TwoFactorEnabled,
-		TurnstileEnabled:                   a.cfg.TurnstileEnabled,
-		TurnstileSiteKey:                   a.cfg.TurnstileSiteKey,
-		TurnstileSecretSet:                 strings.TrimSpace(a.cfg.TurnstileSecretKey) != "",
-		LinuxDoSSOEnabled:                  a.cfg.LinuxDoSSOEnabled,
-		LinuxDoRegistrationEnabled:         a.cfg.LinuxDoRegistrationEnabled,
-		LinuxDoClientID:                    a.cfg.LinuxDoClientID,
-		LinuxDoClientSecretSet:             strings.TrimSpace(a.cfg.LinuxDoClientSecret) != "",
+		PublicHostname:                     a.config().PublicHostname,
+		PublicBaseURL:                      a.config().PublicBaseURL,
+		SiteTitle:                          a.config().SiteTitle,
+		SMTPHost:                           a.config().SMTPHost,
+		SMTPPort:                           a.config().SMTPPort,
+		SMTPUsername:                       a.config().SMTPUsername,
+		SMTPPasswordSet:                    strings.TrimSpace(a.config().SMTPPassword) != "",
+		SMTPRequireTLS:                     a.config().SMTPRequireTLS,
+		MaildirRoot:                        a.config().MaildirRoot,
+		MaildirScanSeconds:                 a.config().MaildirScanSeconds,
+		SessionTTLHours:                    a.config().SessionTTLHours,
+		AllowInsecureHTTP:                  a.config().AllowInsecureHTTP,
+		OpenRegistration:                   a.config().OpenRegistration,
+		InviteRegistrationEnabled:          a.config().InviteRegistrationEnabled,
+		TwoFactorEnabled:                   a.config().TwoFactorEnabled,
+		TurnstileEnabled:                   a.config().TurnstileEnabled,
+		TurnstileSiteKey:                   a.config().TurnstileSiteKey,
+		TurnstileSecretSet:                 strings.TrimSpace(a.config().TurnstileSecretKey) != "",
+		LinuxDoSSOEnabled:                  a.config().LinuxDoSSOEnabled,
+		LinuxDoRegistrationEnabled:         a.config().LinuxDoRegistrationEnabled,
+		LinuxDoClientID:                    a.config().LinuxDoClientID,
+		LinuxDoClientSecretSet:             strings.TrimSpace(a.config().LinuxDoClientSecret) != "",
 		LinuxDoCallbackURL:                 a.linuxDoCallbackURL(),
-		LinuxDoRegistrationGroupIDs:        cleanIDList(strings.Split(a.cfg.LinuxDoRegistrationGroupIDs, ",")),
-		CatchAllEnabled:                    a.cfg.CatchAllEnabled,
-		MailAutoRefresh:                    a.cfg.MailAutoRefresh,
-		MailRefreshSeconds:                 a.cfg.MailRefreshSeconds,
-		UserMailboxApplyEnabled:            a.cfg.UserMailboxApplyEnabled,
-		UserMailboxDomainIDs:               cleanIDList(strings.Split(a.cfg.UserMailboxDomainIDs, ",")),
-		ReservedMailboxPrefixes:            strings.Join(parseReservedPrefixes(a.cfg.ReservedMailboxPrefixes), "\n"),
-		ExternalIMAPEnabled:                a.cfg.ExternalIMAPEnabled,
-		ExternalIMAPSecretSet:              strings.TrimSpace(a.cfg.ExternalIMAPSecretKey) != "",
-		ExternalIMAPSyncSeconds:            a.cfg.ExternalIMAPSyncSeconds,
-		ExternalIMAPAllowPrivateHosts:      a.cfg.ExternalIMAPAllowPrivateHosts,
-		ExternalIMAPGmailClientID:          a.cfg.ExternalIMAPGmailClientID,
-		ExternalIMAPGmailClientSecretSet:   strings.TrimSpace(a.cfg.ExternalIMAPGmailClientSecret) != "",
-		ExternalIMAPOutlookClientID:        a.cfg.ExternalIMAPOutlookClientID,
-		ExternalIMAPOutlookClientSecretSet: strings.TrimSpace(a.cfg.ExternalIMAPOutlookClientSecret) != "",
+		LinuxDoRegistrationGroupIDs:        cleanIDList(strings.Split(a.config().LinuxDoRegistrationGroupIDs, ",")),
+		CatchAllEnabled:                    a.config().CatchAllEnabled,
+		MailAutoRefresh:                    a.config().MailAutoRefresh,
+		MailRefreshSeconds:                 a.config().MailRefreshSeconds,
+		UserMailboxApplyEnabled:            a.config().UserMailboxApplyEnabled,
+		UserMailboxDomainIDs:               cleanIDList(strings.Split(a.config().UserMailboxDomainIDs, ",")),
+		ReservedMailboxPrefixes:            strings.Join(parseReservedPrefixes(a.config().ReservedMailboxPrefixes), "\n"),
+		ExternalIMAPEnabled:                a.config().ExternalIMAPEnabled,
+		ExternalIMAPSecretSet:              strings.TrimSpace(a.config().ExternalIMAPSecretKey) != "",
+		ExternalIMAPSyncSeconds:            a.config().ExternalIMAPSyncSeconds,
+		ExternalIMAPAllowPrivateHosts:      a.config().ExternalIMAPAllowPrivateHosts,
+		ExternalIMAPGmailClientID:          a.config().ExternalIMAPGmailClientID,
+		ExternalIMAPGmailClientSecretSet:   strings.TrimSpace(a.config().ExternalIMAPGmailClientSecret) != "",
+		ExternalIMAPOutlookClientID:        a.config().ExternalIMAPOutlookClientID,
+		ExternalIMAPOutlookClientSecretSet: strings.TrimSpace(a.config().ExternalIMAPOutlookClientSecret) != "",
 	}
 }
 
 func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
-	keyColumn := keyColumnSQL(a.cfg.DBDriver)
+	keyColumn := keyColumnSQL(a.config().DBDriver)
 	rows, err := a.db.QueryContext(ctx, `SELECT `+keyColumn+`,value FROM system_settings`)
 	if err != nil {
 		return err
@@ -399,87 +399,87 @@ func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
 		}
 		switch key {
 		case "publicHostname":
-			a.cfg.PublicHostname = value
+			a.updateConfig(func(cfg *Config) { cfg.PublicHostname = value })
 		case "publicBaseUrl":
-			a.cfg.PublicBaseURL = value
+			a.updateConfig(func(cfg *Config) { cfg.PublicBaseURL = value })
 		case "siteTitle":
-			a.cfg.SiteTitle = value
+			a.updateConfig(func(cfg *Config) { cfg.SiteTitle = value })
 		case "smtpHost":
-			a.cfg.SMTPHost = value
+			a.updateConfig(func(cfg *Config) { cfg.SMTPHost = value })
 		case "smtpPort":
-			a.cfg.SMTPPort = value
+			a.updateConfig(func(cfg *Config) { cfg.SMTPPort = value })
 		case "smtpUsername":
-			a.cfg.SMTPUsername = value
+			a.updateConfig(func(cfg *Config) { cfg.SMTPUsername = value })
 		case "smtpPassword":
-			a.cfg.SMTPPassword = value
+			a.updateConfig(func(cfg *Config) { cfg.SMTPPassword = value })
 		case "smtpRequireTls":
-			a.cfg.SMTPRequireTLS = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.SMTPRequireTLS = value == "true" })
 		case "maildirRoot":
-			a.cfg.MaildirRoot = value
+			a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = value })
 		case "maildirScanSeconds":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				a.cfg.MaildirScanSeconds = n
+				a.updateConfig(func(cfg *Config) { cfg.MaildirScanSeconds = n })
 			}
 		case "sessionTtlHours":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				a.cfg.SessionTTLHours = n
+				a.updateConfig(func(cfg *Config) { cfg.SessionTTLHours = n })
 			}
 		case "allowInsecureHttp":
-			a.cfg.AllowInsecureHTTP = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.AllowInsecureHTTP = value == "true" })
 		case "openRegistration":
-			a.cfg.OpenRegistration = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.OpenRegistration = value == "true" })
 		case "inviteRegistrationEnabled":
-			a.cfg.InviteRegistrationEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.InviteRegistrationEnabled = value == "true" })
 		case "twoFactorEnabled":
-			a.cfg.TwoFactorEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = value == "true" })
 		case "turnstileEnabled":
-			a.cfg.TurnstileEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.TurnstileEnabled = value == "true" })
 		case "turnstileSiteKey":
-			a.cfg.TurnstileSiteKey = value
+			a.updateConfig(func(cfg *Config) { cfg.TurnstileSiteKey = value })
 		case "turnstileSecretKey":
-			a.cfg.TurnstileSecretKey = value
+			a.updateConfig(func(cfg *Config) { cfg.TurnstileSecretKey = value })
 		case "linuxDoSSOEnabled":
-			a.cfg.LinuxDoSSOEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.LinuxDoSSOEnabled = value == "true" })
 		case "linuxDoRegistrationEnabled":
-			a.cfg.LinuxDoRegistrationEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.LinuxDoRegistrationEnabled = value == "true" })
 		case "linuxDoRegistrationGroupIds":
-			a.cfg.LinuxDoRegistrationGroupIDs = value
+			a.updateConfig(func(cfg *Config) { cfg.LinuxDoRegistrationGroupIDs = value })
 		case "linuxDoClientId":
-			a.cfg.LinuxDoClientID = value
+			a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientID = value })
 		case "linuxDoClientSecret":
-			a.cfg.LinuxDoClientSecret = value
+			a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientSecret = value })
 		case "catchAllEnabled":
-			a.cfg.CatchAllEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.CatchAllEnabled = value == "true" })
 		case "mailAutoRefresh":
-			a.cfg.MailAutoRefresh = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.MailAutoRefresh = value == "true" })
 		case "mailRefreshSeconds":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				a.cfg.MailRefreshSeconds = n
+				a.updateConfig(func(cfg *Config) { cfg.MailRefreshSeconds = n })
 			}
 		case "userMailboxApplyEnabled":
-			a.cfg.UserMailboxApplyEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.UserMailboxApplyEnabled = value == "true" })
 		case "userMailboxDomainIds":
-			a.cfg.UserMailboxDomainIDs = value
+			a.updateConfig(func(cfg *Config) { cfg.UserMailboxDomainIDs = value })
 		case "reservedMailboxPrefixes":
-			a.cfg.ReservedMailboxPrefixes = value
+			a.updateConfig(func(cfg *Config) { cfg.ReservedMailboxPrefixes = value })
 		case "externalImapEnabled":
-			a.cfg.ExternalIMAPEnabled = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPEnabled = value == "true" })
 		case "externalImapSecretKey":
-			a.cfg.ExternalIMAPSecretKey = value
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPSecretKey = value })
 		case "externalImapSyncSeconds":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				a.cfg.ExternalIMAPSyncSeconds = n
+				a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPSyncSeconds = n })
 			}
 		case "externalImapAllowPrivateHosts":
-			a.cfg.ExternalIMAPAllowPrivateHosts = value == "true"
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPAllowPrivateHosts = value == "true" })
 		case "externalImapGmailClientId":
-			a.cfg.ExternalIMAPGmailClientID = value
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPGmailClientID = value })
 		case "externalImapGmailClientSecret":
-			a.cfg.ExternalIMAPGmailClientSecret = value
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPGmailClientSecret = value })
 		case "externalImapOutlookClientId":
-			a.cfg.ExternalIMAPOutlookClientID = value
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPOutlookClientID = value })
 		case "externalImapOutlookClientSecret":
-			a.cfg.ExternalIMAPOutlookClientSecret = value
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPOutlookClientSecret = value })
 		}
 	}
 	return rows.Err()
@@ -526,14 +526,14 @@ func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {
 		"externalImapOutlookClientSecret": cfg.ExternalIMAPOutlookClientSecret,
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	keyColumn := keyColumnSQL(a.cfg.DBDriver)
+	keyColumn := keyColumnSQL(a.config().DBDriver)
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	for key, value := range values {
-		query := upsertSQL(a.cfg.DBDriver, `INSERT INTO system_settings(`+keyColumn+`,value,updated_at) VALUES(?,?,?)`, `(`+keyColumn+`)`,
+		query := upsertSQL(a.config().DBDriver, `INSERT INTO system_settings(`+keyColumn+`,value,updated_at) VALUES(?,?,?)`, `(`+keyColumn+`)`,
 			`value=excluded.value,updated_at=excluded.updated_at`,
 			`value=VALUES(value),updated_at=VALUES(updated_at)`)
 		if _, err := tx.ExecContext(ctx, query, key, value, now); err != nil {

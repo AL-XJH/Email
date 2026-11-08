@@ -104,8 +104,8 @@ func TestAdminPasswordResetRevokesAllSessions(t *testing.T) {
 // proxies configured, headers must be ignored entirely.
 func TestClientIPIgnoresSpoofedHeadersWithoutTrustedProxies(t *testing.T) {
 	a := newTestApp(t)
-	if a.cfg.TrustedProxyCount != 0 {
-		t.Fatalf("TrustedProxyCount = %d, want 0 by default", a.cfg.TrustedProxyCount)
+	if a.config().TrustedProxyCount != 0 {
+		t.Fatalf("TrustedProxyCount = %d, want 0 by default", a.config().TrustedProxyCount)
 	}
 
 	var seen string
@@ -128,7 +128,7 @@ func TestClientIPIgnoresSpoofedHeadersWithoutTrustedProxies(t *testing.T) {
 // ignored.
 func TestClientIPUsesTrustedProxyHop(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.TrustedProxyCount = 1
+	a.updateConfig(func(cfg *Config) { cfg.TrustedProxyCount = 1 })
 
 	var seen string
 	handler := a.clientIPMiddleware()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

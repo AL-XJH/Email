@@ -49,7 +49,7 @@ func TestIsPublicUnicastIPRejectsInternalRanges(t *testing.T) {
 // must run on the address actually being dialed, not on a separately resolved
 // hostname. Control is what closes that window, so it is exercised directly.
 func TestExternalIMAPDialerRejectsRebinding(t *testing.T) {
-	a := &App{cfg: Config{}}
+	a := newTestAppWithConfigValue(Config{})
 	dialer := a.externalIMAPDialer()
 	if dialer.Control == nil {
 		t.Fatal("dialer must install a Control hook when private hosts are disallowed")
@@ -70,7 +70,7 @@ func TestExternalIMAPDialerRejectsRebinding(t *testing.T) {
 }
 
 func TestExternalIMAPDialerHonoursPrivateHostOptIn(t *testing.T) {
-	a := &App{cfg: Config{ExternalIMAPAllowPrivateHosts: true}}
+	a := newTestAppWithConfigValue(Config{ExternalIMAPAllowPrivateHosts: true})
 	if a.externalIMAPDialer().Control != nil {
 		t.Error("Control must be absent when private hosts are explicitly allowed")
 	}

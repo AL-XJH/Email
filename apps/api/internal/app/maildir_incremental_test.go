@@ -148,10 +148,10 @@ func TestTrackedMaildirSyncPublishesOnlyWhenMessagesChange(t *testing.T) {
 func prepareIncrementalMaildirTest(t *testing.T) (*App, *Mailbox, string) {
 	t.Helper()
 	a := newTestApp(t)
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	_, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)
-	dir := filepath.Join(a.cfg.MaildirRoot, "lanqin.local", "admin", "Maildir", "new")
+	dir := filepath.Join(a.config().MaildirRoot, "lanqin.local", "admin", "Maildir", "new")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

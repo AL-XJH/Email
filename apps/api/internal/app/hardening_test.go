@@ -18,7 +18,7 @@ import (
 func TestTOTPCannotBeReplayed(t *testing.T) {
 	a := newTestApp(t)
 	clock := time.Now().UTC().Truncate(time.Second)
-	a.now = func() time.Time { return clock }
+	a.setNow(func() time.Time { return clock })
 
 	secret, err := newTOTPSecret()
 	if err != nil {
@@ -202,7 +202,7 @@ func TestInactiveDomainRejectedByCreationFunnel(t *testing.T) {
 // an invite use spent on it.
 func TestFailedRegistrationLeavesNoUserOrConsumedInvite(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.InviteRegistrationEnabled = true
+	a.updateConfig(func(cfg *Config) { cfg.InviteRegistrationEnabled = true })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -351,7 +351,7 @@ func TestSMTPRateRecipientsMigrationBackfillsExistingTable(t *testing.T) {
 // browser and leaked the timing of that delivery.
 func TestSyncEventsReachOnlyTheAffectedAudience(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.MaildirRoot = newTestDir(t)
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = newTestDir(t) })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -375,7 +375,7 @@ func TestSyncEventsReachOnlyTheAffectedAudience(t *testing.T) {
 	bobEvents, stopBob := a.subscribeSyncEvents(bobUser.ID)
 	defer stopBob()
 
-	dir := filepath.Join(a.cfg.MaildirRoot, "lanqin.local", "sse-alice", "Maildir", "new")
+	dir := filepath.Join(a.config().MaildirRoot, "lanqin.local", "sse-alice", "Maildir", "new")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -570,8 +570,8 @@ func TestOpenAPIPasswordResetAlsoContainsTheAccount(t *testing.T) {
 // other secret of its class.
 func TestTOTPSecretIsEncryptedAtRestWhenKeyConfigured(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.TwoFactorEnabled = true
-	a.cfg.NotificationSecretKey = "totp-seed-root-key"
+	a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = true })
+	a.updateConfig(func(cfg *Config) { cfg.NotificationSecretKey = "totp-seed-root-key" })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	client := &testClient{t: t, server: ts}
@@ -615,7 +615,7 @@ func TestTOTPSecretIsEncryptedAtRestWhenKeyConfigured(t *testing.T) {
 // seeds written before encryption existed carry no marker and must still verify.
 func TestTOTPPlaintextSecretsKeepWorking(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.NotificationSecretKey = "totp-seed-root-key"
+	a.updateConfig(func(cfg *Config) { cfg.NotificationSecretKey = "totp-seed-root-key" })
 	secret, err := newTOTPSecret()
 	if err != nil {
 		t.Fatal(err)
@@ -650,7 +650,7 @@ func TestTOTPPlaintextSecretsKeepWorking(t *testing.T) {
 // like the user's authenticator was broken.
 func TestEncryptedTOTPSecretWithoutKeyFailsLoudly(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.NotificationSecretKey = "totp-seed-root-key"
+	a.updateConfig(func(cfg *Config) { cfg.NotificationSecretKey = "totp-seed-root-key" })
 	secret, err := newTOTPSecret()
 	if err != nil {
 		t.Fatal(err)
@@ -660,7 +660,7 @@ func TestEncryptedTOTPSecretWithoutKeyFailsLoudly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a.cfg.NotificationSecretKey = ""
+	a.updateConfig(func(cfg *Config) { cfg.NotificationSecretKey = "" })
 	if _, err := a.decryptTOTPSecret(stored); err == nil {
 		t.Fatal("decrypting without the key silently succeeded")
 	}
@@ -671,7 +671,7 @@ func TestEncryptedTOTPSecretWithoutKeyFailsLoudly(t *testing.T) {
 // locks the account permanently.
 func TestAdminCanResetAnotherUsersTwoFactor(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.TwoFactorEnabled = true
+	a.updateConfig(func(cfg *Config) { cfg.TwoFactorEnabled = true })
 	ts := httptest.NewServer(a.Router())
 	defer ts.Close()
 	admin := &testClient{t: t, server: ts}
@@ -746,7 +746,7 @@ func TestAdminCanResetAnotherUsersTwoFactor(t *testing.T) {
 // old path deleted the file just written, leaving raw_path pointing at nothing.
 func TestMaildirRewriteKeepsFileWhenNameCollides(t *testing.T) {
 	a := newTestApp(t)
-	a.cfg.MaildirRoot = newTestDir(t)
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = newTestDir(t) })
 	ctx := t.Context()
 	_, mb := defaultAdminUserAndMailbox(t, a)
 	clearMailboxMessagesForTest(t, a, mb.ID)

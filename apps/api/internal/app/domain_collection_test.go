@@ -84,7 +84,7 @@ func TestDomainCollectionRouting(t *testing.T) {
 	if err != nil || len(targets) != 2 {
 		t.Fatalf("shared destination: %v %v", targets, err)
 	}
-	a.cfg.CatchAllEnabled = true
+	a.updateConfig(func(cfg *Config) { cfg.CatchAllEnabled = true })
 	targets, unknown, err = a.localRecipientTargets(t.Context(), []string{"unknown@a.test", "unknown@c.test"})
 	if err != nil || len(targets) != 1 || len(unknown) != 1 || unknown[0] != "unknown@c.test" {
 		t.Fatalf("fallback precedence: %v %v %v", targets, unknown, err)
@@ -200,7 +200,7 @@ func TestDomainCollectionRecoversPersistedDelivery(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("synthetic"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.MaildirRoot = blocked
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = blocked })
 	now := time.Now().UTC()
 	msg := storedMessage{MessageID: "<recover@synthetic.test>", From: aa.Address, To: []string{"unknown@a.test"}, Subject: "synthetic recovery", BodyText: "body", SentAt: now, ReceivedAt: now}
 	source := newID("source")
@@ -218,7 +218,7 @@ func TestDomainCollectionRecoversPersistedDelivery(t *testing.T) {
 	if _, err := a.db.Exec("UPDATE local_delivery_jobs SET status='sending',lease_until='',lease_token='expired' WHERE id=?", job); err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.MaildirRoot = t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
 	a.processLocalDelivery(t.Context(), job)
 	a.processLocalDelivery(t.Context(), job)
 	var finalID, rawPath string
