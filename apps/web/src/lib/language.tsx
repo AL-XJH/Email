@@ -161,7 +161,6 @@ export const exactTranslations: Record<string, Translation> = {
     en: "No available internal user found",
   },
   PUSH: { "zh-TW": "轉移", en: "Transfer" },
-  邮箱转移请求: { "zh-TW": "信箱轉移請求", en: "Mailbox transfer requests" },
   接受: { "zh-TW": "接受", en: "Accept" },
   拒绝: { "zh-TW": "拒絕", en: "Reject" },
   会话邮件数: { "zh-TW": "會話郵件數", en: "Messages in conversation" },

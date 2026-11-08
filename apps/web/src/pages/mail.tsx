@@ -396,6 +396,41 @@ export function MailPage() {
   const [language] = useLanguage()
   const [displayMode] = useDisplayMode()
   const isMobile = useIsMobile()
+
+  // 手机端读邮件时往 history 里压一条记录：
+  // 从屏幕两侧滑一下触发的是浏览器「返回」，没有这条记录就会直接退出网页。
+  const readerHistoryPushed = React.useRef(false)
+  React.useEffect(() => {
+    if (!isMobile || !selectedId) return
+    if (
+      readerHistoryPushed.current ||
+      (window.history.state as { lanqinReader?: boolean } | null)?.lanqinReader
+    )
+      return
+    window.history.pushState({ ...(window.history.state || {}), lanqinReader: true }, "")
+    readerHistoryPushed.current = true
+  }, [isMobile, selectedId])
+
+  React.useEffect(() => {
+    if (!isMobile) return
+    function handleReaderPopState() {
+      if ((window.history.state as { lanqinReader?: boolean } | null)?.lanqinReader) return
+      // 我们压的那条被弹掉了 —— 回到列表，页面不离开。
+      readerHistoryPushed.current = false
+      setSelectedId(null)
+    }
+    window.addEventListener("popstate", handleReaderPopState)
+    return () => window.removeEventListener("popstate", handleReaderPopState)
+  }, [isMobile])
+
+  // 点左上角返回也走 history，避免留下一条「幽灵」记录让下次返回卡住。
+  function closeReader() {
+    if (isMobile && (window.history.state as { lanqinReader?: boolean } | null)?.lanqinReader) {
+      window.history.back()
+      return
+    }
+    setSelectedId(null)
+  }
   const [refreshing, setRefreshing] = React.useState(false)
   const [listAutoRefreshing, setListAutoRefreshing] = React.useState(false)
   const [bulkPending, setBulkPending] = React.useState(false)
@@ -2408,7 +2443,7 @@ export function MailPage() {
       onSelectAll={toggleCompactSelectAll}
       onToggleSelected={toggleCompactSelect}
       scheduledDraftIds={scheduledDraftIds}
-      onCloseReader={() => setSelectedId(null)}
+      onCloseReader={closeReader}
       onStar={(message) => {
         if (mailView !== "external" || externalMessagesStoredLocally)
           star.mutate({ id: message.id, starred: !message.isStarred })
