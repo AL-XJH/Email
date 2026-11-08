@@ -2561,6 +2561,16 @@ func (a *App) storeAttachment(ctx context.Context, messageID string, input Attac
 }
 
 func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput) error {
+	data, err := input.contentBytes()
+	if err != nil {
+		return err
+	}
+	return a.storeAttachmentBytesWithDB(ctx, db, messageID, input, data)
+}
+
+// storeAttachmentBytesWithDB 接收已经解码好的内容：本地投递会先把整封邮件的
+// 附件解码一次算配额，再逐个落盘，避免同一份 base64 解两遍。
+func (a *App) storeAttachmentBytesWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput, data []byte) error {
 	filename := filepath.Base(strings.TrimSpace(input.Filename))
 	if filename == "." || filename == "" {
 		filename = "attachment.bin"
@@ -2568,10 +2578,6 @@ func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageI
 	contentType := input.ContentType
 	if contentType == "" {
 		contentType = "application/octet-stream"
-	}
-	data, err := input.contentBytes()
-	if err != nil {
-		return err
 	}
 	dir := filepath.Join(a.config().DataDir, "attachments", messageID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -2582,7 +2588,7 @@ func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageI
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `INSERT INTO attachments(id,message_id,filename,content_type,size_bytes,storage_path,created_at) VALUES(?,?,?,?,?,?,?)`, id, messageID, filename, contentType, len(data), path, a.now().UTC().Format(time.RFC3339Nano))
+	_, err := db.ExecContext(ctx, `INSERT INTO attachments(id,message_id,filename,content_type,size_bytes,storage_path,created_at) VALUES(?,?,?,?,?,?,?)`, id, messageID, filename, contentType, len(data), path, a.now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 

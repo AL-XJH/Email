@@ -306,18 +306,20 @@ func (a *App) completeLocalDelivery(ctx context.Context, id, token string) error
 		}
 		createdMessageID = messageID
 		var added int64
-		for _, att := range payload.Attachments {
-			data, e := att.contentBytes()
+		decoded := make([][]byte, len(payload.Attachments))
+		for i := range payload.Attachments {
+			data, e := payload.Attachments[i].contentBytes()
 			if e != nil {
 				return e
 			}
+			decoded[i] = data
 			added += int64(len(data))
 		}
 		if err = a.ensureMailboxQuotaAvailable(ctx, tx, target, added); err != nil {
 			return err
 		}
-		for _, att := range payload.Attachments {
-			if err = a.storeAttachmentWithDB(ctx, tx, messageID, att); err != nil {
+		for i := range payload.Attachments {
+			if err = a.storeAttachmentBytesWithDB(ctx, tx, messageID, payload.Attachments[i], decoded[i]); err != nil {
 				return err
 			}
 		}
