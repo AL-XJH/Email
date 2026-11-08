@@ -243,36 +243,45 @@ export function ProfilePage() {
     enabled: canApplyMailbox,
   })
   const publicSettings = useQuery({ queryKey: ["public-settings"], queryFn: api.publicSettings })
-  const apiTokens = useQuery({ queryKey: ["api-tokens"], queryFn: api.apiTokens })
+  const apiTokens = useQuery({
+    queryKey: ["api-tokens"],
+    queryFn: api.apiTokens,
+    enabled: tab === "apiTokens",
+  })
   const contacts = useQuery({
     queryKey: ["contacts"],
     queryFn: api.contacts,
-    enabled: canManageContacts,
+    enabled: canManageContacts && tab === "contacts",
   })
   const signatures = useQuery({
     queryKey: ["signatures"],
     queryFn: api.signatures,
-    enabled: canManageSignatures,
+    enabled: canManageSignatures && tab === "signatures",
   })
-  const rules = useQuery({ queryKey: ["rules"], queryFn: api.rules, enabled: canManageRules })
+  const rules = useQuery({
+    queryKey: ["rules"],
+    queryFn: api.rules,
+    enabled: canManageRules && tab === "rules",
+  })
   const telegramSettings = useQuery({
     queryKey: ["telegram-settings"],
     queryFn: api.telegramSettings,
-    enabled: canManageRules,
+    enabled: canManageRules && tab === "rules",
   })
   const forwardAddresses = useQuery({
     queryKey: ["forward-addresses"],
     queryFn: api.forwardAddresses,
-    enabled: canManageRules,
+    enabled: canManageRules && tab === "rules",
   })
   const allowed = useQuery({
     queryKey: ["allowed-senders"],
     queryFn: api.allowedSenders,
+    enabled: tab === "blocked",
   })
   const blocked = useQuery({
     queryKey: ["blocked-senders"],
     queryFn: api.blockedSenders,
-    enabled: canManageBlocked,
+    enabled: canManageBlocked && tab === "blocked",
   })
   const selectedMailbox = React.useMemo(
     () => mailboxes.data?.items.find((m) => m.id === mailboxId),

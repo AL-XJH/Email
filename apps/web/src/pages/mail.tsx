@@ -5147,7 +5147,31 @@ function translationTargetLabel(language: Language) {
   return "English"
 }
 
-function CompactMessageRow({
+type MessageRowProps = {
+  message: MailMessage
+  active: boolean
+  checked: boolean
+  scheduled?: boolean
+  onCheckedChange: (checked: boolean) => void
+  onClick: () => void
+  onContextMenu: (event: React.MouseEvent) => void
+  onStar: () => void
+  canOrganize: boolean
+}
+
+// 行组件只在「这封信本身」或选中态变化时重渲染：父级每次渲染都会新建
+// onClick/onStar 闭包，默认的浅比较会让 memo 完全失效。
+function messageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps) {
+  return (
+    prev.message === next.message &&
+    prev.active === next.active &&
+    prev.checked === next.checked &&
+    Boolean(prev.scheduled) === Boolean(next.scheduled) &&
+    prev.canOrganize === next.canOrganize
+  )
+}
+
+const CompactMessageRow = React.memo(function CompactMessageRow({
   message,
   active,
   checked,
@@ -5295,6 +5319,7 @@ function CompactMessageRow({
     </div>
   )
 }
+, messageRowPropsEqual)
 
 function NewLabelButton({
   collapsed,
@@ -5783,7 +5808,7 @@ function AddressList({ values, empty = "无" }: { values: string[]; empty?: stri
   )
 }
 
-function MessageRow({
+const MessageRow = React.memo(function MessageRow({
   message,
   active,
   checked,
@@ -5969,6 +5994,7 @@ function MessageRow({
     </div>
   )
 }
+, messageRowPropsEqual)
 
 function MailLabelBadge({ label }: { label: MailLabel }) {
   useUiLanguage()
