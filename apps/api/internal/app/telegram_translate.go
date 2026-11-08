@@ -90,6 +90,10 @@ func (a *App) translateTelegramPayload(ctx context.Context, payload telegramNoti
 		// 一个字都没翻出来（或翻译结果和原文一样）就按原文发。
 		return payload
 	}
+	// 一行日志方便排查「这条推送到底翻没翻」，不打印任何正文内容。
+	if a.log != nil {
+		a.log.Info("Telegram notification translated before sending", "target", "zh-CN")
+	}
 	parts := telegramMessageParts(payload.Mailbox, payload.From, payload.Subject, payload.Code, payload.Body, telegramNotificationTextBudget)
 	if len(parts) > 0 {
 		payload.Text = parts[0]
