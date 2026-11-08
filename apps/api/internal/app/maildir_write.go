@@ -47,7 +47,7 @@ func (a *App) rewriteMessageMaildir(ctx context.Context, messageID string) error
 	if err != nil {
 		return err
 	}
-	attachments, err := a.attachmentInputsForMessage(ctx, messageID)
+	attachments, err := a.attachmentInputsForMessageRaw(ctx, messageID)
 	if err != nil {
 		return err
 	}
@@ -269,7 +269,7 @@ func (a *App) writeMessageToNewMaildirFolder(ctx context.Context, messageID, fol
 		return err
 	}
 	msg.FolderID = folderID
-	attachments, err := a.attachmentInputsForMessage(ctx, messageID)
+	attachments, err := a.attachmentInputsForMessageRaw(ctx, messageID)
 	if err != nil {
 		return err
 	}
@@ -472,6 +472,30 @@ func (a *App) attachmentInputsForMessage(ctx context.Context, messageID string) 
 			return nil, err
 		}
 		out = append(out, AttachmentInput{Filename: filename, ContentType: contentType, ContentBase64: base64.StdEncoding.EncodeToString(data)})
+	}
+	return out, rows.Err()
+}
+
+// attachmentInputsForMessageRaw 与 attachmentInputsForMessage 相同，但直接把
+// 文件内容挂在结构体上，跳过 base64 编码再解码的一来一回。maildir 重写只在本
+// 进程里用这些字节拼 MIME，不需要可序列化。
+func (a *App) attachmentInputsForMessageRaw(ctx context.Context, messageID string) ([]AttachmentInput, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT filename,content_type,storage_path FROM attachments WHERE message_id=? ORDER BY filename`, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AttachmentInput
+	for rows.Next() {
+		var filename, contentType, storagePath string
+		if err := rows.Scan(&filename, &contentType, &storagePath); err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(storagePath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, AttachmentInput{Filename: filename, ContentType: contentType, decodedContent: data, contentDecoded: true})
 	}
 	return out, rows.Err()
 }
