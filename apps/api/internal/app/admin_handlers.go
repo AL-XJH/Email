@@ -673,10 +673,21 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
 		return
 	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
+	aff, _ := res.RowsAffected()
+	if aff == 0 {
 		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
+	}
+	if userID != existingMailbox.UserID {
+		// 主人换了，围绕旧主人建立的东西也要一起收回：
+		// 外部 IMAP 账号里存的是旧主人的第三方邮箱凭据，留着等于把别人的邮箱
+		// 接到新主人名下；共享授权是旧主人签发的，同样失效。
+		if _, err := a.db.ExecContext(r.Context(), `DELETE FROM external_imap_accounts WHERE mailbox_id=?`, id); err != nil {
+			a.log.Warn("failed to detach external imap accounts after mailbox ownership change", "mailbox", id, "error", err)
+		}
+		if _, err := a.db.ExecContext(r.Context(), `UPDATE mailbox_shares SET revoked_at=?,updated_at=? WHERE mailbox_id=? AND revoked_at IS NULL`, stamp, stamp, id); err != nil {
+			a.log.Warn("failed to revoke mailbox shares after ownership change", "mailbox", id, "error", err)
+		}
 	}
 	m, err := a.mailboxByID(r.Context(), id)
 	if err != nil {
