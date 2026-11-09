@@ -78,7 +78,9 @@ func main() {
 			logger.Error("failed to listen for SMTP submission TLS", "error", err)
 			os.Exit(1)
 		}
-		listener = netutil.LimitListener(tls.NewListener(listener, submissionTLSConfig), submissionConnectionLimit)
+		// LimitListener 的包装会隐藏 *tls.Conn 类型，go-smtp 就认为连接没加密、
+		// 拒绝 AUTH（523 TLS is required）。必须先限流再套 TLS。
+		listener = tls.NewListener(netutil.LimitListener(listener, submissionConnectionLimit), submissionTLSConfig)
 		go func() {
 			logger.Info("LanQin SMTP implicit TLS submission listening", "addr", cfg.SubmissionTLSAddr)
 			if err := submissionServers.TLS.Serve(listener); err != nil && !errors.Is(err, smtpserver.ErrServerClosed) {
