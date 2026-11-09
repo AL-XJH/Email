@@ -217,6 +217,11 @@ export function ComposeDialog({
   const activeMailboxId = draft?.mailboxId || mailbox?.id || ""
   const maxAttachmentBytes = attachmentLimitBytes(limits)
   const maxAttachmentText = maxAttachmentBytes > 0 ? formatBytes(maxAttachmentBytes) : "不限"
+  const draftClientTokenRef = React.useRef(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  )
   const composePayload = React.useMemo<DraftPayload>(
     () => ({
       mailboxId: activeMailboxId,
@@ -226,6 +231,7 @@ export function ComposeDialog({
       subject: subjectValue,
       text: quotedText ? `${body.text}\n\n${quotedText}` : body.text,
       html: [body.html || plainTextToHtml(body.text), quotedHtml].filter(Boolean).join(""),
+      clientToken: draftClientTokenRef.current,
       ...(attachmentsTouched ? { attachments: draftAttachments } : {}),
     }),
     [

@@ -316,6 +316,8 @@ export type SendPayload = {
 }
 export type DraftPayload = Omit<SendPayload, "attachments"> & {
   attachments?: SendPayload["attachments"]
+  // 客户端生成的幂等键：超时重试/双击不会在草稿箱里出现两份。
+  clientToken?: string
 }
 export type ScheduleSendPayload = SendPayload & { draftId?: string; sendAt: string }
 export type ScheduledSend = {

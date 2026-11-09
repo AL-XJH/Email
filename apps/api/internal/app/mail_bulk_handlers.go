@@ -98,6 +98,15 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errors.New("invalid bulk action"))
 		return
 	}
+	normalizedFolder := ""
+	if folder != "" {
+		var err error
+		normalizedFolder, err = normalizeFolderNameForUser(folder)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
 
 	seen := make(map[string]bool, len(req.IDs))
 	ids := make([]string, 0, len(req.IDs))
@@ -125,21 +134,23 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		marks = append(marks, "?")
 		args = append(args, id)
 	}
-	query := `SELECT m.id FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND m.id IN (` + strings.Join(marks, ",") + `)`
+	query := `SELECT m.id,m.mailbox_id,COALESCE(m.folder_id,''),COALESCE(f.name,''),m.is_read,m.is_starred FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id LEFT JOIN folders f ON f.id=m.folder_id WHERE mb.user_id=? AND m.id IN (` + strings.Join(marks, ",") + `)`
 	rows, err := a.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load messages")
 		return
 	}
-	owned := map[string]bool{}
+	owned := map[string]*MailMessage{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var msg MailMessage
+		var read, starred int
+		if err := rows.Scan(&msg.ID, &msg.MailboxID, &msg.FolderID, &msg.Folder, &read, &starred); err != nil {
 			rows.Close()
 			respondError(w, http.StatusInternalServerError, "failed to load messages")
 			return
 		}
-		owned[id] = true
+		msg.IsRead, msg.IsStarred = intBool(read), intBool(starred)
+		owned[msg.ID] = &msg
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -150,13 +161,10 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	missing := make([]string, 0)
 	failed := make([]string, 0)
+	folderIDs := map[string]string{}
 	for _, id := range ids {
-		if !owned[id] {
-			missing = append(missing, id)
-			continue
-		}
-		msg, err := a.messageByID(r.Context(), id, false)
-		if err != nil {
+		msg := owned[id]
+		if msg == nil {
 			missing = append(missing, id)
 			continue
 		}
@@ -172,7 +180,16 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		case "delete":
 			err = a.applyMessageDelete(r.Context(), msg)
 		default:
-			err = a.applyMessageMove(r.Context(), msg, folder)
+			folderID, ok := folderIDs[msg.MailboxID]
+			if !ok {
+				folderID, err = a.ensureFolder(r.Context(), msg.MailboxID, normalizedFolder)
+				if err == nil {
+					folderIDs[msg.MailboxID] = folderID
+				}
+			}
+			if err == nil {
+				err = a.moveMessageMaildir(r.Context(), msg.ID, folderID)
+			}
 		}
 		if err != nil {
 			failed = append(failed, id)

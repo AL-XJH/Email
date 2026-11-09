@@ -535,6 +535,7 @@ func (a *App) migrate(ctx context.Context) error {
 			raw_path TEXT NOT NULL DEFAULT '',
 			imap_uid INTEGER NOT NULL DEFAULT 0,
 			imap_modseq INTEGER NOT NULL DEFAULT 1,
+			draft_token TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -868,6 +869,9 @@ func (a *App) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := a.migrateMessagesFromName(ctx); err != nil {
+		return err
+	}
+	if err := a.migrateDraftTokens(ctx); err != nil {
 		return err
 	}
 	if err := a.migrateHotPathIndexes(ctx); err != nil {
@@ -1699,6 +1703,37 @@ func (a *App) migrateMessagesForUnregistered(ctx context.Context) error {
 	return nil
 }
 
+// migrateDraftTokens 给草稿加幂等键：客户端超时重试同一份草稿时只落一行。
+func (a *App) migrateDraftTokens(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !columns["draft_token"] {
+		if _, err := a.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN draft_token TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // migrateHotPathIndexes 补上热路径缺的索引。
 //
 // 这些索引必须等所有表都建好之后再建（external_imap_messages / 各种 outbox 在
@@ -1723,6 +1758,7 @@ func (a *App) migrateHotPathIndexes(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_send_queue_updated_id ON send_queue(updated_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_status_outbox_updated_id ON status_webhook_outbox(updated_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_telegram_outbox_updated_id ON telegram_notification_outbox(updated_at DESC, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_draft_token ON messages(mailbox_id, draft_token) WHERE draft_token<>'' AND mailbox_id IS NOT NULL`,
 	}
 	for _, stmt := range statements {
 		if _, err := a.db.ExecContext(ctx, stmt); err != nil {

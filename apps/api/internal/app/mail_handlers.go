@@ -868,6 +868,7 @@ type mailDraftInput struct {
 	Text        string             `json:"text"`
 	HTML        string             `json:"html"`
 	Attachments *[]AttachmentInput `json:"attachments"`
+	ClientToken string             `json:"clientToken"`
 }
 
 type scheduledSendPayload struct {
@@ -1358,6 +1359,20 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if draftID == "" {
+		clientToken := strings.TrimSpace(req.ClientToken)
+		if clientToken != "" {
+			var existingID string
+			err := a.db.QueryRowContext(r.Context(), `SELECT id FROM messages WHERE mailbox_id=? AND draft_token=? LIMIT 1`, mb.ID, clientToken).Scan(&existingID)
+			if err == nil {
+				msg, _ := a.messageByID(r.Context(), existingID, true)
+				respondJSON(w, http.StatusOK, msg)
+				return
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				respondError(w, http.StatusInternalServerError, "failed to save draft")
+				return
+			}
+		}
 		messageID := fmt.Sprintf("<%s@%s>", newID("draft"), strings.Split(mb.Address, "@")[1])
 		attachments := []AttachmentInput{}
 		if req.Attachments != nil {
@@ -1368,6 +1383,20 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to save draft")
 			return
+		}
+		if clientToken != "" {
+			if _, err := a.db.ExecContext(r.Context(), `UPDATE messages SET draft_token=? WHERE id=?`, clientToken, draftID); err != nil {
+				// 并发重试：另一个请求先占了这个 token，删掉本次副本并返回已有草稿。
+				a.deleteMessage(r.Context(), draftID)
+				var existingID string
+				if queryErr := a.db.QueryRowContext(r.Context(), `SELECT id FROM messages WHERE mailbox_id=? AND draft_token=? LIMIT 1`, mb.ID, clientToken).Scan(&existingID); queryErr == nil {
+					msg, _ := a.messageByID(r.Context(), existingID, true)
+					respondJSON(w, http.StatusOK, msg)
+					return
+				}
+				respondError(w, http.StatusInternalServerError, "failed to save draft")
+				return
+			}
 		}
 		if err := a.writeStoredMessageToMaildir(r.Context(), draftID, stored, attachments); err != nil {
 			a.deleteMessage(r.Context(), draftID)
