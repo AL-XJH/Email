@@ -1650,6 +1650,10 @@ func (a *App) migrateHotPathIndexes(ctx context.Context) error {
 		// 这两列原来没有索引，每条回执都是全表扫。
 		`CREATE INDEX IF NOT EXISTS idx_send_queue_sent_message ON send_queue(sent_message_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_send_queue_message_id ON send_queue(message_id)`,
+		// 管理端投递队列按 (updated_at,id) 分页，三张表各补一个同序索引。
+		`CREATE INDEX IF NOT EXISTS idx_send_queue_updated_id ON send_queue(updated_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_status_outbox_updated_id ON status_webhook_outbox(updated_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telegram_outbox_updated_id ON telegram_notification_outbox(updated_at DESC, id DESC)`,
 	}
 	for _, stmt := range statements {
 		if _, err := a.db.ExecContext(ctx, stmt); err != nil {

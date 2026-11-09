@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,61 +66,84 @@ func (a *App) handleAdminDeliveryQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queries := []string{
-		`SELECT id,'send' AS queue_type,
-			CASE WHEN delivered_at IS NOT NULL OR status='delivered' THEN 'delivered' WHEN status='canceled' THEN 'canceled' WHEN status='failed' THEN 'failed' ELSE 'pending' END AS queue_status,
-			attempt_count,max_attempts,next_attempt_at,last_error,created_at,updated_at,COALESCE(delivered_at,'') AS delivered_at
-			FROM send_queue`,
-		`SELECT id,'webhook' AS queue_type,
-			CASE WHEN delivered_at IS NOT NULL THEN 'delivered' WHEN attempt_count>=10 THEN 'failed' ELSE 'pending' END AS queue_status,
-			attempt_count,10 AS max_attempts,next_attempt_at,last_error,created_at,updated_at,COALESCE(delivered_at,'') AS delivered_at
-			FROM status_webhook_outbox`,
-		`SELECT id,'telegram' AS queue_type,
-			CASE WHEN delivered_at IS NOT NULL THEN 'delivered' WHEN attempt_count>=10 THEN 'failed' ELSE 'pending' END AS queue_status,
-			attempt_count,10 AS max_attempts,next_attempt_at,last_error,created_at,updated_at,COALESCE(delivered_at,'') AS delivered_at
-			FROM telegram_notification_outbox`,
+	// 每个来源表的 status 条件直接下推，别在 UNION 外面套 CASE 再过滤：
+	// 那等于先把三张表全读出来再筛，翻页越深越慢。
+	type queueSource struct {
+		name  string
+		where string
+	}
+	sources := []queueSource{
+		{name: "send", where: sendQueueStatusWhere(statusFilter)},
+		{name: "webhook", where: outboxStatusWhere(statusFilter)},
+		{name: "telegram", where: outboxStatusWhere(statusFilter)},
 	}
 	if typeFilter != "all" {
-		idx := map[string]int{"send": 0, "webhook": 1, "telegram": 2}[typeFilter]
-		queries = []string{queries[idx]}
+		filtered := sources[:0]
+		for _, source := range sources {
+			if source.name == typeFilter {
+				filtered = append(filtered, source)
+			}
+		}
+		sources = filtered
 	}
-	union := strings.Join(queries, " UNION ALL ")
-	where := []string{"1=1"}
-	args := []any{}
-	if typeFilter != "all" {
-		where = append(where, "queue_type=?")
-		args = append(args, typeFilter)
-	}
-	if statusFilter != "all" {
-		where = append(where, "queue_status=?")
-		args = append(args, statusFilter)
-	}
-	base := "SELECT id,queue_type,queue_status,attempt_count,max_attempts,next_attempt_at,last_error,created_at,updated_at,delivered_at FROM (" + union + ") q WHERE " + strings.Join(where, " AND ")
-	var total int
-	if err := a.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM ("+union+") q WHERE "+strings.Join(where, " AND "), args...).Scan(&total); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to count delivery queue")
-		return
-	}
-	args = append(args, limit, (page-1)*limit)
-	rows, err := a.db.QueryContext(r.Context(), base+" ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?", args...)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to list delivery queue")
-		return
-	}
-	defer rows.Close()
-	items := []AdminDeliveryQueueItem{}
-	for rows.Next() {
-		var item AdminDeliveryQueueItem
-		if err := rows.Scan(&item.ID, &item.QueueType, &item.Status, &item.AttemptCount, &item.MaxAttempts, &item.NextAttemptAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt, &item.DeliveredAt); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to scan delivery queue")
+	selects := make([]string, 0, len(sources))
+	total := 0
+	for _, source := range sources {
+		selects = append(selects, deliveryQueueSelect(source.name)+" WHERE "+source.where)
+		var count int
+		if err := a.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM "+deliveryQueueTable(source.name)+" WHERE "+source.where).Scan(&count); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to count delivery queue")
 			return
 		}
-		item.LastError = sanitizeAdminQueueError(item.LastError)
-		items = append(items, item)
+		total += count
 	}
-	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to list delivery queue")
+	items := []AdminDeliveryQueueItem{}
+	if len(selects) == 0 {
+		respondJSON(w, http.StatusOK, map[string]any{"items": items, "page": page, "limit": limit, "totalCount": 0})
 		return
+	}
+
+	// 分页不再用 OFFSET 扫全表：每个来源只取前 page*limit 条（有上限），
+	// 在 Go 里按 (updated_at,id) 归并后切片。三张表都走 (updated_at,id) 索引。
+	need := page * limit
+	if need > deliveryQueueMaxScan {
+		need = deliveryQueueMaxScan
+	}
+	merged := make([]AdminDeliveryQueueItem, 0, need*len(selects))
+	for _, selectSQL := range selects {
+		rows, err := a.db.QueryContext(r.Context(), selectSQL+" ORDER BY updated_at DESC,id DESC LIMIT ?", need)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to list delivery queue")
+			return
+		}
+		for rows.Next() {
+			var item AdminDeliveryQueueItem
+			if err := rows.Scan(&item.ID, &item.QueueType, &item.Status, &item.AttemptCount, &item.MaxAttempts, &item.NextAttemptAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt, &item.DeliveredAt); err != nil {
+				rows.Close()
+				respondError(w, http.StatusInternalServerError, "failed to scan delivery queue")
+				return
+			}
+			item.LastError = sanitizeAdminQueueError(item.LastError)
+			merged = append(merged, item)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			respondError(w, http.StatusInternalServerError, "failed to list delivery queue")
+			return
+		}
+		rows.Close()
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		left, right := parseTime(merged[i].UpdatedAt), parseTime(merged[j].UpdatedAt)
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return merged[i].ID > merged[j].ID
+	})
+	offset := (page - 1) * limit
+	if offset < len(merged) {
+		end := min(offset+limit, len(merged))
+		items = append(items, merged[offset:end]...)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items, "page": page, "limit": limit, "totalCount": total})
 }
@@ -184,4 +208,62 @@ func (a *App) adminDeliveryQueueMutation(w http.ResponseWriter, r *http.Request,
 	}
 	a.log.Info("admin delivery queue mutation", "actor", currentUser(r).ID, "queue_type", queueType, "item_id", id, "action", map[bool]string{true: "retry", false: "cancel"}[retry])
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+const deliveryQueueMaxScan = 5000
+
+func deliveryQueueTable(name string) string {
+	switch name {
+	case "webhook":
+		return "status_webhook_outbox"
+	case "telegram":
+		return "telegram_notification_outbox"
+	default:
+		return "send_queue"
+	}
+}
+
+func deliveryQueueSelect(name string) string {
+	switch name {
+	case "webhook", "telegram":
+		return `SELECT id,'` + name + `' AS queue_type,
+			CASE WHEN delivered_at IS NOT NULL THEN 'delivered' WHEN attempt_count>=10 THEN 'failed' ELSE 'pending' END AS queue_status,
+			attempt_count,10 AS max_attempts,next_attempt_at,last_error,created_at,updated_at,COALESCE(delivered_at,'') AS delivered_at
+			FROM ` + deliveryQueueTable(name)
+	default:
+		return `SELECT id,'send' AS queue_type,
+			CASE WHEN delivered_at IS NOT NULL OR status='delivered' THEN 'delivered' WHEN status='canceled' THEN 'canceled' WHEN status='failed' THEN 'failed' ELSE 'pending' END AS queue_status,
+			attempt_count,max_attempts,next_attempt_at,last_error,created_at,updated_at,COALESCE(delivered_at,'') AS delivered_at
+			FROM send_queue`
+	}
+}
+
+func sendQueueStatusWhere(status string) string {
+	switch status {
+	case "delivered":
+		return `(delivered_at IS NOT NULL OR status='delivered')`
+	case "canceled":
+		return `(delivered_at IS NULL AND status<>'delivered' AND status='canceled')`
+	case "failed":
+		return `(delivered_at IS NULL AND status<>'delivered' AND status<>'canceled' AND status='failed')`
+	case "pending":
+		return `(delivered_at IS NULL AND status<>'delivered' AND status<>'canceled' AND status<>'failed')`
+	default:
+		return "1=1"
+	}
+}
+
+func outboxStatusWhere(status string) string {
+	switch status {
+	case "delivered":
+		return `delivered_at IS NOT NULL`
+	case "failed":
+		return `delivered_at IS NULL AND attempt_count>=10`
+	case "pending":
+		return `delivered_at IS NULL AND attempt_count<10`
+	case "canceled":
+		return "0=1"
+	default:
+		return "1=1"
+	}
 }

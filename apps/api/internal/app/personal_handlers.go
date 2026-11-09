@@ -1561,12 +1561,13 @@ func (a *App) applyRuleToExistingMessages(ctx context.Context, userID, mailboxID
 	if err != nil {
 		return 0, err
 	}
-	// 先把 id 收完、关掉游标，再逐条查详情。
+	// 先把 id 收完、关掉游标，再批量查详情。
 	//
 	// SQLite 只有一条连接（database.go 里 SetMaxOpenConns(1)），游标没关就再发
 	// 一条查询会永远拿不到连接：这里以前是在 rows.Next() 循环里调 ruleMessageByID，
 	// 等于把整个进程的数据库连接占死，任何「应用到已有邮件」的规则都能让站点挂住。
-	ids := make([]string, 0, 64)
+	// 收完 id 后也不能逐封点查：10 万封就是 20 万次往返。
+	ids := make([]string, 0, 256)
 	for rows.Next() {
 		var messageID string
 		if err := rows.Scan(&messageID); err != nil {
@@ -1581,17 +1582,19 @@ func (a *App) applyRuleToExistingMessages(ctx context.Context, userID, mailboxID
 	}
 	rows.Close()
 
-	messages := make([]ruleMessage, 0, len(ids))
+	messages := make([]ruleMessage, 0, 32)
 	var count int64
-	for _, messageID := range ids {
-		msg, ok := a.ruleMessageByID(ctx, messageID)
-		if !ok {
-			continue
+	for start := 0; start < len(ids); start += ruleApplyScanBatch {
+		end := min(start+ruleApplyScanBatch, len(ids))
+		batch, err := a.ruleMessagesByIDs(ctx, ids[start:end])
+		if err != nil {
+			return count, err
 		}
-		if !ruleMatches(rule, msg) {
-			continue
+		for _, msg := range batch {
+			if ruleMatches(rule, msg) {
+				messages = append(messages, msg)
+			}
 		}
-		messages = append(messages, msg)
 	}
 	for _, msg := range messages {
 		if err := a.applyRuleActions(ctx, msg.MailboxID, msg.ID, rule.ID, existingActions, false); err != nil {
@@ -1600,4 +1603,90 @@ func (a *App) applyRuleToExistingMessages(ctx context.Context, userID, mailboxID
 		count++
 	}
 	return count, nil
+}
+
+// ruleApplyScanBatch 是一次批量取详情、比对的邮件数。
+//
+// 「应用到已有邮件」以前对每一封邮件各发一次 SELECT（还带整段 body_text），
+// 10 万封的邮箱就是 10 万次往返；这里按批取，把往返压到百分之一。
+const ruleApplyScanBatch = 200
+
+// ruleMessagesByIDs 批量取规则匹配需要的列，附件名单独一次查询再按 message_id 归组。
+func (a *App) ruleMessagesByIDs(ctx context.Context, ids []string) ([]ruleMessage, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,COALESCE(mailbox_id,''),COALESCE(from_addr,''),COALESCE(from_name,''),to_addrs,cc_addrs,subject,snippet,body_text,size_bytes,received_at
+		FROM messages WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]ruleMessage, 0, len(ids))
+	for rows.Next() {
+		var msg ruleMessage
+		var fromName, toAddrs, ccAddrs, receivedAt string
+		if err := rows.Scan(&msg.ID, &msg.MailboxID, &msg.From, &fromName, &toAddrs, &ccAddrs, &msg.Subject, &msg.Snippet, &msg.BodyText, &msg.SizeBytes, &receivedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		msg.From = strings.TrimSpace(msg.From + " " + fromName)
+		msg.To = ruleAddressText(toAddrs)
+		msg.CC = ruleAddressText(ccAddrs)
+		msg.ReceivedAt = parseTime(receivedAt)
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	names, err := a.ruleAttachmentNamesByMessages(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		messages[i].AttachmentNames = names[messages[i].ID]
+	}
+	return messages, nil
+}
+
+func (a *App) ruleAttachmentNamesByMessages(ctx context.Context, ids []string) (map[string]string, error) {
+	result := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT message_id,filename,content_type FROM attachments WHERE message_id IN (`+placeholders+`) ORDER BY message_id,filename`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var messageID, filename, contentType string
+		if err := rows.Scan(&messageID, &filename, &contentType); err != nil {
+			return nil, err
+		}
+		if filename == "" {
+			filename = contentType
+		}
+		if existing := result[messageID]; existing != "" {
+			result[messageID] = existing + " " + filename
+		} else {
+			result[messageID] = filename
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
