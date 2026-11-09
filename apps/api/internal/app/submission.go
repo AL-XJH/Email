@@ -206,12 +206,22 @@ func (s *submissionSession) Rcpt(to string, _ *smtpserver.RcptOptions) error {
 	return nil
 }
 
+// 每封提交都要 io.ReadAll 进内存（上限 35MB）；不限并发时几十个连接就能把
+// 进程顶到 OOM，连带 webmail/IMAP/发信 worker 一起挂掉。
+var submissionSlots = make(chan struct{}, 8)
+
 func (s *submissionSession) Data(r io.Reader) error {
 	if s.user == nil || s.mailbox == nil {
 		return smtpserver.ErrAuthRequired
 	}
 	if s.mailFrom == "" || len(s.recipients) == 0 {
 		return smtpError(503, smtpserver.EnhancedCode{5, 5, 1}, "missing sender or recipients")
+	}
+	select {
+	case submissionSlots <- struct{}{}:
+		defer func() { <-submissionSlots }()
+	default:
+		return smtpError(452, smtpserver.EnhancedCode{4, 7, 0}, "too many concurrent submissions, retry later")
 	}
 	ctx, cancel := submissionContext()
 	defer cancel()
