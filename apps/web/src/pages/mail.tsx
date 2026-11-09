@@ -206,7 +206,14 @@ import {
   stripHtml,
 } from "@/lib/mail-format"
 import { CompactMessageRow, MessageRow } from "@/components/mail-message-row"
-import { ComposeField, ScheduleSendDialog, ToolbarTextButton } from "@/components/mail-composer-parts"
+import {
+  ComposeField,
+  InsertContentDialog,
+  ScheduleSendDialog,
+  ToolbarTextButton,
+  type InsertDialogState,
+  type InsertDialogValue,
+} from "@/components/mail-composer-parts"
 import {
   CompactMessageDetail,
   MessageMetaPanel,
@@ -5463,14 +5470,6 @@ function ComposeDialog({
 
 
 
-type InsertDialogState = {
-  kind: "link" | "image"
-  selectedText: string
-  url?: string
-  alt?: string
-  editing?: boolean
-}
-type InsertDialogValue = { url: string; text: string; alt: string }
 const composerFontOptions = [
   "Arial",
   "Georgia",
@@ -6441,97 +6440,6 @@ function MailBodyComposer({
 }
 
 
-function InsertContentDialog({
-  state,
-  onOpenChange,
-  onConfirm,
-}: {
-  state: InsertDialogState | null
-  onOpenChange: (open: boolean) => void
-  onConfirm: (value: InsertDialogValue) => void
-}) {
-  useUiLanguage()
-
-  const kind = state?.kind || "link"
-  const [url, setUrl] = React.useState("")
-  const [text, setText] = React.useState("")
-  const [alt, setAlt] = React.useState("")
-
-  React.useEffect(() => {
-    if (!state) return
-    setUrl(state.url || "")
-    setText(state.kind === "link" ? state.selectedText : "")
-    setAlt(state.alt || "")
-  }, [state])
-
-  function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!url.trim()) return
-    onConfirm({ url, text, alt })
-    onOpenChange(false)
-  }
-
-  return (
-    <Dialog open={!!state} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <form className="grid gap-4" onSubmit={submit}>
-          <DialogHeader>
-            <DialogTitle>
-              {kind === "link"
-                ? state?.editing
-                  ? uiText("编辑链接")
-                  : uiText("插入链接")
-                : state?.editing
-                  ? uiText("编辑图片")
-                  : uiText("插入图片")}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-2">
-            <Label htmlFor="composer-insert-url">
-              {kind === "link" ? uiText("链接地址") : uiText("图片地址")}
-            </Label>
-            <Input
-              id="composer-insert-url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder={
-                kind === "link" ? "https://example.com" : "https://example.com/image.png"
-              }
-              autoFocus
-            />
-          </div>
-          {kind === "link" ? (
-            <div className="grid gap-2">
-              <Label htmlFor="composer-insert-text">{uiText("显示文字")}</Label>
-              <Input
-                id="composer-insert-text"
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                placeholder={uiText("默认使用链接地址")}
-              />
-            </div>
-          ) : (
-            <div className="grid gap-2">
-              <Label htmlFor="composer-insert-alt">{uiText("替代文字")}</Label>
-              <Input
-                id="composer-insert-alt"
-                value={alt}
-                onChange={(event) => setAlt(event.target.value)}
-                placeholder={uiText("图片说明")}
-              />
-            </div>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              {uiText("取消")}
-            </Button>
-            <Button type="submit">{state?.editing ? uiText("更新") : uiText("插入")}</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 const durationOptions = [
   { value: "15", label: "15分钟" },
