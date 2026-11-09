@@ -534,20 +534,22 @@ export function MailPage() {
       selectedLabelId,
       debouncedQuery,
       messagePageSize,
+      mailFilter,
     ],
     queryFn: ({ pageParam }) => {
       const cursor = typeof pageParam === "string" ? pageParam : ""
       if (mailView === "starred")
-        return api.starredMessages(debouncedQuery, cursor, activeMailboxId, messagePageSize)
+        return api.starredMessages(debouncedQuery, cursor, activeMailboxId, messagePageSize, mailFilter)
       if (mailView === "label")
         return api.labelMessages(
           selectedLabelId,
           debouncedQuery,
           cursor,
           activeMailboxId,
-          messagePageSize
+          messagePageSize,
+          mailFilter
         )
-      return api.messages(folder, debouncedQuery, cursor, activeMailboxId, messagePageSize)
+      return api.messages(folder, debouncedQuery, cursor, activeMailboxId, messagePageSize, mailFilter)
     },
     initialPageParam: "",
     // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏；

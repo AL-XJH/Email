@@ -542,6 +542,14 @@ func (a *App) respondMailMessageList(w http.ResponseWriter, r *http.Request, acc
 }
 
 func (a *App) respondMailMessageListInternal(w http.ResponseWriter, r *http.Request, access *mailboxReadAccess, where string, args []any, includeExternal bool, externalAccountID string) {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("filter"))) {
+	case "unread":
+		where += ` AND m.is_read=0`
+	case "starred":
+		where += ` AND m.is_starred=1`
+	case "attachments":
+		where += ` AND m.has_attachments=1`
+	}
 	if !includeExternal {
 		where += ` AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`
 	}

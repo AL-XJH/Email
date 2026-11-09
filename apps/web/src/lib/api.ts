@@ -652,10 +652,11 @@ export const api = {
       `/api/mail/labels/${id}${mailboxId ? `?mailboxId=${encodeURIComponent(mailboxId)}` : ""}`,
       { method: "DELETE" }
     ),
-  messages: (folder: string, q = "", cursor = "", mailboxId?: string, limit = 30) => {
+  messages: (folder: string, q = "", cursor = "", mailboxId?: string, limit = 30, filter = "all") => {
     const params = new URLSearchParams({ folder, q, cursor })
     params.set("limit", String(limit))
     if (mailboxId) params.set("mailboxId", mailboxId)
+    if (filter && filter !== "all") params.set("filter", filter)
     return request<ListResponse<MailMessage>>(`/api/mail/messages?${params.toString()}`)
   },
   threads: (mailboxId?: string) =>
@@ -664,16 +665,18 @@ export const api = {
     ),
   messageThread: (id: string) =>
     request<ListResponse<MailMessage>>(`/api/mail/messages/${id}/thread`),
-  labelMessages: (labelId: string, q = "", cursor = "", mailboxId?: string, limit = 30) => {
+  labelMessages: (labelId: string, q = "", cursor = "", mailboxId?: string, limit = 30, filter = "all") => {
     const params = new URLSearchParams({ labelId, q, cursor })
     params.set("limit", String(limit))
     if (mailboxId) params.set("mailboxId", mailboxId)
+    if (filter && filter !== "all") params.set("filter", filter)
     return request<ListResponse<MailMessage>>(`/api/mail/messages?${params.toString()}`)
   },
-  starredMessages: (q = "", cursor = "", mailboxId?: string, limit = 30) => {
+  starredMessages: (q = "", cursor = "", mailboxId?: string, limit = 30, filter = "all") => {
     const params = new URLSearchParams({ q, cursor })
     params.set("limit", String(limit))
     if (mailboxId) params.set("mailboxId", mailboxId)
+    if (filter && filter !== "all") params.set("filter", filter)
     return request<ListResponse<MailMessage>>(`/api/mail/starred?${params.toString()}`)
   },
   message: (id: string, options: { markRead?: boolean } = {}) =>
