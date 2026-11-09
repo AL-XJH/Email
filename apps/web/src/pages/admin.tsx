@@ -2371,6 +2371,7 @@ function SystemSettingsSection({
   const [settingsTab, setSettingsTab] = React.useState<
     "base" | "smtp" | "storage" | "mail" | "externalImap" | "templates" | "security" | "about"
   >("base")
+  const [settingsDirty, setSettingsDirty] = React.useState(false)
   const maildirHealth = useQuery({
     queryKey: ["admin", "maildir-sync", "health"],
     queryFn: api.maildirSyncHealth,
@@ -2506,6 +2507,7 @@ function SystemSettingsSection({
       qc.invalidateQueries({ queryKey: ["admin", "maildir-sync", "health"] })
       qc.invalidateQueries({ queryKey: ["dns-records"] })
       qc.invalidateQueries({ queryKey: ["public-settings"] })
+      setSettingsDirty(false)
       toast({ title: "系统设置已保存" })
     },
     onError: (e) => toast({ title: "保存失败", description: errorMessage(e) }),
@@ -2580,6 +2582,7 @@ function SystemSettingsSection({
         event.preventDefault()
         if (canUpdateSettings) save.mutate(new FormData(event.currentTarget))
       }}
+      onChange={() => setSettingsDirty(true)}
       className="space-y-6"
     >
       <div className="flex flex-wrap gap-2 rounded-xl border bg-card p-2">
@@ -2589,7 +2592,18 @@ function SystemSettingsSection({
             type="button"
             variant={settingsTab === tab.key ? "default" : "ghost"}
             size="sm"
-            onClick={() => setSettingsTab(tab.key)}
+            onClick={() => {
+              // 每个标签是独立挂载的：切走会卸载输入框，保存时回退成旧值。
+              // 有未保存修改时先明确确认，避免「保存成功」却写回旧设置。
+              if (
+                settingsDirty &&
+                !window.confirm("当前标签有未保存的修改，切换会丢弃这些修改，继续？")
+              ) {
+                return
+              }
+              setSettingsDirty(false)
+              setSettingsTab(tab.key)
+            }}
           >
             {uiText(tab.label)}
           </Button>
