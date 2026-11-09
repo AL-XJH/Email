@@ -43,6 +43,7 @@ if [ "$(docker exec "$CONTAINER" sqlite3 "$tmp_db" "SELECT COUNT(*) FROM sqlite_
 	exit 1
 fi
 mv "$APP_DIR${tmp_db}" "$target/lanqin.db"
+chmod 600 "$target/lanqin.db"
 log "db: $(du -h "$target/lanqin.db" | cut -f1)"
 
 # 2) 配置：.env 里有管理员口令和各项密钥，dkim 里有签名私钥。
@@ -66,7 +67,17 @@ fi
 # 3b) Redis：Bayes 学习样本、灰名单、reputation。
 #     不能直接 tar appendonlydir —— redis 正在往里追加，tar 出来的是撕裂的 AOF。
 #     BGSAVE 生成一致性 RDB，等它真的结束（rdb_bgsave_in_progress:0）再拷贝。
-if [ -d "$APP_DIR/redis" ]; then
+# Redis 的 dir 是 /data/redis（落在 data 卷里），不是 $APP_DIR/redis；
+# 只找后者会让整段 Redis 备份永远跳过。两种布局都支持，可用 REDIS_DIR 覆盖。
+REDIS_DIR="${REDIS_DIR:-}"
+if [ -z "$REDIS_DIR" ]; then
+	if [ -d "$APP_DIR/data/redis" ]; then
+		REDIS_DIR="$APP_DIR/data/redis"
+	else
+		REDIS_DIR="$APP_DIR/redis"
+	fi
+fi
+if [ -d "$REDIS_DIR" ]; then
 	docker exec "$CONTAINER" redis-cli BGSAVE >/dev/null 2>&1 || true
 	redis_info=""
 	for _ in $(seq 1 30); do
@@ -74,8 +85,8 @@ if [ -d "$APP_DIR/redis" ]; then
 		printf '%s' "$redis_info" | grep -q 'rdb_bgsave_in_progress:0' && break
 		sleep 1
 	done
-	if printf '%s' "$redis_info" | grep -q 'rdb_last_bgsave_status:ok' && [ -f "$APP_DIR/redis/dump.rdb" ]; then
-		cp "$APP_DIR/redis/dump.rdb" "$target/redis-dump.rdb"
+	if printf '%s' "$redis_info" | grep -q 'rdb_last_bgsave_status:ok' && [ -f "$REDIS_DIR/dump.rdb" ]; then
+		cp "$REDIS_DIR/dump.rdb" "$target/redis-dump.rdb"
 	else
 		log "warning: redis BGSAVE did not finish; redis state not backed up"
 	fi

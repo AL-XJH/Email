@@ -88,8 +88,8 @@ tar -C . -xzf /root/lanqin-backups/<时间戳>/dkim.tgz
 # Redis 备份的是一致性 RDB。AOF 优先于 RDB，必须先清掉旧的 AOF 目录，
 # 否则恢复后加载的还是备份之后那套撕裂的追加日志。
 if [ -f /root/lanqin-backups/<时间戳>/redis-dump.rdb ]; then
-  rm -rf redis/appendonlydir
-  cp /root/lanqin-backups/<时间戳>/redis-dump.rdb redis/dump.rdb
+  rm -rf data/redis/appendonlydir
+  cp /root/lanqin-backups/<时间戳>/redis-dump.rdb data/redis/dump.rdb
 fi
 docker compose up -d
 # 起来后先验完整性，再对外放流量。
