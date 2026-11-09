@@ -183,8 +183,7 @@ export const CompactMessageRow = React.memo(function CompactMessageRow({
       )}
     </div>
   )
-}
-, messageRowPropsEqual)
+}, messageRowPropsEqual)
 
 export const MessageRow = React.memo(function MessageRow({
   message,
@@ -306,7 +305,10 @@ export const MessageRow = React.memo(function MessageRow({
           <div className="mb-0.5 flex items-center gap-1.5 truncate text-sm font-medium leading-[18px]">
             <span className="truncate">{message.subject}</span>
             {scheduled && (
-              <Badge variant="secondary" className="h-4 shrink-0 rounded px-1 text-[10px] font-normal">
+              <Badge
+                variant="secondary"
+                className="h-4 shrink-0 rounded px-1 text-[10px] font-normal"
+              >
                 {uiText("已定时")}
               </Badge>
             )}
@@ -349,7 +351,11 @@ export const MessageRow = React.memo(function MessageRow({
                     {codeCopied ? uiText("已复制") : uiText("验证码")}
                   </span>
                   <code className="font-mono font-semibold">{verificationCode}</code>
-                  {codeCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3 opacity-60" />}
+                  {codeCopied ? (
+                    <Check className="h-3 w-3" />
+                  ) : (
+                    <Copy className="h-3 w-3 opacity-60" />
+                  )}
                 </button>
               )}
               {message.snippet && <span className="min-w-0 truncate">{message.snippet}</span>}
@@ -371,8 +377,7 @@ export const MessageRow = React.memo(function MessageRow({
       </div>
     </div>
   )
-}
-, messageRowPropsEqual)
+}, messageRowPropsEqual)
 
 function MailLabelBadge({ label }: { label: MailLabel }) {
   useUiLanguage()

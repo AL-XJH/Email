@@ -118,8 +118,6 @@ import {
   formatBytes,
   formatDate,
   formatDateTime,
-  formatListDate,
-  generateLabelColor,
 } from "@/lib/utils"
 import { applyTheme, getInitialTheme } from "@/lib/theme"
 import { useDisplayMode } from "@/lib/display-mode"
@@ -204,11 +202,9 @@ import { useMe } from "@/hooks/use-me"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useDebouncedValue } from "@/lib/use-debounced-value"
 import { labelDotColor, senderDisplayName, senderTitle } from "@/lib/mail-format"
-import { copyToClipboard } from "@/lib/clipboard"
 import { CompactMessageRow, MessageRow } from "@/components/mail-message-row"
 import { useToast } from "@/hooks/use-toast"
 import { hasPermission } from "@/lib/permissions"
-import { extractVerificationCode } from "@/lib/verification-code"
 import { shouldOfferTranslation } from "@/lib/translation-offer"
 
 // 标签颜色优先用服务端存的值（seek.li 就是这么做的），缺失时才按名字哈希兜底。
@@ -5786,6 +5782,8 @@ function ComposeDialog({
     setFiles(draft?.files || [])
     setDraftAttachments([])
     setAttachmentsTouched(false)
+    // 只按草稿身份重置编辑器；正文/主题是用户输入，故意不放进依赖数组。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     open,
     draft?.key,
