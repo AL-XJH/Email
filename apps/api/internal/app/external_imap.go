@@ -2468,8 +2468,14 @@ func (a *App) deleteExternalIMAPLocalData(ctx context.Context, accountID, userID
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	var deleteErr error
 	for _, id := range messageIDs {
-		a.deleteMessage(ctx, id)
+		if err := a.deleteMessage(ctx, id); err != nil {
+			a.log.Warn("failed to delete external imap local message", "message", id, "error", err)
+			if deleteErr == nil {
+				deleteErr = err
+			}
+		}
 	}
 
 	folderRows, err := a.db.QueryContext(ctx, `SELECT fs.local_folder_id FROM external_imap_folder_states fs
@@ -2496,7 +2502,7 @@ func (a *App) deleteExternalIMAPLocalData(ctx context.Context, accountID, userID
 			a.log.Warn("failed to delete external imap local folder", "folder", id, "error", err)
 		}
 	}
-	return nil
+	return deleteErr
 }
 
 // externalIMAPMaxMessageBytes 是单封外部邮件允许整封载入内存的上限。

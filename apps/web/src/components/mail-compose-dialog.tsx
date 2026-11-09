@@ -541,15 +541,32 @@ export function ComposeDialog({
 
   function addFiles(nextFiles: File[]) {
     if (nextFiles.length === 0) return
-    const allowed =
-      maxAttachmentBytes > 0
-        ? nextFiles.filter((file) => file.size <= maxAttachmentBytes)
-        : nextFiles
-    const blockedCount = nextFiles.length - allowed.length
-    if (blockedCount > 0) {
+    let totalBytes = files.reduce((sum, file) => sum + file.size, 0)
+    let blockedBySize = 0
+    let blockedByTotal = 0
+    const allowed: File[] = []
+    for (const file of nextFiles) {
+      if (maxAttachmentBytes > 0 && file.size > maxAttachmentBytes) {
+        blockedBySize++
+        continue
+      }
+      if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+        blockedByTotal++
+        continue
+      }
+      allowed.push(file)
+      totalBytes += file.size
+    }
+    if (blockedBySize > 0) {
       toast({
         title: "附件超过权限组上限",
         description: uiMessage("当前单个附件上限 {0}", [maxAttachmentText]),
+      })
+    }
+    if (blockedByTotal > 0) {
+      toast({
+        title: "附件总大小超限",
+        description: "每封邮件附件合计最多 45 MB，超出的文件未添加。",
       })
     }
     if (allowed.length > 0) {
@@ -568,13 +585,22 @@ export function ComposeDialog({
   }
 
   function attachmentsWithinLimit() {
-    if (maxAttachmentBytes <= 0) return true
-    if (files.every((file) => file.size <= maxAttachmentBytes)) return true
-    toast({
-      title: "附件超过权限组上限",
-      description: uiMessage("当前单个附件上限 {0}", [maxAttachmentText]),
-    })
-    return false
+    if (maxAttachmentBytes > 0 && !files.every((file) => file.size <= maxAttachmentBytes)) {
+      toast({
+        title: "附件超过权限组上限",
+        description: uiMessage("当前单个附件上限 {0}", [maxAttachmentText]),
+      })
+      return false
+    }
+    const total = files.reduce((sum, file) => sum + file.size, 0)
+    if (total > MAX_TOTAL_ATTACHMENT_BYTES) {
+      toast({
+        title: "附件总大小超限",
+        description: "每封邮件附件合计最多 45 MB，请删减后再发送。",
+      })
+      return false
+    }
+    return true
   }
 
   async function prepareSend() {
@@ -609,6 +635,7 @@ export function ComposeDialog({
       text,
       html,
       attachments,
+      clientToken: draftClientTokenRef.current,
     }
     const separateRecipients = Array.from(new Set([...to, ...cc, ...bcc]))
     const payloads =
@@ -618,6 +645,8 @@ export function ComposeDialog({
             to: [recipient],
             cc: [],
             bcc: [],
+            // 每个收件人独立幂等键，否则第二个人会被服务端当成重放。
+            clientToken: `${draftClientTokenRef.current}:${recipient}`,
           }))
         : [payload]
     confirmOrRun({
@@ -882,6 +911,8 @@ export function ComposeDialog({
     </Dialog>
   )
 }
+
+const MAX_TOTAL_ATTACHMENT_BYTES = 45 * 1024 * 1024
 
 const ScheduleCardNode = Node.create({
   name: "scheduleCard",

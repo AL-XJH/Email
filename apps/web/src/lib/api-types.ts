@@ -306,6 +306,7 @@ export type MailTranslation = {
 }
 export type SendPayload = {
   mailboxId?: string
+  clientToken?: string
   to: string[]
   cc: string[]
   bcc: string[]

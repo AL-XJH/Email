@@ -1120,8 +1120,10 @@ function PermissionLimitEditor({
   useUiLanguage()
 
   function update(key: keyof PermissionLimits, raw: string) {
+    // 输入框清空的中间态不能当成 0（0 = 不限），否则改一个数字会顺手把上限删掉。
+    if (raw.trim() === "") return
     const next = Number(raw)
-    onChange({ ...value, [key]: Number.isFinite(next) && next > 0 ? Math.floor(next) : 0 })
+    onChange({ ...value, [key]: Number.isFinite(next) && next >= 0 ? Math.floor(next) : value[key] })
   }
   return (
     <div className="space-y-3 rounded-lg border p-3">
@@ -4813,10 +4815,12 @@ function ResetPasswordDialog({
       api.resetUserPassword(user.id, String(form.get("password") || "")),
     onSuccess: () => {
       onOpenChange(false)
+      formRef.current?.reset()
       toast({ title: "密码已重置" })
     },
     onError: (e) => toast({ title: "重置失败", description: errorMessage(e) }),
   })
+  const formRef = React.useRef<HTMLFormElement>(null)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -4824,11 +4828,11 @@ function ResetPasswordDialog({
           <DialogTitle>{uiText("重置密码")}</DialogTitle>
         </DialogHeader>
         <form
+          ref={formRef}
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault()
             mut.mutate(new FormData(e.currentTarget))
-            e.currentTarget.reset()
           }}
         >
           <Field name="email" label={uiText("用户")} value={user.email} readOnly />

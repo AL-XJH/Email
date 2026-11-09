@@ -160,7 +160,15 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "登录失败，请稍后重试")
 		return
 	}
-	if a.config().TwoFactorEnabled && user.TwoFactorEnabled {
+	if user.TwoFactorEnabled {
+		// 用户已经绑定 2FA 就必须挑战，不能因为全局开关被关掉（或运维误关）
+		// 只凭密码发会话；密钥缺失时失败关闭，绝不降级成单因子。
+		_, secret, secretErr := a.loadUserAuthByID(r.Context(), user.ID)
+		if secretErr != nil || strings.TrimSpace(secret) == "" {
+			a.log.Error("two-factor enabled but secret is unavailable", "user", user.ID, "error", secretErr)
+			respondError(w, http.StatusInternalServerError, "验证码配置异常，请联系管理员")
+			return
+		}
 		challengeToken, err := a.createLoginChallenge(r.Context(), user.ID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "验证码生成失败，请稍后重试")
@@ -432,6 +440,15 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
+	clientIP := r.RemoteAddr
+	if err := a.beginReauth(r.Context(), user.Email, clientIP); err != nil {
+		if errors.Is(err, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to check rate limit")
+		return
+	}
 	row := a.db.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE id=?`, user.ID)
 	var currentHash string
 	if err := row.Scan(&currentHash); err != nil {
@@ -439,8 +456,15 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(req.CurrentPassword)); err != nil {
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, clientIP); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "当前密码错误")
 		return
+	}
+	if err := a.clearLoginAccountFailures(r.Context(), user.Email); err != nil {
+		a.log.Warn("failed to clear reauthentication failures", "error", err)
 	}
 	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {

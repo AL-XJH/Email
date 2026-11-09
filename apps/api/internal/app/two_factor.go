@@ -378,6 +378,15 @@ func (a *App) handleTwoFactorDisable(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
+	clientIP := r.RemoteAddr
+	if err := a.beginReauth(r.Context(), user.Email, clientIP); err != nil {
+		if errors.Is(err, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to check rate limit")
+		return
+	}
 	current, secret, err := a.loadUserAuthByID(r.Context(), user.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load user")
@@ -388,12 +397,23 @@ func (a *App) handleTwoFactorDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.verifyCurrentPassword(r.Context(), user.ID, req.CurrentPassword); err != nil {
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, clientIP); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "当前密码错误")
 		return
 	}
 	if strings.TrimSpace(secret) != "" && current.TwoFactorEnabled && !a.consumeTOTP(r.Context(), user.ID, secret, req.Code) {
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, clientIP); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "invalid verification code")
 		return
+	}
+	if err := a.clearLoginAccountFailures(r.Context(), user.Email); err != nil {
+		a.log.Warn("failed to clear reauthentication failures", "error", err)
 	}
 	if _, err := a.db.ExecContext(r.Context(), `UPDATE users SET two_factor_secret='', two_factor_enabled=0, two_factor_last_counter=0, updated_at=? WHERE id=?`, a.now().UTC().Format(time.RFC3339Nano), user.ID); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to disable two-factor authentication")

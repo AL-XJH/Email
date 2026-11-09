@@ -1608,12 +1608,19 @@ export function MailPage() {
   }
   async function openForward(message: MailMessage) {
     if (!canSendSelectedMailbox) return
-    const full = await withFullBody(message)
-    openCompose({
-      key: `forward-${full.id}-${Date.now()}`,
-      subject: withPrefix(full.subject, "Fwd:"),
-      ...quoteMessage(full, "forward"),
-    })
+    try {
+      const full = await withFullBody(message)
+      // 转发必须带上原附件；只复制正文会让「转发发票」变成一封没有发票的信。
+      const files = await attachmentFilesFromMessage(full)
+      openCompose({
+        key: `forward-${full.id}-${Date.now()}`,
+        subject: withPrefix(full.subject, "Fwd:"),
+        ...quoteMessage(full, "forward"),
+        files,
+      })
+    } catch (error) {
+      toast({ title: "转发失败", description: errorMessage(error) })
+    }
   }
   async function openDraft(message: MailMessage) {
     if (!canManageSelectedDrafts) return

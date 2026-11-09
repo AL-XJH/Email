@@ -435,6 +435,7 @@ func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, []strin
 			// 一条写不出去（附件丢失、磁盘满、权限）就跳过它继续处理后面的，
 			// 否则这一行永远排在最前面，整条补写队列原地卡死。
 			a.log.Warn("failed to backfill maildir message", "message", id, "error", err)
+			failures = append(failures, fmt.Sprintf("backfill %s: %v", id, err))
 			// 把失败行推到队尾并退避 10 分钟：既不会饿死后面的邮件，
 			// 也不会让一条永久坏行每 5 秒重试一次刷日志/占连接。
 			_, _ = a.db.ExecContext(ctx, `UPDATE messages SET updated_at=? WHERE id=?`, a.now().UTC().Add(10*time.Minute).Format(time.RFC3339Nano), id)

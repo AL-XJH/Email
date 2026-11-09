@@ -80,7 +80,15 @@ func (a *App) containUserAfterAdminResetTx(ctx context.Context, tx *sql.Tx, user
 	if err := revokeUserSessionsTx(ctx, tx, userID, ""); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE api_tokens SET disabled=1, updated_at=? WHERE user_id=? AND disabled=0`, now, userID)
+	if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET disabled=1, updated_at=? WHERE user_id=? AND disabled=0`, now, userID); err != nil {
+		return err
+	}
+	// Linux.do 是独立于密码的第二条登录通道；不解除绑定，攻击者重置完密码
+	// 还能用绑定的第三方身份直接登回来，2FA 被清掉后也不需要验证码。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_identities WHERE user_id=?`, userID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM oauth_login_states WHERE user_id=?`, userID)
 	return err
 }
 

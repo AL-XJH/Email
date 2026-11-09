@@ -215,7 +215,11 @@ func (a *App) handleOpenAPICreateMailbox(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusNotFound, "domain not found")
 		return
 	}
-	localPart := normalizeLocalPart(req.LocalPart)
+	localPart, err := requireCleanLocalPart(req.LocalPart)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
 	if localPart == "" {
 		badRequest(w, errors.New("localPart is required"))
 		return
@@ -396,29 +400,12 @@ func (a *App) handleOpenAPIDeleteMailbox(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT id FROM messages WHERE mailbox_id=?`, id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load mailbox messages")
-		return
-	}
-	messageIDs := []string{}
-	for rows.Next() {
-		var messageID string
-		if rows.Scan(&messageID) == nil {
-			messageIDs = append(messageIDs, messageID)
+	if err := a.deleteMailboxWithFiles(r.Context(), id); err != nil {
+		if errors.Is(err, errNotFound) {
+			respondError(w, http.StatusNotFound, "mailbox not found")
+			return
 		}
-	}
-	rows.Close()
-	for _, messageID := range messageIDs {
-		a.deleteMessage(r.Context(), messageID)
-	}
-	res, err := a.db.ExecContext(r.Context(), `DELETE FROM mailboxes WHERE id=?`, id)
-	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete mailbox")
-		return
-	}
-	if affected, _ := res.RowsAffected(); affected == 0 {
-		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})

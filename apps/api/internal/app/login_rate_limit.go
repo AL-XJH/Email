@@ -181,3 +181,29 @@ func (a *App) auditLoginAttempt(stage, outcome, account, clientIP string) {
 	}
 	a.log.Warn("authentication audit", attrs...)
 }
+
+// errReauthRateLimited 表示改密/关 2FA/绑定 Linux.do 的当前密码或 TOTP
+// 已经连续错太多次。这些接口以前完全不限速， stolen session 可以无限猜。
+var errReauthRateLimited = errors.New("reauthentication rate limited")
+
+func (a *App) beginReauth(ctx context.Context, email, clientIP string) error {
+	retryAfter, err := a.checkLoginRateLimit(ctx, email, clientIP)
+	if err != nil {
+		return err
+	}
+	if retryAfter > 0 {
+		return errReauthRateLimited
+	}
+	return nil
+}
+
+func (a *App) recordReauthFailure(ctx context.Context, email, clientIP string) error {
+	retryAfter, err := a.recordLoginFailure(ctx, email, clientIP)
+	if err != nil {
+		return err
+	}
+	if retryAfter > 0 {
+		return errReauthRateLimited
+	}
+	return nil
+}

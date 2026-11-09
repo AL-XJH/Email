@@ -238,6 +238,10 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if current != nil && current.ID != id && shouldUpdatePermissionGroups && !a.canAdministerTarget(r, id) {
+		respondError(w, http.StatusForbidden, "cannot change permission groups of an account with permissions you do not hold")
+		return
+	}
 	if current != nil && current.ID == id {
 		next := *existing
 		next.Role = role
@@ -376,24 +380,81 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to delete user mail data")
 		return
 	}
-	res, err := a.db.ExecContext(r.Context(), `DELETE FROM users WHERE id=?`, id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete user")
-		return
-	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		respondError(w, http.StatusNotFound, "user not found")
-		return
-	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// deleteMailboxWithFiles 先收集文件路径，再删邮箱行（级联清库），最后删磁盘。
+// 反过来的话 DELETE 失败时邮箱还在、邮件已经没了。
+func (a *App) deleteMailboxWithFiles(ctx context.Context, mailboxID string) error {
+	var domain, localPart string
+	if err := a.db.QueryRowContext(ctx, `SELECT d.name,m.local_part FROM mailboxes m JOIN domains d ON d.id=m.domain_id WHERE m.id=?`, mailboxID).Scan(&domain, &localPart); err != nil {
+		return err
+	}
+	type artifact struct {
+		id, rawPath string
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,COALESCE(raw_path,'') FROM messages WHERE mailbox_id=?`, mailboxID)
+	if err != nil {
+		return err
+	}
+	artifacts := []artifact{}
+	for rows.Next() {
+		var item artifact
+		if err := rows.Scan(&item.id, &item.rawPath); err != nil {
+			rows.Close()
+			return err
+		}
+		artifacts = append(artifacts, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM mailboxes WHERE id=?`, mailboxID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, item := range artifacts {
+		if item.rawPath != "" {
+			if ok, err := a.pathIsUnderMaildirRoot(item.rawPath); err == nil && ok {
+				if rmErr := os.Remove(item.rawPath); rmErr != nil && !os.IsNotExist(rmErr) {
+					a.log.Warn("failed to remove mailbox message file", "path", item.rawPath, "error", rmErr)
+				}
+			}
+		}
+		if item.id != "" {
+			if rmErr := os.RemoveAll(filepath.Join(strings.TrimSpace(a.config().DataDir), "attachments", item.id)); rmErr != nil {
+				a.log.Warn("failed to remove mailbox attachments", "message", item.id, "error", rmErr)
+			}
+		}
+	}
+	base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), domain, localPart)
+	if rmErr := os.RemoveAll(base); rmErr != nil && !os.IsNotExist(rmErr) {
+		a.log.Warn("failed to remove mailbox directory", "path", base, "error", rmErr)
+	}
+	return nil
 }
 
 func (a *App) purgeUserMailData(ctx context.Context, userID string) error {
 	type mailboxPath struct {
 		id, domain, localPart string
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT id,domain,local_part FROM mailboxes WHERE user_id=?`, userID)
+	type messageArtifact struct {
+		id, rawPath string
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT m.id,d.name,m.local_part FROM mailboxes m JOIN domains d ON d.id=m.domain_id WHERE m.user_id=?`, userID)
 	if err != nil {
 		return err
 	}
@@ -411,39 +472,61 @@ func (a *App) purgeUserMailData(ctx context.Context, userID string) error {
 		return err
 	}
 	rows.Close()
+	artifacts := []messageArtifact{}
 	for _, mb := range mailboxes {
-		msgRows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id=?`, mb.id)
+		msgRows, err := a.db.QueryContext(ctx, `SELECT id,COALESCE(raw_path,'') FROM messages WHERE mailbox_id=?`, mb.id)
 		if err != nil {
 			return err
 		}
-		messageIDs := []string{}
 		for msgRows.Next() {
-			var messageID string
-			if err := msgRows.Scan(&messageID); err != nil {
+			var item messageArtifact
+			if err := msgRows.Scan(&item.id, &item.rawPath); err != nil {
 				msgRows.Close()
 				return err
 			}
-			messageIDs = append(messageIDs, messageID)
+			artifacts = append(artifacts, item)
 		}
 		if err := msgRows.Err(); err != nil {
 			msgRows.Close()
 			return err
 		}
 		msgRows.Close()
-		for _, messageID := range messageIDs {
-			if err := a.deleteMessage(ctx, messageID); err != nil {
-				return err
+	}
+	// 先删用户（外键级联清库），成功后再删磁盘。反过来一旦 DELETE 失败，
+	// 账号还在但邮件已被清空，用户看到的是一个空邮箱。
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id=?`, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, item := range artifacts {
+		if item.rawPath != "" {
+			if ok, err := a.pathIsUnderMaildirRoot(item.rawPath); err == nil && ok {
+				if rmErr := os.Remove(item.rawPath); rmErr != nil && !os.IsNotExist(rmErr) {
+					a.log.Warn("failed to remove purged message file", "path", item.rawPath, "error", rmErr)
+				}
 			}
 		}
-		// 未登记进数据库的 maildir 文件（catch-all、上次同步中断）也要清掉。
-		base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), mb.domain, mb.localPart, "Maildir")
-		if err := os.RemoveAll(base); err != nil && !os.IsNotExist(err) {
-			return err
+		if item.id != "" {
+			if rmErr := os.RemoveAll(filepath.Join(strings.TrimSpace(a.config().DataDir), "attachments", item.id)); rmErr != nil {
+				a.log.Warn("failed to remove purged attachments", "message", item.id, "error", rmErr)
+			}
+		}
+	}
+	for _, mb := range mailboxes {
+		base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), mb.domain, mb.localPart)
+		if rmErr := os.RemoveAll(base); rmErr != nil && !os.IsNotExist(rmErr) {
+			a.log.Warn("failed to remove purged mailbox directory", "path", base, "error", rmErr)
 		}
 	}
 	return nil
 }
-
 func (a *App) handleListDomains(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.QueryContext(r.Context(), `SELECT id,name,status,dkim_selector,dkim_public_key,dns_status,dns_checked_at,created_at FROM domains ORDER BY name`)
 	if err != nil {
@@ -611,7 +694,11 @@ func (a *App) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "domain not found")
 		return
 	}
-	local := normalizeLocalPart(req.LocalPart)
+	local, err := requireCleanLocalPart(req.LocalPart)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
 	address := local + "@" + domain.Name
 
 	tx, err := a.db.BeginTx(r.Context(), nil)
@@ -792,30 +879,13 @@ func (a *App) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT id FROM messages WHERE mailbox_id=?`, id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load mailbox messages")
-		return
-	}
-	messageIDs := []string{}
-	for rows.Next() {
-		var messageID string
-		if rows.Scan(&messageID) == nil {
-			messageIDs = append(messageIDs, messageID)
+	if err := a.deleteMailboxWithFiles(r.Context(), id); err != nil {
+		if errors.Is(err, errNotFound) {
+			respondError(w, http.StatusNotFound, "mailbox not found")
+			return
 		}
-	}
-	rows.Close()
-	for _, messageID := range messageIDs {
-		a.deleteMessage(r.Context(), messageID)
-	}
-	res, err := a.db.ExecContext(r.Context(), `DELETE FROM mailboxes WHERE id=?`, id)
-	if err != nil {
+		a.log.Warn("failed to delete mailbox", "mailbox", id, "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to delete mailbox")
-		return
-	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1265,7 +1335,7 @@ func (a *App) mailboxByID(ctx context.Context, id string) (*Mailbox, error) {
 }
 
 func (a *App) mailboxForUser(ctx context.Context, userID string) (*Mailbox, error) {
-	row := a.db.QueryRowContext(ctx, `SELECT id,user_id,domain_id,local_part,address,display_name,quota_mb,status,created_at FROM mailboxes WHERE user_id=? AND status='active' ORDER BY created_at LIMIT 1`, userID)
+	row := a.db.QueryRowContext(ctx, `SELECT id,user_id,domain_id,local_part,address,display_name,quota_mb,status,created_at FROM mailboxes WHERE user_id=? AND status='active' AND EXISTS (SELECT 1 FROM domains d WHERE d.id=mailboxes.domain_id AND d.status='active') ORDER BY created_at LIMIT 1`, userID)
 	var m Mailbox
 	var created string
 	if err := row.Scan(&m.ID, &m.UserID, &m.DomainID, &m.LocalPart, &m.Address, &m.DisplayName, &m.QuotaMB, &m.Status, &created); err != nil {
@@ -1311,6 +1381,35 @@ func (a *App) ensureFolder(ctx context.Context, mailboxID, folder string) (strin
 //
 // 管理端与 OpenAPI 两条改归属的路径都要调用它，少一处就是一个权限残留。
 func (a *App) detachMailboxOwnerArtifactsTx(ctx context.Context, tx *sql.Tx, mailboxID, stamp string) error {
+	// 先把旧主人通过外部 IMAP 导入的本地邮件删掉。external_imap_accounts 的
+	// 级联只清 marker，不清 messages；marker 一没，新主人就能在收件箱里读到
+	// 旧主人的 Gmail/Outlook 邮件。
+	rows, err := tx.QueryContext(ctx, `SELECT em.local_message_id FROM external_imap_messages em
+		JOIN external_imap_accounts ea ON ea.id=em.account_id
+		WHERE ea.mailbox_id=? AND em.local_message_id<>''`, mailboxID)
+	if err != nil {
+		return err
+	}
+	externalMessageIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil && id != "" {
+			externalMessageIDs = append(externalMessageIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range externalMessageIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE scheduled_sends SET status='cancelled',payload_json='',error='mailbox ownership changed',updated_at=? WHERE mailbox_id=? AND status IN ('pending','failed')`, stamp, mailboxID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM external_imap_accounts WHERE mailbox_id=?`, mailboxID); err != nil {
 		return err
 	}
@@ -1369,6 +1468,16 @@ func (a *App) canAdministerTarget(r *http.Request, targetUserID string) bool {
 	}
 	if current.Role == "admin" {
 		return true
+	}
+	// 超级管理员 role=admin 没有 user_permission_groups，adminPlanePermissionsForUser
+	// 会返回空列表，actorCanGrantPermissions 对空列表恒真 —— 客服用
+	// admin.users.reset_password 就能重置超管口令。必须单独挡住。
+	target, err := a.userByID(r.Context(), targetUserID)
+	if err != nil {
+		return false
+	}
+	if target.Role == "admin" {
+		return false
 	}
 	permissions, err := a.adminPlanePermissionsForUser(r.Context(), targetUserID)
 	if err != nil {

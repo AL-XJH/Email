@@ -857,6 +857,7 @@ type mailComposeInput struct {
 	Text        string            `json:"text"`
 	HTML        string            `json:"html"`
 	Attachments []AttachmentInput `json:"attachments"`
+	ClientToken string            `json:"clientToken"`
 }
 
 type mailDraftInput struct {
@@ -911,6 +912,39 @@ func (a *App) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		idempotencyKey = strings.TrimSpace(req.ClientToken)
+	}
+	reserved := false
+	committed := false
+	if idempotencyKey != "" {
+		if len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\r\n") {
+			badRequest(w, errors.New("invalid Idempotency-Key"))
+			return
+		}
+		payload, _ := json.Marshal(req)
+		status, replayed, err := a.reserveOpenAPISendIdempotency(r.Context(), currentUser(r).ID, idempotencyKey, hashToken(string(payload)))
+		if err != nil {
+			respondError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if replayed {
+			msg, err := a.messageByID(r.Context(), status.MessageID, true)
+			if err != nil {
+				respondError(w, http.StatusNotFound, "sent message not found")
+				return
+			}
+			respondJSON(w, http.StatusOK, msg)
+			return
+		}
+		reserved = true
+		defer func() {
+			if reserved && !committed {
+				_, _ = a.db.ExecContext(context.Background(), `DELETE FROM send_idempotency_keys WHERE user_id=? AND idempotency_key=? AND sent_message_id=''`, currentUser(r).ID, idempotencyKey)
+			}
+		}()
+	}
 	msg, err := a.sendMailNow(r.Context(), currentUser(r), mb, req)
 	if err != nil {
 		if errors.Is(err, errNoRecipients) || errors.Is(err, errTooManyRecipients) {
@@ -940,6 +974,10 @@ func (a *App) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		a.log.Error("request failed", "handler", "send message", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to send message")
 		return
+	}
+	if reserved {
+		_, _ = a.db.ExecContext(r.Context(), `UPDATE send_idempotency_keys SET sent_message_id=?,queue_id=? WHERE user_id=? AND idempotency_key=?`, msg.ID, msg.SendQueueID, currentUser(r).ID, idempotencyKey)
+		committed = true
 	}
 	respondJSON(w, http.StatusCreated, msg)
 }
@@ -2588,7 +2626,7 @@ func (a *App) mailboxForCurrentUserWithID(r *http.Request, mailboxID string) (*M
 	mailboxID = strings.TrimSpace(mailboxID)
 	if mailboxID != "" {
 		row := a.db.QueryRowContext(r.Context(), `SELECT id,user_id,domain_id,local_part,address,display_name,quota_mb,status,created_at
-			FROM mailboxes WHERE id=? AND user_id=? AND status='active'`, mailboxID, user.ID)
+			FROM mailboxes WHERE id=? AND user_id=? AND status='active' AND EXISTS (SELECT 1 FROM domains d WHERE d.id=mailboxes.domain_id AND d.status='active')`, mailboxID, user.ID)
 		var m Mailbox
 		var created string
 		if err := row.Scan(&m.ID, &m.UserID, &m.DomainID, &m.LocalPart, &m.Address, &m.DisplayName, &m.QuotaMB, &m.Status, &created); err != nil {

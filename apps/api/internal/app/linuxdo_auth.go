@@ -238,7 +238,11 @@ func (a *App) handleLinuxDoLinkStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	if err := a.verifyLinuxDoReauthentication(r.Context(), user.ID, req.CurrentPassword, req.TwoFactorCode); err != nil {
+	if err := a.verifyLinuxDoReauthentication(r.Context(), user.ID, req.CurrentPassword, req.TwoFactorCode, r.RemoteAddr); err != nil {
+		if errors.Is(err, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "密码或双因素验证码错误")
 		return
 	}
@@ -598,7 +602,11 @@ func (a *App) handleLinuxDoUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	if err := a.verifyLinuxDoReauthentication(r.Context(), user.ID, req.CurrentPassword, req.TwoFactorCode); err != nil {
+	if err := a.verifyLinuxDoReauthentication(r.Context(), user.ID, req.CurrentPassword, req.TwoFactorCode, r.RemoteAddr); err != nil {
+		if errors.Is(err, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "密码或双因素验证码错误")
 		return
 	}
@@ -651,13 +659,19 @@ func (a *App) userIDForLinuxDoIdentity(ctx context.Context, subject string) (str
 	return userID, err
 }
 
-func (a *App) verifyLinuxDoReauthentication(ctx context.Context, userID, password, code string) error {
-	var passwordHash, secret string
+func (a *App) verifyLinuxDoReauthentication(ctx context.Context, userID, password, code, clientIP string) error {
+	var email, passwordHash, secret string
 	var enabled int
-	if err := a.db.QueryRowContext(ctx, `SELECT password_hash,two_factor_secret,two_factor_enabled FROM users WHERE id=? AND disabled=0`, userID).Scan(&passwordHash, &secret, &enabled); err != nil {
+	if err := a.db.QueryRowContext(ctx, `SELECT email,password_hash,two_factor_secret,two_factor_enabled FROM users WHERE id=? AND disabled=0`, userID).Scan(&email, &passwordHash, &secret, &enabled); err != nil {
+		return err
+	}
+	if err := a.beginReauth(ctx, email, clientIP); err != nil {
 		return err
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
+		if err := a.recordReauthFailure(ctx, email, clientIP); err != nil {
+			return err
+		}
 		return errors.New("invalid password")
 	}
 	plainSecret, err := a.decryptTOTPSecret(secret)
@@ -665,7 +679,13 @@ func (a *App) verifyLinuxDoReauthentication(ctx context.Context, userID, passwor
 		return err
 	}
 	if intBool(enabled) && !a.consumeTOTP(ctx, userID, plainSecret, code) {
+		if err := a.recordReauthFailure(ctx, email, clientIP); err != nil {
+			return err
+		}
 		return errors.New("invalid two-factor code")
+	}
+	if err := a.clearLoginAccountFailures(ctx, email); err != nil {
+		a.log.Warn("failed to clear reauthentication failures", "error", err)
 	}
 	return nil
 }
