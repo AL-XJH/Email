@@ -92,13 +92,48 @@ jobs:
         run: go test ./...
 
       - name: Check deployment shell scripts
-        run: >-
-          go run mvdan.cc/sh/v3/cmd/shfmt@v3.10.0 -d
-          deploy/postfix/configure-db.sh
-          deploy/dovecot/configure-db.sh
-          deploy/rspamd/sync-dkim.sh
-          deploy/all-in-one/entrypoint.sh
-          .github/scripts/generate-release-notes.sh
+        run: |
+          mapfile -t scripts < <(find deploy -name '*.sh' -type f | sort)
+          go run mvdan.cc/sh/v3/cmd/shfmt@v3.10.0 -d "${scripts[@]}"
+          for script in "${scripts[@]}"; do
+            bash -n "$script"
+          done
+          go run mvdan.cc/sh/v3/cmd/shfmt@v3.10.0 -d .github/scripts/generate-release-notes.sh
 
       - name: Check release notes generator syntax
         run: bash -n .github/scripts/generate-release-notes.sh
+
+  deploy-image:
+    name: Build and validate deployment image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build all-in-one image
+        run: docker build -f deploy/all-in-one/Dockerfile -t lanqin-email:ci .
+
+      # 这些配置文件只有真正进镜像才会被验证：nginx/postfix 的语法错误
+      # 以前要等到打 tag 出镜像、上线时才暴露。
+      - name: Validate bundled configs
+        run: |
+          docker run --rm --entrypoint sh lanqin-email:ci -c "
+            nginx -t &&
+            postfix check &&
+            doveconf -n >/dev/null &&
+            test -s /usr/share/nginx/html/index.html
+          "
+
+  compose-config:
+    name: Validate compose files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Render compose configs
+        run: |
+          cd deploy
+          cp .env.example .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker-compose.stack.yml config >/dev/null

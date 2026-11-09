@@ -206,9 +206,7 @@ export function ComposeDialog({
   const [quotedHtml, setQuotedHtml] = React.useState(draftSplit.quotedHtml)
   const [quotedText, setQuotedText] = React.useState(draftSplit.quotedText)
   const [body, setBody] = React.useState<ComposerValue>(() =>
-    draft?.html
-      ? htmlComposerValue(draftSplit.html)
-      : plainTextComposerValue(composerText)
+    draft?.html ? htmlComposerValue(draftSplit.html) : plainTextComposerValue(composerText)
   )
   const activeMailboxId = draft?.mailboxId || mailbox?.id || ""
   const maxAttachmentBytes = attachmentLimitBytes(limits)
@@ -1556,7 +1554,9 @@ function MailBodyComposer({
           <div
             className="mail-html max-h-[60vh] overflow-y-auto rounded-lg border bg-background p-5 text-sm leading-7"
             dangerouslySetInnerHTML={{
-              __html: sanitizeComposerHtml(editor?.getHTML() || "") || "<p></p>",
+              __html:
+                sanitizeComposerHtml([editor?.getHTML(), quotedHtml].filter(Boolean).join("")) ||
+                "<p></p>",
             }}
           />
         </DialogContent>

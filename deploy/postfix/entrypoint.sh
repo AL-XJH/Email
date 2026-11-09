@@ -6,12 +6,12 @@ set -eu
 TLS_CERT=/etc/ssl/certs/ssl-cert-snakeoil.pem
 TLS_KEY=/etc/ssl/private/ssl-cert-snakeoil.key
 if [ -n "$LANQIN_TLS_CERT_FILE" ] || [ -n "$LANQIN_TLS_KEY_FILE" ]; then
-  if [ -f "$LANQIN_TLS_CERT_FILE" ] && [ -f "$LANQIN_TLS_KEY_FILE" ]; then
-    TLS_CERT="$LANQIN_TLS_CERT_FILE"
-    TLS_KEY="$LANQIN_TLS_KEY_FILE"
-  else
-    echo "warning: LANQIN_TLS_CERT_FILE/LANQIN_TLS_KEY_FILE not readable; using snakeoil localhost certificate" >&2
-  fi
+	if [ -f "$LANQIN_TLS_CERT_FILE" ] && [ -f "$LANQIN_TLS_KEY_FILE" ]; then
+		TLS_CERT="$LANQIN_TLS_CERT_FILE"
+		TLS_KEY="$LANQIN_TLS_KEY_FILE"
+	else
+		echo "warning: LANQIN_TLS_CERT_FILE/LANQIN_TLS_KEY_FILE not readable; using snakeoil localhost certificate" >&2
+	fi
 fi
 postconf -e "myhostname = ${LANQIN_PUBLIC_HOSTNAME}"
 postconf -e "myorigin = ${LANQIN_PUBLIC_HOSTNAME}"

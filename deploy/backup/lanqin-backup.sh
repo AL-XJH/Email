@@ -27,36 +27,36 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 tmp_db="/data/.lanqin-backup-$$.db"
 docker exec "$CONTAINER" sqlite3 /data/lanqin.db ".backup '$tmp_db'"
 if ! docker exec "$CONTAINER" sqlite3 "$tmp_db" "PRAGMA quick_check;" | grep -q '^ok$'; then
-  docker exec "$CONTAINER" rm -f "$tmp_db" || true
-  log "backup failed: quick_check did not return ok"
-  exit 1
+	docker exec "$CONTAINER" rm -f "$tmp_db" || true
+	log "backup failed: quick_check did not return ok"
+	exit 1
 fi
 mv "$APP_DIR${tmp_db}" "$target/lanqin.db"
 log "db: $(du -h "$target/lanqin.db" | cut -f1)"
 
 # 2) 配置：.env 里有管理员口令和各项密钥，dkim 里有签名私钥。
 if [ -f "$APP_DIR/.env" ]; then
-  tar -C "$APP_DIR" -czf "$target/config.tgz" .env 2>/dev/null || true
+	tar -C "$APP_DIR" -czf "$target/config.tgz" .env 2>/dev/null || true
 fi
 if [ -d "$APP_DIR/dkim" ]; then
-  tar -C "$APP_DIR" -czf "$target/dkim.tgz" dkim
+	tar -C "$APP_DIR" -czf "$target/dkim.tgz" dkim
 fi
 [ -f "$APP_DIR/docker-compose.yml" ] && cp "$APP_DIR/docker-compose.yml" "$target/docker-compose.yml"
 
 # 3) 附件与邮件原文。附件在 data/attachments，maildir 是 Dovecot 的落盘副本。
 if [ -d "$APP_DIR/data/attachments" ]; then
-  tar -C "$APP_DIR/data" -czf "$target/attachments.tgz" attachments
+	tar -C "$APP_DIR/data" -czf "$target/attachments.tgz" attachments
 fi
 if [ -d "$APP_DIR/mail" ]; then
-  tar -C "$APP_DIR" -czf "$target/mail.tgz" mail
+	tar -C "$APP_DIR" -czf "$target/mail.tgz" mail
 fi
 
 # 3b) Redis：Bayes 学习样本、灰名单、reputation 都在 AOF 里，
 #     不备份的话恢复后反垃圾等于从零开始学。
 if [ -d "$APP_DIR/redis" ]; then
-  docker exec "$CONTAINER" redis-cli BGSAVE >/dev/null 2>&1 || true
-  sleep 1
-  tar -C "$APP_DIR" -czf "$target/redis.tgz" redis 2>/dev/null || true
+	docker exec "$CONTAINER" redis-cli BGSAVE >/dev/null 2>&1 || true
+	sleep 1
+	tar -C "$APP_DIR" -czf "$target/redis.tgz" redis 2>/dev/null || true
 fi
 
 # 4) 滚动清理：只删本脚本自己命名格式（YYYYmmdd-HHMMSS）的目录。

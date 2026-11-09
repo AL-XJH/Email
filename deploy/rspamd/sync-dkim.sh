@@ -26,7 +26,6 @@ sync_keys() {
 	fi
 	sqlite3 -separator '|' "$LANQIN_DB_PATH" "SELECT name,dkim_selector,dkim_private_key FROM domains WHERE status='active';" >"$rows_file"
 
-
 	while IFS='|' read -r domain selector private_key; do
 		[ -n "$domain" ] || continue
 		[ -n "$selector" ] || selector="lanqin"

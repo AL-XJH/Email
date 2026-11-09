@@ -403,7 +403,9 @@ export function MailPage() {
   const canScheduleSelectedMailbox = canScheduleMail && selectedMailboxOwned
   const canOrganizeSelectedMailbox = canOrganizeMail && selectedMailboxOwned
   const canManageSelectedLabels =
-    canManageLabels && selectedMailboxOwned && (mailView !== "external" || externalMessagesStoredLocally)
+    canManageLabels &&
+    selectedMailboxOwned &&
+    (mailView !== "external" || externalMessagesStoredLocally)
   const restrictedSharedMailbox =
     selectedMailbox?.access === "read" && selectedMailbox.shareScope === "custom"
   const hasMailboxes = (mailboxList.data?.items.length || 0) > 0
@@ -2529,10 +2531,10 @@ export function MailPage() {
                     className="size-8 flex-none text-muted-foreground"
                     onClick={() => markAllRead.mutate(allMessages)}
                     disabled={
-              !activeMailboxId ||
-              markAllRead.isPending ||
-              (mailView !== "folder" && unreadCount === 0)
-            }
+                      !activeMailboxId ||
+                      markAllRead.isPending ||
+                      (mailView !== "folder" && unreadCount === 0)
+                    }
                     title={uiText("全部已读")}
                   >
                     <MailCheck className="h-4 w-4" />
