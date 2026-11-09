@@ -4,6 +4,7 @@ import { dnsCheckMessage, dnsStatusLabel } from "@/lib/diagnostic-messages"
 import { uiMessage, type UiText, uiText, useLanguage as useUiLanguage } from "@/lib/language"
 import { errorMessage } from "@/lib/ui-errors"
 import { copyToClipboard } from "@/lib/clipboard"
+import { useDebouncedValue } from "@/lib/use-debounced-value"
 
 import * as React from "react"
 import { useSearchParams } from "react-router-dom"
@@ -1732,16 +1733,17 @@ function AdminMessagesSection({ mailboxes }: { mailboxes: MailboxType[] }) {
   const qc = useQueryClient()
   const [refreshing, setRefreshing] = React.useState(false)
   const [query, setQuery] = React.useState("")
+  const debouncedQuery = useDebouncedValue(query, 300)
   const [mailboxId, setMailboxId] = React.useState("all")
   const [folder, setFolder] = React.useState("all")
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
   const messages = useInfiniteQuery({
-    queryKey: ["admin", "messages", mailboxId, folder, query],
+    queryKey: ["admin", "messages", mailboxId, folder, debouncedQuery],
     queryFn: ({ pageParam }) =>
       api.adminMessages({
         mailboxId: mailboxId === "all" ? "" : mailboxId,
         folder: folder === "all" ? "" : folder,
-        q: query,
+        q: debouncedQuery,
         cursor: typeof pageParam === "string" ? pageParam : "",
       }),
     initialPageParam: "",
@@ -4366,12 +4368,14 @@ function UserActions({
   const [editOpen, setEditOpen] = React.useState(false)
   const [passwordOpen, setPasswordOpen] = React.useState(false)
   const [pendingStatus, setPendingStatus] = React.useState<boolean | null>(null)
+  const [resetTwoFactorOpen, setResetTwoFactorOpen] = React.useState(false)
   const canUpdate = hasPermission(currentUser, "admin.users.update")
   const canChangeStatus = canUpdate && (user.role !== "admin" || currentUser?.role === "admin")
   const canResetPassword = hasPermission(currentUser, "admin.users.reset_password")
   const resetTwoFactor = useMutation({
     mutationFn: () => api.resetUserTwoFactor(user.id),
     onSuccess: () => {
+      setResetTwoFactorOpen(false)
       invalidateAdmin(qc)
       toast({ title: "已重置双因素认证", description: "该用户的会话与 API Token 已同时失效" })
     },
@@ -4440,7 +4444,7 @@ function UserActions({
           {canResetPassword && user.twoFactorEnabled && (
             <DropdownMenuItem
               disabled={resetTwoFactor.isPending}
-              onSelect={() => resetTwoFactor.mutate()}
+              onSelect={() => setResetTwoFactorOpen(true)}
             >
               {uiText("重置双因素认证")}
             </DropdownMenuItem>
@@ -4477,6 +4481,20 @@ function UserActions({
         onConfirm={() => {
           if (pendingStatus !== null && canChangeStatus && !user.protected && !update.isPending)
             quickPatch({ disabled: pendingStatus })
+        }}
+      />
+      <ConfirmDialog
+        open={resetTwoFactorOpen}
+        title={uiMessage("重置 {0} 的双因素认证？", [user.email])}
+        description="该用户的所有会话与 API Token 会立即失效，需要重新绑定验证器才能再次登录。"
+        confirmText="重置双因素"
+        destructive
+        pending={resetTwoFactor.isPending}
+        onOpenChange={(open) => {
+          if (!open && !resetTwoFactor.isPending) setResetTwoFactorOpen(false)
+        }}
+        onConfirm={() => {
+          if (!resetTwoFactor.isPending) resetTwoFactor.mutate()
         }}
       />
       {canUpdate && (
@@ -4517,6 +4535,8 @@ function CreateUserDialog({ permissionGroups }: { permissionGroups: PermissionGr
       invalidateAdmin(qc)
       setOpen(false)
       setPermissionGroupIds([])
+      setRole("user")
+      setStatus("active")
       toast({ title: "用户已创建" })
     },
     onError: (e) => toast({ title: "创建失败", description: errorMessage(e) }),
