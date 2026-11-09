@@ -762,6 +762,13 @@ export const api = {
       "/api/mail/messages/bulk",
       { method: "POST", body: JSON.stringify({ ids, action }) }
     ),
+  // 整个文件夹标为已读。服务端每次最多处理 500 封，返回 remaining，
+  // 前端按 remaining 继续调用，避免一次请求里逐封重命名几千个 maildir 文件。
+  readAllFolder: (mailboxId: string, folder: string) =>
+    request<{ updated: number; remaining: number }>("/api/mail/read-all", {
+      method: "POST",
+      body: JSON.stringify({ mailboxId, folder }),
+    }),
   star: (id: string, starred: boolean) =>
     request<{ ok: boolean }>(`/api/mail/messages/${id}/star`, {
       method: "POST",

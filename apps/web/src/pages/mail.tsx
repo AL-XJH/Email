@@ -996,6 +996,17 @@ export function MailPage() {
   })
   const markAllRead = useMutation({
     mutationFn: async (items: MailMessage[]) => {
+      // 文件夹视图下点「全部已读」要真的把整个文件夹标掉，而不是只标当前页；
+      // 星标/标签视图没有单一文件夹语义，仍回退为逐封标记当前列表。
+      if (mailView === "folder" && folder && activeMailboxId) {
+        let total = 0
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const result = await api.readAllFolder(activeMailboxId, folder)
+          total += result.updated
+          if (result.remaining <= 0) break
+        }
+        return total
+      }
       const unread = items.filter((message) => !message.isRead)
       await runWithConcurrency(unread, 4, (message) => api.markRead(message.id, true))
       return unread.length

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -179,4 +181,108 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		"missing": missing,
 		"failed":  failed,
 	})
+}
+
+// readAllFolderBatch 是单次请求最多处理的邮件数。逐封重命名 maildir 文件是
+// 磁盘操作，一次几千封会让请求挂住；客户端按返回的 remaining 接着调。
+const readAllFolderBatch = 500
+
+func (a *App) handleReadAllFolder(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	var req struct {
+		MailboxID string `json:"mailboxId"`
+		Folder    string `json:"folder"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	name, err := normalizeFolderNameForUser(req.Folder)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	mb, err := a.mailboxByID(r.Context(), strings.TrimSpace(req.MailboxID))
+	if err != nil || mb.UserID != user.ID || mb.Status != "active" {
+		respondError(w, http.StatusNotFound, "mailbox not found")
+		return
+	}
+	var folderID string
+	if err := a.db.QueryRowContext(r.Context(), `SELECT id FROM folders WHERE mailbox_id=? AND lower(name)=lower(?)`, mb.ID, name).Scan(&folderID); err != nil {
+		respondError(w, http.StatusNotFound, "folder not found")
+		return
+	}
+	updated, err := a.markFolderRead(r.Context(), mb.ID, folderID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to mark folder read")
+		return
+	}
+	var remaining int
+	if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND folder_id=? AND is_read=0`, mb.ID, folderID).Scan(&remaining); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to count remaining messages")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"updated": updated, "remaining": remaining})
+}
+
+// markFolderRead 把整个文件夹标为已读，并且同步改 maildir 文件名的 S 标志。
+// 只改库不改文件名的话，下一轮 maildir 同步会按 `:2,` 里缺 S 把它们判回未读，
+// 「全部已读」等于没点。
+func (a *App) markFolderRead(ctx context.Context, mailboxID, folderID string) (int, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT id,COALESCE(raw_path,''),is_starred FROM messages
+		WHERE mailbox_id=? AND folder_id=? AND is_read=0 LIMIT ?`, mailboxID, folderID, readAllFolderBatch)
+	if err != nil {
+		return 0, err
+	}
+	type unreadMessage struct {
+		id, rawPath string
+		starred     bool
+	}
+	items := []unreadMessage{}
+	for rows.Next() {
+		var item unreadMessage
+		var starred int
+		if err := rows.Scan(&item.id, &item.rawPath, &starred); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		item.starred = starred != 0
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	if len(items) == 0 {
+		return 0, nil
+	}
+	modSeq, err := a.bumpFolderModSeq(ctx, folderID)
+	if err != nil {
+		return 0, err
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	updated := 0
+	for _, item := range items {
+		newPath := item.rawPath
+		if item.rawPath != "" {
+			if ok, pathErr := a.pathIsUnderMaildirRoot(item.rawPath); pathErr == nil && ok {
+				target := maildirPathWithFlags(item.rawPath, true, item.starred)
+				if target != item.rawPath {
+					if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr == nil {
+						if renameErr := os.Rename(item.rawPath, target); renameErr == nil {
+							_ = applyMaildirOwnership(target)
+							newPath = target
+						}
+					}
+				}
+			}
+		}
+		if _, err := a.db.ExecContext(ctx, `UPDATE messages SET is_read=1,raw_path=?,imap_modseq=?,updated_at=? WHERE id=?`,
+			newPath, modSeq, now, item.id); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
 }
