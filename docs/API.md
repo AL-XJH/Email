@@ -136,7 +136,8 @@ Each token has independent scopes. Scopes only reduce the permissions of the own
 | Scope | Purpose |
 |---|---|
 | `domains:read` / `domains:write` | View or manage sending domains |
-| `mailboxes:read` / `mailboxes:write` | View or manage mailboxes; password reset is a write operation |
+| `mailboxes:read` / `mailboxes:write` | View or manage mailboxes |
+| `users:reset-password` | Reset a mailbox owner's login password (requires `admin.users.reset_password`) |
 | `messages:read` / `messages:send` / `messages:manage` | Read messages/status, send, or retry/cancel |
 | `aliases:read` / `aliases:write` | View or manage aliases |
 | `dns:read` / `dns:check` | View required records or execute DNS checks |
@@ -152,6 +153,7 @@ All Open API endpoints require an API token with appropriate permissions and rol
 |---|---|---|
 | Domains | `domains:read` or `domains:write` | admin |
 | Mailboxes | `mailboxes:read` or `mailboxes:write` | admin |
+| Mailbox password reset | `users:reset-password` | admin |
 | DNS | `dns:read` or `dns:check` | admin |
 | Aliases | `aliases:read` or `aliases:write` | admin |
 | Send / status / messages | `messages:send`, `messages:read`, or `messages:manage` | user or admin |
