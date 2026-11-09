@@ -14,3 +14,9 @@ dns {
   timeout = 2s;
   retransmits = 2;
 }
+
+# 单任务总超时必须大于最慢符号的超时，否则 rspamd 启动自检会报
+# "configured task_timeout 8.00 is less than maximum symbols cache timeout 15.00"，
+# 并且 ARC_CHECK / ARC_SIGNED（各 10s）会被 8s 的 task_timeout 提前掐断，
+# 结果是 ARC 结果不稳定、时有时无。20s 只是个上限，正常邮件仍然是毫秒级返回。
+task_timeout = 20s;
