@@ -16,6 +16,7 @@ import type {
   MailFolder,
   MailLabel,
   MailMessage,
+  BulkMessageAction,
   MailTranslation,
   DNSRecord,
   DNSCheckResult,
@@ -738,6 +739,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ read }),
     }),
+  bulkMessageAction: (ids: string[], action: BulkMessageAction) =>
+    request<{ ok: boolean; updated: number; missing: string[]; failed: string[] }>(
+      "/api/mail/messages/bulk",
+      { method: "POST", body: JSON.stringify({ ids, action }) }
+    ),
   star: (id: string, starred: boolean) =>
     request<{ ok: boolean }>(`/api/mail/messages/${id}/star`, {
       method: "POST",

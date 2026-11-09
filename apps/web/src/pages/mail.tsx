@@ -187,33 +187,6 @@ function getInitialMailPageSize(): MailPageSize {
   return stored === 20 || stored === 50 ? stored : 30
 }
 
-/**
- * 跑一批任务，但不因为某一个失败就中止：把失败的挑出来返回，交回调用方重试。
- * 批量删除用的是每封一条请求，一封 500 不该让剩下 99 封都不动。
- */
-async function runAllSettled<T>(
-  items: readonly T[],
-  limit: number,
-  task: (item: T, index: number) => Promise<unknown>
-): Promise<T[]> {
-  const failed: T[] = []
-  let nextIndex = 0
-  const workerCount = Math.min(Math.max(1, limit), items.length)
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (true) {
-      const index = nextIndex++
-      if (index >= items.length) return
-      try {
-        await task(items[index], index)
-      } catch {
-        failed.push(items[index])
-      }
-    }
-  })
-  await Promise.all(workers)
-  return failed
-}
-
 async function runWithConcurrency<T>(
   items: readonly T[],
   limit: number,
@@ -1493,33 +1466,19 @@ export function MailPage() {
   }
   async function runConfirmedBulkAction(action: BulkAction, ids: string[]) {
     setBulkPending(true)
-    // 404 当成成功：上一次请求其实已经改完了，只是回包晚到 / 被并发挤掉，
-    // 重试时会看到「已经没有这封邮件」。
-    const ignoreMissing = (error: unknown) => {
-      if ((error as { status?: number })?.status === 404) return
-      throw error
-    }
-    const runOne = (id: string) => {
-      if (action === "read" || action === "unread") return api.markRead(id, action === "read")
-      if (action === "star" || action === "unstar") return api.star(id, action === "star")
-      if (action === "delete") return api.delete(id).catch(ignoreMissing)
-      const target = action === "archive" ? "Archive" : action === "trash" ? "Trash" : "Spam"
-      return api.move(id, target).catch(ignoreMissing)
-    }
     try {
-      let failed = await runAllSettled(ids, 4, runOne)
-      if (failed.length > 0) {
-        await new Promise((resolve) => window.setTimeout(resolve, 300))
-        failed = await runAllSettled(failed, 2, runOne)
-      }
+      // 一次请求处理整批：以前是每封一个 HTTP，勾 30 封就是 30 个请求排队。
+      const result = await api.bulkMessageAction(ids, action)
       if (selectedId && ids.includes(selectedId)) setSelectedId(null)
       setCompactSelectedIds([])
       setPendingConfirm(null)
       await refreshMailData()
-      if (failed.length > 0) {
-        const done = ids.length - failed.length
+      if (result.failed?.length) {
         toast({
-          title: uiMessage("已处理 {0} 封，{1} 封失败，可再试一次", [done, failed.length]),
+          title: uiMessage("已处理 {0} 封，{1} 封失败，可再试一次", [
+            result.updated,
+            result.failed.length,
+          ]),
         })
       } else {
         toast({ title: uiMessage("已处理 {0} 封邮件", [ids.length]) })

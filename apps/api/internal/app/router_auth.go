@@ -145,6 +145,7 @@ func (a *App) Router() http.Handler {
 			r.With(a.requirePermission(PermissionMailDrafts)).Post("/mail/drafts", a.handleSaveDraft)
 			r.With(a.requirePermission(PermissionMailDrafts)).Post("/mail/drafts/{id}", a.handleSaveDraft)
 			r.With(a.requirePermission(PermissionMailDrafts)).Delete("/mail/drafts/{id}", a.handleDeleteDraft)
+			r.With(a.requirePermission(PermissionMailOrganize)).Post("/mail/messages/bulk", a.handleBulkMessageAction)
 			r.With(a.requirePermission(PermissionMailOrganize)).Post("/mail/messages/{id}/mark-read", a.handleMarkRead)
 			r.With(a.requirePermission(PermissionMailOrganize)).Post("/mail/messages/{id}/star", a.handleStar)
 			r.With(a.requirePermission(PermissionMailLabels)).Post("/mail/messages/{id}/labels", a.handleAddMessageLabel)

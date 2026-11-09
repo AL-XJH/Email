@@ -1982,17 +1982,7 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	if req.Read != nil {
 		read = *req.Read
 	}
-	if err := a.updateMessageMaildirFlags(r.Context(), msg.ID, &read, nil); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to update message")
-		return
-	}
-	modSeq, err := a.updateMessageModSeq(r.Context(), msg.ID, msg.FolderID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to update message")
-		return
-	}
-	_, err = a.db.ExecContext(r.Context(), `UPDATE messages SET is_read=?, imap_modseq=CASE WHEN ? > 0 THEN ? ELSE imap_modseq END, updated_at=? WHERE id=?`, boolInt(read), modSeq, modSeq, a.now().UTC().Format(time.RFC3339Nano), msg.ID)
-	if err != nil {
+	if err := a.applyMessageRead(r.Context(), msg, read); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update message")
 		return
 	}
@@ -2013,17 +2003,7 @@ func (a *App) handleStar(w http.ResponseWriter, r *http.Request) {
 	if req.Starred != nil {
 		starred = *req.Starred
 	}
-	if err := a.updateMessageMaildirFlags(r.Context(), msg.ID, nil, &starred); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to update message")
-		return
-	}
-	modSeq, err := a.updateMessageModSeq(r.Context(), msg.ID, msg.FolderID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to update message")
-		return
-	}
-	_, err = a.db.ExecContext(r.Context(), `UPDATE messages SET is_starred=?, imap_modseq=CASE WHEN ? > 0 THEN ? ELSE imap_modseq END, updated_at=? WHERE id=?`, boolInt(starred), modSeq, modSeq, a.now().UTC().Format(time.RFC3339Nano), msg.ID)
-	if err != nil {
+	if err := a.applyMessageStar(r.Context(), msg, starred); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update message")
 		return
 	}
@@ -2043,17 +2023,11 @@ func (a *App) handleMove(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	folder, err := normalizeFolderNameForUser(req.Folder)
-	if err != nil {
+	if _, err := normalizeFolderNameForUser(req.Folder); err != nil {
 		badRequest(w, err)
 		return
 	}
-	folderID, err := a.ensureFolder(r.Context(), msg.MailboxID, folder)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load folder")
-		return
-	}
-	if err := a.moveMessageMaildir(r.Context(), msg.ID, folderID); err != nil {
+	if err := a.applyMessageMove(r.Context(), msg, req.Folder); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to move message")
 		return
 	}
@@ -2129,24 +2103,7 @@ func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "message not found")
 		return
 	}
-	if strings.EqualFold(msg.Folder, "Trash") {
-		a.deleteMessageMaildirFile(r.Context(), msg.ID)
-		a.deleteMessageFiles(r.Context(), msg.ID)
-		_, err = a.db.ExecContext(r.Context(), `DELETE FROM messages WHERE id=?`, msg.ID)
-		if err == nil {
-			_, _ = a.bumpFolderModSeq(r.Context(), msg.FolderID)
-		}
-	} else {
-		trashID, e := a.ensureFolder(r.Context(), msg.MailboxID, "Trash")
-		if e != nil {
-			err = e
-		} else {
-			if e := a.moveMessageMaildir(r.Context(), msg.ID, trashID); e != nil {
-				err = e
-			}
-		}
-	}
-	if err != nil {
+	if err := a.applyMessageDelete(r.Context(), msg); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete message")
 		return
 	}

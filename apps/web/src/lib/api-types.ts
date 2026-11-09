@@ -245,6 +245,16 @@ export type MailLabel = {
   color: string
   messageCount?: number
 }
+export type BulkMessageAction =
+  | "read"
+  | "unread"
+  | "star"
+  | "unstar"
+  | "archive"
+  | "trash"
+  | "spam"
+  | "delete"
+
 export type MailMessage = {
   id: string
   mailboxId?: string
