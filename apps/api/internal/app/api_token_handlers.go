@@ -242,7 +242,9 @@ func scanAPIToken(row apiTokenScanner) (APIToken, error) {
 
 func normalizeAPITokenScopes(scopes []string) ([]string, error) {
 	if scopes == nil {
-		return []string{"*"}, nil
+		// 以前省略 scopes 会静默签发全权限 token：客户端丢个字段就拿到 "*"。
+		// 要全权限必须显式写 ["*"]。
+		return nil, errors.New(`scopes is required (use ["*"] for full access)`)
 	}
 	if len(scopes) == 0 {
 		return nil, errors.New("at least one api token scope is required")

@@ -475,6 +475,10 @@ func (a *App) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_telegram_notification_outbox_due ON telegram_notification_outbox(delivered_at,next_attempt_at,created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_telegram_notification_outbox_user ON telegram_notification_outbox(user_id,created_at)`,
+		`CREATE TRIGGER IF NOT EXISTS trg_mailbox_delete_telegram_outbox
+			AFTER DELETE ON mailboxes BEGIN
+				DELETE FROM telegram_notification_outbox WHERE mailbox_id=OLD.id;
+			END`,
 		`CREATE TABLE IF NOT EXISTS aliases (
 			id TEXT PRIMARY KEY,
 			domain_id TEXT NOT NULL REFERENCES domains(id) ON DELETE CASCADE,

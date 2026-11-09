@@ -190,6 +190,12 @@ export function ComposeDialog({
   const preparingRef = React.useRef(false)
   const sentRecipientsRef = React.useRef<Set<string>>(new Set())
   const lastSavedPayloadRef = React.useRef("")
+  const draftIdRef = React.useRef(draft?.id || "")
+  const latestDraftRef = React.useRef<{ payload: DraftPayload; hasContent: boolean } | null>(null)
+  const savingRef = React.useRef(false)
+  const pendingSaveRef = React.useRef(false)
+  const maxWaitTimerRef = React.useRef<number | null>(null)
+  const dirtyRef = React.useRef(false)
   const [showCc, setShowCc] = React.useState(Boolean(draft?.cc))
   const [showBcc, setShowBcc] = React.useState(Boolean(draft?.bcc))
   const [sendSeparately, setSendSeparately] = React.useState(false)
@@ -245,7 +251,77 @@ export function ComposeDialog({
       bccValue.trim() ||
       subjectValue.trim() ||
       body.text.trim() ||
-      body.html.trim())
+      body.html.trim() ||
+      files.length > 0)
+  function draftPayloadHasContent(payload: DraftPayload) {
+    return (
+      !!payload.mailboxId &&
+      (payload.to.length > 0 ||
+        payload.cc.length > 0 ||
+        payload.bcc.length > 0 ||
+        !!payload.subject.trim() ||
+        !!payload.text.trim() ||
+        !!payload.html.trim() ||
+        (payload.attachments?.length || 0) > 0)
+    )
+  }
+
+  // 所有自动保存都走这一个串行入口：
+  // - 两次保存不会并发 POST 出两份草稿（第二次拿到第一次的 draftId）；
+  // - 保存期间又有新输入时，等当前请求结束再补一次；
+  // - 关闭对话框时同步发起最后一次保存，未落盘的正文不会丢。
+  const flushDraft = React.useCallback(async () => {
+    if (!open || !canManageDrafts || sendStartedRef.current) return
+    const latest = latestDraftRef.current
+    if (!latest || !latest.hasContent) return
+    const key = JSON.stringify({ ...latest.payload, draftId: draftIdRef.current })
+    if (key === lastSavedPayloadRef.current) return
+    if (savingRef.current) {
+      pendingSaveRef.current = true
+      return
+    }
+    savingRef.current = true
+    try {
+      setDraftStatus("saving")
+      const saved = await api.saveDraft(latest.payload, draftIdRef.current || undefined)
+      if (sendStartedRef.current) {
+        // 保存和发送撞在一起：这次写出来的是「正在发送的那封」的副本，删掉。
+        await api.deleteDraft(saved.id).catch(() => {})
+        return
+      }
+      draftIdRef.current = saved.id
+      setDraftId(saved.id)
+      lastSavedPayloadRef.current = JSON.stringify({ ...latest.payload, draftId: saved.id })
+      setLastSavedAt(new Date())
+      setDraftStatus("saved")
+      dirtyRef.current = false
+      if (maxWaitTimerRef.current) {
+        window.clearTimeout(maxWaitTimerRef.current)
+        maxWaitTimerRef.current = null
+      }
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["messages"] }),
+        qc.invalidateQueries({ queryKey: ["folders"] }),
+        qc.invalidateQueries({ queryKey: ["mail-stats"] }),
+      ])
+    } catch {
+      setDraftStatus("error")
+    } finally {
+      savingRef.current = false
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false
+        void flushDraft()
+      }
+    }
+  }, [open, canManageDrafts, qc])
+
+  function requestClose() {
+    // 先发起保存再关闭：async 函数在第一个 await 前是同步执行的，
+    // api.saveDraft 已经带着当前内容发出去了，组件卸载不会取消请求。
+    if (!sendStartedRef.current) void flushDraft()
+    onOpenChange(false)
+  }
+
   const send = useMutation({
     mutationFn: async (payloads: SendPayload[]) => {
       const sent: MailMessage[] = []
@@ -260,12 +336,14 @@ export function ComposeDialog({
       return sent
     },
     onSuccess: async (_, payloads) => {
-      if (draftId) {
+      // 用 ref 而不是渲染时的 draftId：发送期间可能有一次自动保存刚把 id 换掉。
+      if (draftIdRef.current) {
         try {
-          await api.deleteDraft(draftId)
+          await api.deleteDraft(draftIdRef.current)
         } catch {
           // The draft may already have been removed by another client.
         }
+        draftIdRef.current = ""
       }
       toast({
         title:
@@ -274,6 +352,7 @@ export function ComposeDialog({
       sentRecipientsRef.current.clear()
       setFiles([])
       setDraftId("")
+      dirtyRef.current = false
       onSent()
     },
     onError: (e) => {
@@ -317,6 +396,13 @@ export function ComposeDialog({
       : plainTextComposerValue(draft?.text ?? "")
     const nextQuotedHtml = nextSplit.quotedHtml
     const nextQuotedText = nextSplit.quotedText
+    draftIdRef.current = draft?.id || ""
+    latestDraftRef.current = null
+    dirtyRef.current = false
+    if (maxWaitTimerRef.current) {
+      window.clearTimeout(maxWaitTimerRef.current)
+      maxWaitTimerRef.current = null
+    }
     lastSavedPayloadRef.current = JSON.stringify({
       mailboxId: draft?.mailboxId || mailbox?.id || "",
       to: splitEmails(draft?.to || ""),
@@ -372,28 +458,45 @@ export function ComposeDialog({
   }, [files])
 
   React.useEffect(() => {
-    if (!open || sendStartedRef.current || !hasDraftContent || !canManageDrafts) return
-    const payloadKey = JSON.stringify({ ...composePayload, draftId })
+    if (!open) return
+    latestDraftRef.current = {
+      payload: composePayload,
+      hasContent: draftPayloadHasContent(composePayload),
+    }
+    if (!hasDraftContent || !canManageDrafts || sendStartedRef.current) return
+    const payloadKey = JSON.stringify({ ...composePayload, draftId: draftIdRef.current })
     if (payloadKey === lastSavedPayloadRef.current) return
-    const timer = window.setTimeout(async () => {
-      try {
-        setDraftStatus("saving")
-        const saved = await api.saveDraft(composePayload, draftId || undefined)
-        setDraftId(saved.id)
-        lastSavedPayloadRef.current = JSON.stringify({ ...composePayload, draftId: saved.id })
-        setLastSavedAt(new Date())
-        setDraftStatus("saved")
-        await Promise.all([
-          qc.invalidateQueries({ queryKey: ["messages"] }),
-          qc.invalidateQueries({ queryKey: ["folders"] }),
-          qc.invalidateQueries({ queryKey: ["mail-stats"] }),
-        ])
-      } catch {
-        setDraftStatus("error")
-      }
-    }, 5000)
+    dirtyRef.current = true
+    // 连续打字会不断重置 5 秒防抖，以前可以一整天不落盘；这里加一条
+    // 从第一次未保存改动起算的硬上限，最多 15 秒一定存一次。
+    if (!maxWaitTimerRef.current) {
+      maxWaitTimerRef.current = window.setTimeout(() => {
+        maxWaitTimerRef.current = null
+        void flushDraft()
+      }, 15000)
+    }
+    const timer = window.setTimeout(() => void flushDraft(), 5000)
     return () => window.clearTimeout(timer)
-  }, [open, hasDraftContent, composePayload, draftId, qc, canManageDrafts])
+  }, [open, hasDraftContent, composePayload, canManageDrafts, flushDraft])
+
+  // 有未保存内容时关标签页要拦一下，别让浏览器静默丢掉整封信。
+  React.useEffect(() => {
+    if (!open) return
+    const handler = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current || sendStartedRef.current) return
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", handler)
+    return () => window.removeEventListener("beforeunload", handler)
+  }, [open])
+
+  React.useEffect(
+    () => () => {
+      if (maxWaitTimerRef.current) window.clearTimeout(maxWaitTimerRef.current)
+    },
+    []
+  )
 
   function buildSendWarnings(attachmentsCount: number) {
     const warnings: string[] = []
@@ -566,7 +669,13 @@ export function ComposeDialog({
     })
   }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (next) onOpenChange(true)
+        else requestClose()
+      }}
+    >
       <DialogContent
         className="flex h-dvh w-screen max-w-none overflow-hidden p-0 sm:h-auto sm:max-h-[92dvh] sm:w-[min(96vw,82rem)]"
         aria-describedby={undefined}
@@ -713,7 +822,7 @@ export function ComposeDialog({
               type="button"
               variant="outline"
               className="min-h-10 px-3"
-              onClick={() => onOpenChange(false)}
+              onClick={requestClose}
             >
               {uiText("取消")}
             </Button>
@@ -1551,14 +1660,18 @@ function MailBodyComposer({
           <DialogHeader>
             <DialogTitle>{uiText("邮件预览")}</DialogTitle>
           </DialogHeader>
-          <div
-            className="mail-html max-h-[60vh] overflow-y-auto rounded-lg border bg-background p-5 text-sm leading-7"
-            dangerouslySetInnerHTML={{
-              __html:
+          {/* 预览必须走 iframe：引用进来的恶意邮件可以带 <style>，
+              直接 innerHTML 会把样式作用到整个应用（伪装登录框）。 */}
+          <div className="max-h-[60vh] overflow-y-auto rounded-lg border bg-background p-2">
+            <MailHtmlFrame
+              bodyHtml={
                 sanitizeComposerHtml([editor?.getHTML(), quotedHtml].filter(Boolean).join("")) ||
-                "<p></p>",
-            }}
-          />
+                "<p></p>"
+              }
+              bodyText={stripHtml(editor?.getHTML() || "")}
+              minHeight={240}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

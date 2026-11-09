@@ -1192,7 +1192,9 @@ export function MailPage() {
       pendingOpenIdRef.current = first.id
       setMailView("folder")
       setFolder("Inbox")
-      if (mailView === "folder") setSelectedId(first.id)
+      // 无条件选中：toast 是模块级稳定函数，闭包里的 mailView 可能还是通知创建时的值，
+      // 之前用 mailView === "folder" 做守卫，切过视图后点通知就什么都不发生。
+      setSelectedId(first.id)
       void api.markRead(first.id, true).catch(() => undefined)
     }
     toast({
@@ -1443,6 +1445,22 @@ export function MailPage() {
   const hasPreviousMessagePage = messagePageIndex > 0
   const hasNextMessagePage =
     !!messagePages[messagePageIndex + 1] || !!currentMessagePage?.nextCursor
+  // 翻页请求是异步的：await 期间用户可能切了文件夹，新列表已经被重置成第 0 页。
+  // 用一个作用域指纹确认回来时还是同一份列表，否则晚到的响应会把页码写成 N+1，
+  // 而新列表只有 1 页 —— 之后「下一页」永远点不动，列表还显示错页。
+  const mailListScope = [
+    mailView,
+    activeMailboxId,
+    selectedExternalAccountId,
+    folder,
+    externalFolder,
+    mailFilter,
+    selectedLabelId,
+    query,
+    messagePageSize,
+  ].join("|")
+  const mailListScopeRef = React.useRef(mailListScope)
+  mailListScopeRef.current = mailListScope
   const messagePageLoading =
     mailView === "external" ? externalMessages.isFetchingNextPage : messages.isFetchingNextPage
   function toggleCompactSelectAll(checked: boolean) {
@@ -1466,6 +1484,7 @@ export function MailPage() {
   }
   async function nextMessagePage() {
     if (!hasNextMessagePage || messagePageLoading) return
+    const scopeAtStart = mailListScope
     const nextIndex = messagePageIndex + 1
     if (messagePages[nextIndex]) {
       setMessagePageIndex(nextIndex)
@@ -1477,15 +1496,17 @@ export function MailPage() {
         mailView === "external"
           ? await externalMessages.fetchNextPage()
           : await messages.fetchNextPage()
+      if (mailListScopeRef.current !== scopeAtStart) return
       // 必须用 result 里最新的 pages，不能用这次渲染闭包里的 messages/externalMessages：
       // 那是 await 之前的快照，页数永远差一页，导致第一次点「下一页」只拉数据不翻页，
       // 需要再点一次才生效。
       const totalPages = result.data?.pages.length || 0
       if (totalPages > nextIndex && result.data?.pages[nextIndex]) {
-        setMessagePageIndex(nextIndex)
+        setMessagePageIndex((page) => Math.min(page + 1, totalPages - 1))
         setCompactSelectedIds([])
       }
     } catch (error) {
+      if (mailListScopeRef.current !== scopeAtStart) return
       toast({ title: "加载下一页失败", description: errorMessage(error) })
     }
   }
@@ -2594,6 +2615,28 @@ export function MailPage() {
               />
             ))}
             {!(mailView === "external" ? externalMessages.isLoading : messages.isLoading) &&
+              (mailView === "external" ? externalMessages.isError : messages.isError) && (
+                <div className="space-y-3 p-8 text-center text-sm text-muted-foreground">
+                  <p>
+                    {errorMessage(
+                      mailView === "external" ? externalMessages.error : messages.error
+                    )}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void (mailView === "external"
+                        ? externalMessages.refetch()
+                        : messages.refetch())
+                    }
+                  >
+                    {uiText("重试")}
+                  </Button>
+                </div>
+              )}
+            {!(mailView === "external" ? externalMessages.isLoading : messages.isLoading) &&
+              !(mailView === "external" ? externalMessages.isError : messages.isError) &&
               visibleMessages.length === 0 && (
                 <div className="p-8 text-center text-sm text-muted-foreground">
                   {uiText(emptyMessage)}
@@ -2632,6 +2675,16 @@ export function MailPage() {
               <Skeleton className="h-4 w-1/3" />
               <Separator />
               <Skeleton className="h-40 w-full" />
+            </div>
+          )}
+          {detail.isError && !detail.isLoading && (
+            <div className="flex h-full items-center justify-center p-6">
+              <div className="space-y-3 text-center">
+                <p className="text-sm text-muted-foreground">{errorMessage(detail.error)}</p>
+                <Button variant="outline" size="sm" onClick={() => void detail.refetch()}>
+                  {uiText("重试")}
+                </Button>
+              </div>
             </div>
           )}
           {selected && (

@@ -112,4 +112,5 @@ wait "$bootstrap_pid" 2>/dev/null || true
 /usr/local/bin/lanqin-rspamd-sync-dkim --once || true
 
 postfix check
+rm -f /var/spool/postfix/pid/master.pid
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/lanqin.conf

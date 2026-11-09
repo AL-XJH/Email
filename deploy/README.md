@@ -75,10 +75,25 @@ CRON
 
 ```bash
 docker compose down
+# WAL/SHM 是数据库的一部分：不删掉，SQLite 会把备份之后的新 WAL
+# 回放到旧库上，轻则数据混在一起，重则 database disk image is malformed。
+rm -f data/lanqin.db-wal data/lanqin.db-shm
 cp /root/lanqin-backups/<时间戳>/lanqin.db data/lanqin.db
 tar -C . -xzf /root/lanqin-backups/<时间戳>/config.tgz   # .env
 tar -C . -xzf /root/lanqin-backups/<时间戳>/dkim.tgz
+# maildir 与附件才是邮件本体，数据库只是索引：只恢复 lanqin.db
+# 会得到「所有邮箱都在、里面全是空的」。
+[ -f /root/lanqin-backups/<时间戳>/mail.tgz ] && tar -C . -xzf /root/lanqin-backups/<时间戳>/mail.tgz
+[ -f /root/lanqin-backups/<时间戳>/attachments.tgz ] && tar -C data -xzf /root/lanqin-backups/<时间戳>/attachments.tgz
+# Redis 备份的是一致性 RDB。AOF 优先于 RDB，必须先清掉旧的 AOF 目录，
+# 否则恢复后加载的还是备份之后那套撕裂的追加日志。
+if [ -f /root/lanqin-backups/<时间戳>/redis-dump.rdb ]; then
+  rm -rf redis/appendonlydir
+  cp /root/lanqin-backups/<时间戳>/redis-dump.rdb redis/dump.rdb
+fi
 docker compose up -d
+# 起来后先验完整性，再对外放流量。
+docker exec lanqin-email-lanqin-email-1 sqlite3 /data/lanqin.db "PRAGMA integrity_check;"
 ```
 
 ## GHCR 镜像权限

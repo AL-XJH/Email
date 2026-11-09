@@ -1018,11 +1018,15 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 		a.deleteMessage(ctx, sentID)
 		return nil, err
 	}
-	a.recordSendAudit(ctx, sendAuditAccepted, sendQueueStatusQueued, sendAuditInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients})
-	if _, err := a.enqueueSend(ctx, sendQueueInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, MessageID: messageID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients, MIMEBytes: mimeBytes, Now: now}); err != nil {
+	// 先入队再发 send.accepted：反过来的话 enqueue 失败时，外部消费者已经
+	// 收到「已接受」却永远等不到终态事件。
+	queueID, err := a.enqueueSend(ctx, sendQueueInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, MessageID: messageID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients, MIMEBytes: mimeBytes, Now: now})
+	if err != nil {
 		a.deleteMessage(ctx, sentID)
+		a.recordSendAudit(ctx, sendAuditFailed, sendQueueStatusFailed, sendAuditInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients, Error: "failed to enqueue delivery"})
 		return nil, fmt.Errorf("failed to enqueue delivery: %w", err)
 	}
+	a.recordSendAudit(ctx, sendAuditAccepted, sendQueueStatusQueued, sendAuditInput{QueueID: queueID, UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients})
 
 	if strings.TrimSpace(a.config().SMTPHost) == "" {
 		if err := a.deliverLocalRecipients(ctx, sentID, allRecipients, base, req.Attachments); err != nil {
@@ -1456,9 +1460,10 @@ func (a *App) handleScheduledSends(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
 	}
-	// payload_json 里带着附件 base64，可能几十 MB。这里只能按行取出后立刻
-	// 关游标，再解析——SQLite 只有一条连接，边遍历边 Unmarshal 等于把整库锁住。
-	rows, err := a.db.QueryContext(r.Context(), `SELECT id,mailbox_id,draft_id,payload_json,send_at,status,error,created_at,updated_at,sent_at
+	// payload_json 里带着附件 base64，一封就可能是几十 MB。以前 200 行一起
+	// 装进内存，一个用户随手排几封大附件就能把进程顶爆。现在先只取元数据，
+	// 关掉游标后再逐封点查 payload、解析完立刻释放。
+	rows, err := a.db.QueryContext(r.Context(), `SELECT id,mailbox_id,draft_id,send_at,status,error,created_at,updated_at,sent_at
 		FROM scheduled_sends
 		WHERE user_id=? AND mailbox_id=? AND status IN ('pending','sending','failed')
 		ORDER BY send_at ASC, created_at DESC LIMIT 200`, user.ID, mb.ID)
@@ -1466,16 +1471,12 @@ func (a *App) handleScheduledSends(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to load scheduled sends")
 		return
 	}
-	type pendingScheduled struct {
-		item        ScheduledSend
-		payloadJSON string
-	}
-	pending := make([]pendingScheduled, 0, 16)
+	pending := make([]ScheduledSend, 0, 16)
 	for rows.Next() {
 		var item ScheduledSend
 		var draftID, errorText, sentAt sql.NullString
-		var payloadJSON, sendAt, createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.MailboxID, &draftID, &payloadJSON, &sendAt, &item.Status, &errorText, &createdAt, &updatedAt, &sentAt); err != nil {
+		var sendAt, createdAt, updatedAt string
+		if err := rows.Scan(&item.ID, &item.MailboxID, &draftID, &sendAt, &item.Status, &errorText, &createdAt, &updatedAt, &sentAt); err != nil {
 			rows.Close()
 			respondError(w, http.StatusInternalServerError, "failed to scan scheduled sends")
 			return
@@ -1490,7 +1491,7 @@ func (a *App) handleScheduledSends(w http.ResponseWriter, r *http.Request) {
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
 		item.SentAt = nullableTime(sentAt)
-		pending = append(pending, pendingScheduled{item: item, payloadJSON: payloadJSON})
+		pending = append(pending, item)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -1499,9 +1500,12 @@ func (a *App) handleScheduledSends(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	items := make([]ScheduledSend, 0, len(pending))
-	for _, entry := range pending {
-		applyScheduledSendPreview(&entry.item, entry.payloadJSON)
-		items = append(items, entry.item)
+	for _, item := range pending {
+		var payloadJSON string
+		if err := a.db.QueryRowContext(r.Context(), `SELECT payload_json FROM scheduled_sends WHERE id=? AND user_id=?`, item.ID, user.ID).Scan(&payloadJSON); err == nil {
+			applyScheduledSendPreview(&item, payloadJSON)
+		}
+		items = append(items, item)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -2002,19 +2006,19 @@ func (a *App) recoverStaleScheduledSends(ctx context.Context) {
 
 func (a *App) processDueScheduledSends(ctx context.Context) error {
 	a.recoverStaleScheduledSends(ctx)
-	rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,draft_id,payload_json FROM scheduled_sends WHERE status='pending' AND send_at<=? ORDER BY send_at LIMIT 20`, a.now().UTC().Format(time.RFC3339Nano))
+	rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,draft_id FROM scheduled_sends WHERE status='pending' AND send_at<=? ORDER BY send_at LIMIT 20`, a.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	type dueItem struct {
-		id, mailboxID, draftID, payloadJSON string
+		id, mailboxID, draftID string
 	}
 	items := []dueItem{}
 	for rows.Next() {
 		var item dueItem
 		var draftID sql.NullString
-		if err := rows.Scan(&item.id, &item.mailboxID, &draftID, &item.payloadJSON); err != nil {
+		if err := rows.Scan(&item.id, &item.mailboxID, &draftID); err != nil {
+			rows.Close()
 			return err
 		}
 		if draftID.Valid {
@@ -2022,10 +2026,21 @@ func (a *App) processDueScheduledSends(ctx context.Context) error {
 		}
 		items = append(items, item)
 	}
-	for _, item := range items {
-		a.processScheduledSend(ctx, item.id, item.mailboxID, item.draftID, item.payloadJSON)
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
-	return rows.Err()
+	rows.Close()
+	for _, item := range items {
+		var payloadJSON string
+		if err := a.db.QueryRowContext(ctx, `SELECT payload_json FROM scheduled_sends WHERE id=?`, item.id).Scan(&payloadJSON); err != nil {
+			a.log.Warn("failed to load scheduled send payload", "id", item.id, "error", err)
+			_, _ = a.db.ExecContext(ctx, `UPDATE scheduled_sends SET status='failed',error=?,updated_at=? WHERE id=? AND status='pending'`, "定时内容读取失败，请重发", a.now().UTC().Format(time.RFC3339Nano), item.id)
+			continue
+		}
+		a.processScheduledSend(ctx, item.id, item.mailboxID, item.draftID, payloadJSON)
+	}
+	return nil
 }
 
 func (a *App) processScheduledSend(ctx context.Context, id, mailboxID, draftID, payloadJSON string) {

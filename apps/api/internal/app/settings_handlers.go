@@ -183,9 +183,11 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 	if next.SMTPPort == "" {
 		next.SMTPPort = "25"
 	}
-	if _, err := strconv.Atoi(next.SMTPPort); err != nil {
-		badRequest(w, errors.New("smtpPort must be a number"))
+	if port, err := strconv.Atoi(next.SMTPPort); err != nil || port < 1 || port > 65535 {
+		badRequest(w, errors.New("smtpPort must be between 1 and 65535"))
 		return
+	} else {
+		next.SMTPPort = strconv.Itoa(port)
 	}
 	next.SMTPUsername = strings.TrimSpace(req.SMTPUsername)
 	if strings.TrimSpace(req.SMTPPassword) != "" {
@@ -205,6 +207,11 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 	next.MaildirScanSeconds = req.MaildirScanSeconds
 	if req.SessionTTLHours <= 0 {
 		req.SessionTTLHours = 24 * 7
+	}
+	// time.Duration(hours)*time.Hour 在 ~256 万小时会溢出成负数，
+	// 结果是登录成功但 cookie 一写出来就过期。上限一年足够用。
+	if req.SessionTTLHours > 24*365 {
+		req.SessionTTLHours = 24 * 365
 	}
 	next.SessionTTLHours = req.SessionTTLHours
 	next.AllowInsecureHTTP = req.AllowInsecureHTTP
@@ -278,6 +285,19 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 	if next.ExternalIMAPEnabled && strings.TrimSpace(next.ExternalIMAPSecretKey) == "" {
 		badRequest(w, errors.New("外部 IMAP 加密密钥未设置"))
 		return
+	}
+	// 换密钥不会自动重加密已存的口令/OAuth token：直接保存会让所有外部账号
+	// 立刻解不开，且原密钥一丢就永久无法恢复。有账号时只允许沿用原密钥。
+	if next.ExternalIMAPSecretKey != a.config().ExternalIMAPSecretKey {
+		var existing int
+		if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM external_imap_accounts`).Scan(&existing); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to check external accounts")
+			return
+		}
+		if existing > 0 {
+			badRequest(w, errors.New("已有外部邮箱账号，不能更换加密密钥；请先删除这些账号"))
+			return
+		}
 	}
 
 	if err := a.saveSystemSettings(r.Context(), next); err != nil {

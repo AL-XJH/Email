@@ -416,7 +416,7 @@ func createTestAPITokenWithScopes(t *testing.T, client *testClient, name string,
 		Token string   `json:"token"`
 		Item  APIToken `json:"item"`
 	}
-	payload := map[string]any{"name": name}
+	payload := map[string]any{"name": name, "scopes": []string{"*"}}
 	if scopes != nil {
 		payload["scopes"] = scopes
 	}
@@ -2268,7 +2268,7 @@ func TestAPITokenManagementStoresHashAndRevokes(t *testing.T) {
 		Token string   `json:"token"`
 		Item  APIToken `json:"item"`
 	}
-	if code := admin.do("POST", "/api/me/api-tokens", map[string]string{"name": "integration-test"}, &created); code != http.StatusCreated {
+	if code := admin.do("POST", "/api/me/api-tokens", map[string]any{"name": "integration-test", "scopes": []string{"*"}}, &created); code != http.StatusCreated {
 		t.Fatalf("create api token code=%d resp=%+v", code, created)
 	}
 	nullScopes := bytes.NewBufferString(`{"name":"null-scopes","scopes":null}`)

@@ -185,7 +185,7 @@ func (a *App) adminDeliveryQueueMutation(w http.ResponseWriter, r *http.Request,
 		if retry {
 			res, err = a.db.ExecContext(r.Context(), `UPDATE send_queue SET status='queued',attempt_count=0,next_attempt_at=?,last_error='',updated_at=?,delivered_at=NULL,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status='failed' AND delivered_at IS NULL AND `+lease, now, now, id, now)
 		} else {
-			res, err = a.db.ExecContext(r.Context(), `UPDATE send_queue SET status='canceled',last_error='',updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status IN ('queued','failed') AND delivered_at IS NULL AND `+lease, now, id, now)
+			res, err = a.db.ExecContext(r.Context(), `UPDATE send_queue SET status='canceled',mime_base64='',last_error='',updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status IN ('queued','failed') AND delivered_at IS NULL AND `+lease, now, id, now)
 		}
 	case "webhook", "telegram":
 		table := "status_webhook_outbox"

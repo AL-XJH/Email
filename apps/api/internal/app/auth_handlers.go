@@ -474,6 +474,12 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to revoke other sessions")
 		return
 	}
+	// 自助改密同样是「怀疑账号被盗」后的恢复动作：长期 API token 也必须失效。
+	// 管理员重置那条路径已经这么做了，这里以前只清 session，等于留着后门。
+	if _, err := tx.ExecContext(r.Context(), `UPDATE api_tokens SET disabled=1, updated_at=? WHERE user_id=? AND disabled=0`, now, user.ID); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to revoke API tokens")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to save password")
 		return

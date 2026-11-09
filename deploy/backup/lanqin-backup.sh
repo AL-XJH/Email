@@ -24,11 +24,22 @@ chmod 700 "$BACKUP_DIR" "$target"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
 # 1) 数据库：容器里有 sqlite3，写进挂载目录再取出来。
+#    sqlite3 的 .backup 在源文件不存在时会「成功」创建一个空库，
+#    所以必须先确认源存在，再确认备份里真的有表。
 tmp_db="/data/.lanqin-backup-$$.db"
+if ! docker exec "$CONTAINER" test -f /data/lanqin.db; then
+	log "backup failed: /data/lanqin.db not found in $CONTAINER"
+	exit 1
+fi
 docker exec "$CONTAINER" sqlite3 /data/lanqin.db ".backup '$tmp_db'"
 if ! docker exec "$CONTAINER" sqlite3 "$tmp_db" "PRAGMA quick_check;" | grep -q '^ok$'; then
 	docker exec "$CONTAINER" rm -f "$tmp_db" || true
 	log "backup failed: quick_check did not return ok"
+	exit 1
+fi
+if [ "$(docker exec "$CONTAINER" sqlite3 "$tmp_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table';")" -lt 1 ]; then
+	docker exec "$CONTAINER" rm -f "$tmp_db" || true
+	log "backup failed: snapshot has no tables"
 	exit 1
 fi
 mv "$APP_DIR${tmp_db}" "$target/lanqin.db"
@@ -36,7 +47,8 @@ log "db: $(du -h "$target/lanqin.db" | cut -f1)"
 
 # 2) 配置：.env 里有管理员口令和各项密钥，dkim 里有签名私钥。
 if [ -f "$APP_DIR/.env" ]; then
-	tar -C "$APP_DIR" -czf "$target/config.tgz" .env 2>/dev/null || true
+	# 不能吞掉 tar 的错误：备份里少了 .env，恢复后密钥全变、会话全失效。
+	tar -C "$APP_DIR" -czf "$target/config.tgz" .env
 fi
 if [ -d "$APP_DIR/dkim" ]; then
 	tar -C "$APP_DIR" -czf "$target/dkim.tgz" dkim
@@ -51,16 +63,29 @@ if [ -d "$APP_DIR/mail" ]; then
 	tar -C "$APP_DIR" -czf "$target/mail.tgz" mail
 fi
 
-# 3b) Redis：Bayes 学习样本、灰名单、reputation 都在 AOF 里，
-#     不备份的话恢复后反垃圾等于从零开始学。
+# 3b) Redis：Bayes 学习样本、灰名单、reputation。
+#     不能直接 tar appendonlydir —— redis 正在往里追加，tar 出来的是撕裂的 AOF。
+#     BGSAVE 生成一致性 RDB，等它真的结束（rdb_bgsave_in_progress:0）再拷贝。
 if [ -d "$APP_DIR/redis" ]; then
 	docker exec "$CONTAINER" redis-cli BGSAVE >/dev/null 2>&1 || true
-	sleep 1
-	tar -C "$APP_DIR" -czf "$target/redis.tgz" redis 2>/dev/null || true
+	redis_info=""
+	for _ in $(seq 1 30); do
+		redis_info="$(docker exec "$CONTAINER" redis-cli INFO persistence 2>/dev/null || true)"
+		printf '%s' "$redis_info" | grep -q 'rdb_bgsave_in_progress:0' && break
+		sleep 1
+	done
+	if printf '%s' "$redis_info" | grep -q 'rdb_last_bgsave_status:ok' && [ -f "$APP_DIR/redis/dump.rdb" ]; then
+		cp "$APP_DIR/redis/dump.rdb" "$target/redis-dump.rdb"
+	else
+		log "warning: redis BGSAVE did not finish; redis state not backed up"
+	fi
 fi
 
 # 4) 滚动清理：只删本脚本自己命名格式（YYYYmmdd-HHMMSS）的目录。
 find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '20[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]' -mtime "+$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null || true
+
+# 备份集要能校验：恢复前先 sha256sum -c，避免拿到半截 tar。
+( cd "$target" && sha256sum ./* 2>/dev/null | grep -v 'SHA256SUMS' > SHA256SUMS ) || true
 
 total="$(du -sh "$target" | cut -f1)"
 count="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '20*' | wc -l)"

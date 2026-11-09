@@ -19,8 +19,10 @@ services:
       - "465:465"
       - "587:587"
     depends_on:
-      - dovecot
-      - postfix
+      dovecot:
+        condition: service_healthy
+      postfix:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
@@ -49,8 +51,10 @@ services:
       - "80:80"
       - "443:443"
     depends_on:
-      - api
-      - web
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/readyz"]
       interval: 10s
@@ -70,8 +74,10 @@ services:
     ports:
       - "25:25"
     depends_on:
-      - dovecot
-      - rspamd
+      dovecot:
+        condition: service_healthy
+      rspamd:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "postfix status >/dev/null 2>&1"]
       interval: 10s
@@ -116,7 +122,10 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./data:/data:ro
+      # WAL 模式的 SQLite 即使只读也要在库目录建 -shm；:ro 会让 rspamd
+      # 读不到 DKIM 密钥（sync-dkim 报 unable to open database file），
+      # 结果所有外发邮件都不签名。
+      - ./data:/data
       - ./dkim:/var/lib/rspamd/dkim
     healthcheck:
       test: ["CMD-SHELL", "rspamadm control stat >/dev/null 2>&1"]

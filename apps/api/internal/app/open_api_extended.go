@@ -311,7 +311,7 @@ func (a *App) handleOpenAPICancelSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	res, err := a.db.ExecContext(r.Context(), `UPDATE send_queue SET status=?,last_error='',updated_at=? WHERE id=? AND status IN (?,?)`, sendQueueStatusCanceled, now, item.ID, sendQueueStatusQueued, sendQueueStatusFailed)
+	res, err := a.db.ExecContext(r.Context(), `UPDATE send_queue SET status=?,mime_base64='',last_error='',updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status IN (?,?)`, sendQueueStatusCanceled, now, item.ID, sendQueueStatusQueued, sendQueueStatusFailed)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to cancel send item")
 		return
