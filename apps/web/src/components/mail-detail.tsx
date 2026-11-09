@@ -362,7 +362,7 @@ export function CompactMessageDetail({
                   </div>
                 </div>
               )}
-              <TranslatableMailBody message={selected} language={language} />
+              <TranslatableMailBody key={selected.id} message={selected} language={language} />
               {selected.attachments && selected.attachments.length > 0 && (
                 <div className="mt-8 rounded-lg border p-4">
                   <div className="mb-3 font-medium">{uiText("附件")}</div>

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	netmail "net/mail"
 	"net/textproto"
 	"sort"
@@ -109,12 +110,20 @@ type submissionBackend struct {
 	app *App
 }
 
-func (b submissionBackend) NewSession(*smtpserver.Conn) (smtpserver.Session, error) {
-	return &submissionSession{app: b.app}, nil
+func (b submissionBackend) NewSession(conn *smtpserver.Conn) (smtpserver.Session, error) {
+	remoteIP := ""
+	if conn != nil && conn.Conn() != nil {
+		remoteIP = conn.Conn().RemoteAddr().String()
+		if host, _, err := net.SplitHostPort(remoteIP); err == nil {
+			remoteIP = host
+		}
+	}
+	return &submissionSession{app: b.app, remoteIP: remoteIP}, nil
 }
 
 type submissionSession struct {
 	app        *App
+	remoteIP   string
 	user       *User
 	mailbox    *Mailbox
 	mailFrom   string
@@ -141,10 +150,24 @@ func (s *submissionSession) Auth(mech string) (sasl.Server, error) {
 	return sasl.NewPlainServer(func(identity, username, password string) error {
 		ctx, cancel := submissionContext()
 		defer cancel()
-		user, mailbox, err := s.app.authenticateSubmission(ctx, username, password)
-		if err != nil {
+		account := normalizeEmail(username)
+		// SMTP 提交口是公网可达的，必须和网页登录共用同一套限速：
+		// 否则这里就是一个不限次数、也不进审计的密码校验接口。
+		if retryAfter, err := s.app.checkLoginRateLimit(ctx, account, s.remoteIP); err != nil {
+			return smtpserver.ErrAuthFailed
+		} else if retryAfter > 0 {
+			s.app.auditLoginAttempt("smtp", "rate_limited", account, s.remoteIP)
 			return smtpserver.ErrAuthFailed
 		}
+		user, mailbox, err := s.app.authenticateSubmission(ctx, username, password)
+		if err != nil {
+			if _, recordErr := s.app.recordLoginFailure(ctx, account, s.remoteIP); recordErr == nil {
+				s.app.auditLoginAttempt("smtp", "failed", account, s.remoteIP)
+			}
+			return smtpserver.ErrAuthFailed
+		}
+		_ = s.app.clearLoginAccountFailures(ctx, account)
+		s.app.auditLoginAttempt("smtp", "success", account, s.remoteIP)
 		s.user, s.mailbox = user, mailbox
 		return nil
 	}), nil
@@ -397,21 +420,28 @@ func (a *App) insertSentMessageOnce(ctx context.Context, msg storedMessage, atta
 			return "", false, err
 		}
 		if err := a.insertSentDedupeKeyWithDB(ctx, tx, msg.MailboxID, sentFolderID, msg.MessageID); err != nil {
-			if errors.Is(err, errSentDedupeExists) {
-				existing, qerr := sentMessageIDByMessageID(ctx, tx, msg.MailboxID, sentFolderID, msg.MessageID)
-				if qerr == nil {
-					if err := tx.Commit(); err != nil {
-						return "", false, err
-					}
-					committed = true
-					return existing, false, nil
+			if !errors.Is(err, errSentDedupeExists) {
+				return "", false, err
+			}
+			existing, qerr := sentMessageIDByMessageID(ctx, tx, msg.MailboxID, sentFolderID, msg.MessageID)
+			if qerr == nil {
+				if err := tx.Commit(); err != nil {
+					return "", false, err
 				}
-				if errors.Is(qerr, sql.ErrNoRows) {
-					return "", false, fmt.Errorf("sent dedupe key exists without sent message: %w", errSentDedupeExists)
-				}
+				committed = true
+				return existing, false, nil
+			}
+			if !errors.Is(qerr, sql.ErrNoRows) {
 				return "", false, qerr
 			}
-			return "", false, err
+			// 去重键还在、对应的已发邮件已经被移走或删掉（去重键不会跟着删）。
+			// 这时不能一直报错：把孤儿键刷新后继续，否则这个 Message-ID
+			// 会永久返回 451，用户再也发不出这封信。
+			if _, insErr := tx.ExecContext(ctx, `INSERT INTO sent_message_dedupe_keys(mailbox_id,folder_id,message_id,created_at) VALUES(?,?,?,?)
+				ON CONFLICT(mailbox_id,folder_id,message_id) DO UPDATE SET created_at=excluded.created_at`,
+				msg.MailboxID, sentFolderID, msg.MessageID, a.now().UTC().Format(time.RFC3339Nano)); insErr != nil {
+				return "", false, insErr
+			}
 		}
 	}
 	id, err := a.insertMessageWithDB(ctx, tx, msg, attachments)

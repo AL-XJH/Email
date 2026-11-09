@@ -986,12 +986,6 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 		fromName = strings.TrimSpace(req.FromName)
 	}
 	messageID := fmt.Sprintf("<%s@%s>", newID("msg"), strings.Split(mb.Address, "@")[1])
-	// Charge the send quota before building the MIME message: BuildMIME encodes every
-	// attachment, so doing it first let a user who is already over their limit burn
-	// that work on every rejected attempt.
-	if err := a.recordSMTPRate(ctx, user, mb, len(allRecipients)); err != nil {
-		return nil, err
-	}
 	mimeBytes, err := BuildMIME(MIMEMessage{
 		From: fromAddress, FromName: fromName, To: req.To, CC: req.CC, BCC: req.BCC, Subject: req.Subject, Text: req.Text, HTML: req.HTML, MessageID: messageID, Date: now, Attachments: req.Attachments,
 	})
@@ -1011,6 +1005,12 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 	if err := a.writeRawMessageToMaildir(ctx, sentID, mimeBytes, false); err != nil {
 		a.deleteMessage(ctx, sentID)
 		return nil, fmt.Errorf("failed to store sent message in maildir: %w", err)
+	}
+	// 配额在真的存下来之后才扣：以前先扣再建 MIME，配额已满的尝试也会烧掉
+	// 一次每日额度，几次之后连正常发信都被限速挡住。
+	if err := a.recordSMTPRate(ctx, user, mb, len(allRecipients)); err != nil {
+		a.deleteMessage(ctx, sentID)
+		return nil, err
 	}
 	a.recordSendAudit(ctx, sendAuditAccepted, sendQueueStatusQueued, sendAuditInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients})
 	if _, err := a.enqueueSend(ctx, sendQueueInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, MessageID: messageID, Source: source, MailFrom: fromAddress, HeaderFrom: fromAddress, Recipients: allRecipients, MIMEBytes: mimeBytes, Now: now}); err != nil {
@@ -2567,11 +2567,26 @@ func (a *App) insertMessageWithDB(ctx context.Context, db dbExecutor, msg stored
 	if err != nil {
 		return "", err
 	}
+	writtenFiles := make([]string, 0, len(attachments))
 	for _, att := range attachments {
-		if err := a.storeAttachmentWithDB(ctx, db, id, att); err != nil {
+		path, err := a.storeAttachmentWithDB(ctx, db, id, att)
+		if path != "" {
+			writtenFiles = append(writtenFiles, path)
+		}
+		if err != nil {
 			// 附件没写成就不能把 messages 行留下：否则会有一条
 			// has_attachments=1 却没有附件的半截邮件，删除/重试都很难对齐。
-			a.deleteMessageFiles(ctx, id)
+			//
+			// 注意：这里只能用本函数已经写下的文件路径去删，绝不能调
+			// a.deleteMessageFiles —— 它要查 a.db，而 db 可能是一个已经持有
+			// 唯一 SQLite 连接的事务，再取连接会一直等到超时，整个进程的
+			// 数据库操作都卡死。
+			for _, written := range writtenFiles {
+				if rmErr := os.Remove(written); rmErr != nil && !os.IsNotExist(rmErr) {
+					a.log.Warn("failed to remove attachment file during rollback", "message", id, "error", rmErr)
+				}
+			}
+			_ = os.Remove(filepath.Join(a.config().DataDir, "attachments", id))
 			if _, delErr := db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, id); delErr != nil {
 				a.log.Warn("failed to roll back message after attachment failure", "message", id, "error", delErr)
 			}
@@ -2609,20 +2624,22 @@ func (a *App) ensureMailboxQuotaAvailable(ctx context.Context, db dbExecutor, ma
 }
 
 func (a *App) storeAttachment(ctx context.Context, messageID string, input AttachmentInput) error {
-	return a.storeAttachmentWithDB(ctx, a.db, messageID, input)
+	_, err := a.storeAttachmentWithDB(ctx, a.db, messageID, input)
+	return err
 }
 
-func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput) error {
+func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput) (string, error) {
 	data, err := input.contentBytes()
 	if err != nil {
-		return err
+		return "", err
 	}
 	return a.storeAttachmentBytesWithDB(ctx, db, messageID, input, data)
 }
 
 // storeAttachmentBytesWithDB 接收已经解码好的内容：本地投递会先把整封邮件的
 // 附件解码一次算配额，再逐个落盘，避免同一份 base64 解两遍。
-func (a *App) storeAttachmentBytesWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput, data []byte) error {
+// 返回已落盘的文件路径（失败时也返回，供调用方回滚删除）。
+func (a *App) storeAttachmentBytesWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput, data []byte) (string, error) {
 	filename := filepath.Base(strings.TrimSpace(input.Filename))
 	if filename == "." || filename == "" {
 		filename = "attachment.bin"
@@ -2633,15 +2650,17 @@ func (a *App) storeAttachmentBytesWithDB(ctx context.Context, db dbExecutor, mes
 	}
 	dir := filepath.Join(a.config().DataDir, "attachments", messageID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	id := newID("att")
 	path := filepath.Join(dir, id+"_"+filename)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
+		return "", err
 	}
-	_, err := db.ExecContext(ctx, `INSERT INTO attachments(id,message_id,filename,content_type,size_bytes,storage_path,created_at) VALUES(?,?,?,?,?,?,?)`, id, messageID, filename, contentType, len(data), path, a.now().UTC().Format(time.RFC3339Nano))
-	return err
+	if _, err := db.ExecContext(ctx, `INSERT INTO attachments(id,message_id,filename,content_type,size_bytes,storage_path,created_at) VALUES(?,?,?,?,?,?,?)`, id, messageID, filename, contentType, len(data), path, a.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return path, err
+	}
+	return path, nil
 }
 
 func (a *App) attachmentsForMessage(ctx context.Context, messageID string) ([]Attachment, error) {

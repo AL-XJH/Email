@@ -319,7 +319,7 @@ func (a *App) completeLocalDelivery(ctx context.Context, id, token string) error
 			return err
 		}
 		for i := range payload.Attachments {
-			if err = a.storeAttachmentBytesWithDB(ctx, tx, messageID, payload.Attachments[i], decoded[i]); err != nil {
+			if _, err = a.storeAttachmentBytesWithDB(ctx, tx, messageID, payload.Attachments[i], decoded[i]); err != nil {
 				return err
 			}
 		}

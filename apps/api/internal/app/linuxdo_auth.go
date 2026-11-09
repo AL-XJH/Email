@@ -534,10 +534,36 @@ func (a *App) handleLinuxDoTwoFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, secret, err := a.loadUserAuthByID(r.Context(), challenge.UserID)
-	if err != nil || user.Disabled || !user.TwoFactorEnabled || !a.consumeTOTP(r.Context(), user.ID, secret, req.Code) {
+	if err != nil || user.Disabled || !user.TwoFactorEnabled {
 		respondError(w, http.StatusUnauthorized, "验证码错误")
 		return
 	}
+	// 和密码登录共用同一套限速：Linux.do 这条路以前是完全裸的，
+	// 拿到第一因子的人可以在凭证有效期里无限次猜 6 位 TOTP。
+	clientIP := r.RemoteAddr
+	if retryAfter, err := a.checkLoginRateLimit(r.Context(), user.Email, clientIP); err != nil {
+		a.log.Warn("failed to check authentication rate limit", "stage", "linuxdo_totp", "error", err)
+		respondError(w, http.StatusInternalServerError, "登录失败，请稍后重试")
+		return
+	} else if retryAfter > 0 {
+		a.auditLoginAttempt("linuxdo_totp", "rate_limited", user.Email, clientIP)
+		respondLoginRateLimited(w, retryAfter)
+		return
+	}
+	if !a.consumeTOTP(r.Context(), user.ID, secret, req.Code) {
+		retryAfter, recordErr := a.recordLoginFailure(r.Context(), user.Email, clientIP)
+		if recordErr != nil {
+			a.log.Warn("failed to record authentication failure", "stage", "linuxdo_totp", "error", recordErr)
+		}
+		a.auditLoginAttempt("linuxdo_totp", "failed", user.Email, clientIP)
+		if retryAfter > 0 {
+			respondLoginRateLimited(w, retryAfter)
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "验证码错误")
+		return
+	}
+	a.auditLoginAttempt("linuxdo_totp", "success", user.Email, clientIP)
 	a.deleteLoginChallenge(r.Context(), challenge.ID)
 	a.clearLinuxDoCookie(w, "2fa", "/api/auth/linuxdo")
 	if err := a.issueSession(w, r, user.ID); err != nil {

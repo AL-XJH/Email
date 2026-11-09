@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +159,17 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	next.PublicBaseURL = strings.TrimSpace(req.PublicBaseURL)
+	if next.PublicBaseURL != "" {
+		parsed, parseErr := url.Parse(next.PublicBaseURL)
+		validScheme := parsed != nil && parsed.Scheme == "https"
+		if parsed != nil && parsed.Scheme == "http" && req.AllowInsecureHTTP {
+			validScheme = true
+		}
+		if parseErr != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || !validScheme {
+			badRequest(w, errors.New("publicBaseUrl 必须是 https 地址（明文 http 需同时开启 allowInsecureHttp）"))
+			return
+		}
+	}
 	next.SiteTitle = strings.TrimSpace(req.SiteTitle)
 	if next.SiteTitle == "" {
 		next.SiteTitle = "LanQin Email"
@@ -180,6 +192,12 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 		next.SMTPPassword = req.SMTPPassword
 	}
 	next.SMTPRequireTLS = req.SMTPRequireTLS
+	if next.SMTPUsername != "" && !next.SMTPRequireTLS && !strings.EqualFold(next.SMTPHost, "localhost") && next.SMTPHost != "127.0.0.1" && next.SMTPHost != "::1" {
+		// Go 的 PlainAuth 拒绝在明文连接上发送口令，这里提前拦住，
+		// 否则每次发信都会在 AUTH 阶段失败并重试到永久失败。
+		badRequest(w, errors.New("smtpHost 不是本机时必须开启 smtpRequireTls，否则无法发送认证信息"))
+		return
+	}
 	next.MaildirRoot = strings.TrimSpace(req.MaildirRoot)
 	if req.MaildirScanSeconds <= 0 {
 		req.MaildirScanSeconds = defaultMaildirScanSeconds

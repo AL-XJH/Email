@@ -66,6 +66,8 @@ type maildirScanTarget struct {
 }
 
 func (a *App) maildirWorker(ctx context.Context) {
+	// 无论正常退出还是 panic 后 recover，都不能让健康检查继续显示「worker 已启动」。
+	defer a.maildirHealth.markWorkerStopped()
 	interval := time.Duration(a.config().MaildirScanSeconds) * time.Second
 	if interval <= 0 {
 		interval = defaultMaildirScanSeconds * time.Second
@@ -82,7 +84,6 @@ func (a *App) maildirWorker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			a.maildirHealth.markWorkerStopped()
 			a.log.Info("maildir sync worker stopped")
 			return
 		case <-ticker.C:
@@ -201,7 +202,13 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 		fileErrorsBefore := counts.FileErrors
 		entries, err := os.ReadDir(dir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return counts, err
+			// 单个目录读不了（权限、NFS 抖动、目录被删）不能让整轮同步失败，
+			// 更不能把它算作「已扫过」——否则 cleanup 会把里面所有邮件当成
+			// 磁盘上已消失而删掉。
+			delete(scannedDirs, dir)
+			delete(a.maildirDirs, dir)
+			a.log.Warn("skip unreadable maildir directory", "dir", dir, "error", err)
+			continue
 		}
 		for _, entry := range entries {
 			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
@@ -272,14 +279,19 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 			}
 		}
 	}
-	backfilled, err := a.backfillSQLiteMessagesToMaildir(ctx)
-	if err != nil {
-		return counts, err
+	// 补写 maildir 失败不能让本轮清理直接跳过：否则一条永远写不出去的坏行
+	// 会同时卡住后面所有待补写的邮件，并让「磁盘上已删的邮件」永远留在库里。
+	backfilled, backfillErr := a.backfillSQLiteMessagesToMaildir(ctx)
+	if backfillErr != nil {
+		a.log.Warn("maildir backfill stopped early", "error", backfillErr, "backfilled", backfilled)
 	}
 	counts.Backfilled += backfilled
 	cleaned, cleanedMailboxIDs, err := a.cleanupMissingMaildirMessages(ctx, seenFiles, scannedDirs, fullScan)
 	if err != nil {
 		return counts, err
+	}
+	if backfillErr != nil {
+		return counts, backfillErr
 	}
 	counts.Cleaned += cleaned
 	for _, mailboxID := range cleanedMailboxIDs {
@@ -607,7 +619,10 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 
 func (a *App) maildirMessageExists(ctx context.Context, mailboxID, folderID, rawPath, messageID string) (bool, error) {
 	var count int
-	err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id=? AND (raw_path=? OR (folder_id=? AND message_id=? AND message_id <> ''))`, mailboxID, rawPath, folderID, messageID).Scan(&count)
+	// 只有「同一个文件」或「同一 Message-ID 但还没绑定任何文件的占位行」才算已存在。
+	// 同一文件夹里两封不同文件共用 Message-ID（MDA 重复投递、同一个人被两个别名收下、
+	// 用户手工复制）是两封邮件，必须各存一份；以前这里把第二封当重复，直接删了磁盘文件。
+	err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id=? AND (raw_path=? OR (folder_id=? AND message_id=? AND message_id <> '' AND COALESCE(raw_path,'')=''))`, mailboxID, rawPath, folderID, messageID).Scan(&count)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
@@ -713,7 +728,7 @@ func (a *App) syncExistingMaildirMessageState(ctx context.Context, mailboxID, fo
 		return false, err
 	}
 	if chosen.ID == "" {
-		a.removeDuplicateMaildirMessage(ctx, rawPath, mailboxID, folderID, messageID)
+		// 没有可认领的行：交给调用方当作新邮件导入。绝不删磁盘上的文件。
 		return false, nil
 	}
 	var previousFolderID string
@@ -731,15 +746,6 @@ func (a *App) syncExistingMaildirMessageState(ctx context.Context, mailboxID, fo
 	}
 	_, err = a.db.ExecContext(ctx, `UPDATE messages SET folder_id=?,raw_path=?,is_read=?,is_starred=?,imap_uid=?,imap_modseq=?,updated_at=? WHERE id=?`, folderID, rawPath, boolInt(read), boolInt(starred), meta.UID, meta.ModSeq, now, chosen.ID)
 	return err == nil, err
-}
-
-func (a *App) removeDuplicateMaildirMessage(ctx context.Context, rawPath, mailboxID, folderID, messageID string) {
-	var existing string
-	err := a.db.QueryRowContext(ctx, `SELECT raw_path FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? AND message_id <> '' AND raw_path<>'' LIMIT 1`, mailboxID, folderID, messageID).Scan(&existing)
-	if err != nil || existing == "" || sameMaildirPath(existing, rawPath) {
-		return
-	}
-	a.removeMaildirPath(ctx, rawPath)
 }
 
 // cleanupMissingMaildirMessages removes rows whose Maildir file is gone. It also

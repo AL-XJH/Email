@@ -7,6 +7,9 @@
 # 数据库用 sqlite3 的 .backup 而不是直接 cp：.backup 会拿一致性快照，
 # 复制的是 WAL 里可能还有未落盘数据的文件时，直接 cp 会拿到半个事务。
 set -euo pipefail
+# 备份里有管理员口令、DKIM 私钥、OAuth/SMTP 凭据和全部邮件，
+# 默认 umask 会让它们变成 0644。
+umask 077
 
 APP_DIR="${APP_DIR:-/opt/lanqin-email}"
 BACKUP_DIR="${BACKUP_DIR:-/root/lanqin-backups}"
@@ -16,6 +19,7 @@ CONTAINER="${CONTAINER:-lanqin-email-lanqin-email-1}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 target="$BACKUP_DIR/$stamp"
 mkdir -p "$target"
+chmod 700 "$BACKUP_DIR" "$target"
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 

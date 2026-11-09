@@ -18,6 +18,8 @@ func (a *App) secureCookies() bool {
 		case "https":
 			return true
 		case "http":
+			// 明文部署必须显式打开 AllowInsecureHTTP；后台表单已经在
+			// handleUpdateSystemSettings 里拦住了不带该开关的 http 地址。
 			return false
 		}
 	}
@@ -50,6 +52,12 @@ func (a *App) issueSession(w http.ResponseWriter, r *http.Request, userID string
 // keepTokenHash is the hash of the session that should survive — pass "" to end
 // every session, which is what an administrator-driven reset does.
 func revokeUserSessionsTx(ctx context.Context, tx *sql.Tx, userID, keepTokenHash string) error {
+	// 待验证的 2FA 挑战是第三种登录凭据：只要持有 challengeToken + 验证码，
+	// POST /api/auth/login 就不再校验密码。密码重置/修改必须把它一并清掉，
+	// 否则攻击者能在「已封禁会话」之后拿旧挑战换一个新会话。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM login_challenges WHERE user_id=?`, userID); err != nil {
+		return err
+	}
 	if keepTokenHash == "" {
 		_, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, userID)
 		return err

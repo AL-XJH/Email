@@ -1269,13 +1269,7 @@ func (a *App) mailboxReassignAllowed(r *http.Request, existingOwnerID, newOwnerI
 	if current.Role == "admin" {
 		return true
 	}
-	if newOwnerID == current.ID {
-		return false
-	}
-	// 目标邮箱属于管理员时，只有管理员能改它的归属。
-	var ownerRole string
-	if err := a.db.QueryRowContext(r.Context(), `SELECT role FROM users WHERE id=?`, existingOwnerID).Scan(&ownerRole); err != nil {
-		return false
-	}
-	return ownerRole != "admin"
+	// 非管理员一律不能改归属。只挡「改到自己名下」不够：随便注册第二个账号，
+	// 把受害者邮箱挪过去，照样能用普通邮件接口读光全部内容。
+	return false
 }

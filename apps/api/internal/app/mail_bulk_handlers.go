@@ -273,7 +273,15 @@ func (a *App) markFolderRead(ctx context.Context, mailboxID, folderID string) (i
 						if renameErr := os.Rename(item.rawPath, target); renameErr == nil {
 							_ = applyMaildirOwnership(target)
 							newPath = target
+						} else {
+							// 文件没改成 S 标志就绝不能把库标成已读：下一轮同步
+							// 会按缺 S 翻回未读，接口却已经报告成功了。
+							a.log.Warn("failed to rename maildir file for read-all", "message", item.id, "error", renameErr)
+							continue
 						}
+					} else {
+						a.log.Warn("failed to prepare maildir directory for read-all", "message", item.id, "error", mkErr)
+						continue
 					}
 				}
 			}

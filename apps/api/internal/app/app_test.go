@@ -3651,7 +3651,7 @@ func TestSubmissionSentCopyDedupesByMessageID(t *testing.T) {
 	}
 }
 
-func TestInsertSentMessageOnceFailsWhenDedupeKeyHasNoMessage(t *testing.T) {
+func TestInsertSentMessageOnceRecoversFromOrphanDedupeKey(t *testing.T) {
 	a := newTestApp(t)
 	_, mb := defaultAdminUserAndMailbox(t, a)
 	ctx := context.Background()
@@ -3664,6 +3664,8 @@ func TestInsertSentMessageOnceFailsWhenDedupeKeyHasNoMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := a.now().UTC()
+	// 去重键还在、对应的已发邮件已经被移走或删掉：不能永久报 451，
+	// 应该清掉孤儿键并正常存下这次发送。
 	sentID, inserted, err := a.insertSentMessageOnce(ctx, storedMessage{
 		MailboxID:  mb.ID,
 		MessageUID: newID("uid"),
@@ -3676,18 +3678,11 @@ func TestInsertSentMessageOnceFailsWhenDedupeKeyHasNoMessage(t *testing.T) {
 		BodyText:   "body",
 		IsRead:     true,
 	}, nil)
-	if !errors.Is(err, errSentDedupeExists) {
-		t.Fatalf("insertSentMessageOnce error=%v, want errSentDedupeExists", err)
+	if err != nil {
+		t.Fatalf("insertSentMessageOnce error=%v, want success after clearing orphan key", err)
 	}
-	if sentID != "" || inserted {
-		t.Fatalf("sentID=%q inserted=%v, want empty false", sentID, inserted)
-	}
-	var count int
-	if err := a.db.QueryRow(`SELECT COUNT(1) FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=?`, mb.ID, sentFolderID, messageID).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("orphan dedupe should not create sent message, count=%d", count)
+	if sentID == "" || !inserted {
+		t.Fatalf("sentID=%q inserted=%v, want a new stored message", sentID, inserted)
 	}
 }
 
@@ -5356,11 +5351,19 @@ func TestMessageFlagsUpdateMaildir(t *testing.T) {
 		t.Fatalf("mark unread code=%d", code)
 	}
 	unreadPath := maildirRawPathForTest(t, a, msg.ID)
-	if strings.Contains(filepath.Base(unreadPath), maildirFlagSeparator()) {
-		t.Fatalf("unread path should not have seen flag: %s", unreadPath)
+	// 只改标志位时文件必须留在 cur/ 并保留 `:2,` 信息段（哪怕 flag 为空）。
+	// 挪回 new/ 会丢掉信息段，下一轮同步就按 new/ 判未读，在 Sent/Drafts 里
+	// 又会因为「出站文件夹缺省算已读」被翻回已读。
+	if !strings.EqualFold(filepath.Base(filepath.Dir(unreadPath)), "cur") {
+		t.Fatalf("unread path dir=%s, want cur", filepath.Dir(unreadPath))
 	}
-	if !strings.EqualFold(filepath.Base(filepath.Dir(unreadPath)), "new") {
-		t.Fatalf("unread path dir=%s, want new", filepath.Dir(unreadPath))
+	unreadBase := filepath.Base(unreadPath)
+	sepIndex := strings.LastIndex(unreadBase, maildirFlagSeparator())
+	if sepIndex < 0 {
+		t.Fatalf("unread path lost :2, info section: %s", unreadPath)
+	}
+	if strings.Contains(unreadBase[sepIndex:], "S") {
+		t.Fatalf("unread path still carries S flag: %s", unreadPath)
 	}
 	if code := client.do("POST", "/api/mail/messages/"+msg.ID+"/star", map[string]bool{"starred": true}, nil); code != http.StatusOK {
 		t.Fatalf("star code=%d", code)

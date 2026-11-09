@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -70,7 +71,7 @@ func (a *App) handleOpenAPIDeliveryWebhook(w http.ResponseWriter, r *http.Reques
 		badRequest(w, errors.New("events must contain between 1 and 100 items"))
 		return
 	}
-	accepted := 0
+	accepted, skipped := 0, 0
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to start delivery event transaction")
@@ -80,7 +81,12 @@ func (a *App) handleOpenAPIDeliveryWebhook(w http.ResponseWriter, r *http.Reques
 	for _, event := range payload.Events {
 		inserted, err := a.storeDeliveryEvent(r, tx, event)
 		if err != nil {
-			badRequest(w, err)
+			if errors.Is(err, errDeliveryEventSkipped) {
+				a.log.Warn("skipped delivery event", "provider", event.Provider, "event", event.ID, "reason", err)
+				skipped++
+				continue
+			}
+			respondError(w, http.StatusInternalServerError, "failed to store delivery event")
 			return
 		}
 		if inserted {
@@ -91,8 +97,12 @@ func (a *App) handleOpenAPIDeliveryWebhook(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusInternalServerError, "failed to store delivery events")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": accepted, "duplicates": len(payload.Events) - accepted})
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": accepted, "skipped": skipped, "duplicates": len(payload.Events) - accepted - skipped})
 }
+
+// errDeliveryEventSkipped 表示这条回执「格式对，但对不上本机的发送记录」。
+// 一批回执里有一条过期的（send_queue 已清理）不能把其余 99 条有效回执一起回滚。
+var errDeliveryEventSkipped = errors.New("delivery event skipped")
 
 func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebhookEvent) (bool, error) {
 	event.ID = strings.TrimSpace(event.ID)
@@ -103,14 +113,14 @@ func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebh
 	event.Recipient = normalizeEmail(event.Recipient)
 	event.Status = strings.ToLower(strings.TrimSpace(event.Status))
 	if event.ID == "" || len(event.ID) > 200 || event.Provider == "" || len(event.Provider) > 80 || event.Recipient == "" || len(event.Recipient) > 320 || len(event.Reason) > 2000 || !validDeliveryEventStatus(event.Status) {
-		return false, errors.New("invalid delivery event")
+		return false, fmt.Errorf("%w: invalid delivery event", errDeliveryEventSkipped)
 	}
 	if event.QueueID == "" && event.MessageID == "" && event.RFCMessageID == "" {
-		return false, errors.New("queueId, messageId, or rfcMessageId is required")
+		return false, fmt.Errorf("%w: queueId, messageId, or rfcMessageId is required", errDeliveryEventSkipped)
 	}
 	occurredAt, err := time.Parse(time.RFC3339Nano, event.OccurredAt)
 	if err != nil {
-		return false, errors.New("occurredAt must be an RFC3339 timestamp")
+		return false, fmt.Errorf("%w: occurredAt must be an RFC3339 timestamp", errDeliveryEventSkipped)
 	}
 	var queueID, sentMessageID, rfcMessageID string
 	// 三次点查代替一条 OR：`a=? OR b=? OR c=?` 在 SQLite 里只能全表扫，
@@ -136,10 +146,10 @@ func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebh
 		}
 	}
 	if !found {
-		return false, errors.New("send item not found")
+		return false, fmt.Errorf("%w: send item not found", errDeliveryEventSkipped)
 	}
 	if (event.QueueID != "" && event.QueueID != queueID) || (event.MessageID != "" && event.MessageID != sentMessageID) || (event.RFCMessageID != "" && event.RFCMessageID != rfcMessageID) {
-		return false, errors.New("delivery event identifiers do not refer to the same send item")
+		return false, fmt.Errorf("%w: delivery event identifiers do not refer to the same send item", errDeliveryEventSkipped)
 	}
 	var recipientsJSON string
 	if err := tx.QueryRowContext(r.Context(), `SELECT recipients_json FROM send_queue WHERE id=?`, queueID).Scan(&recipientsJSON); err != nil {
@@ -153,7 +163,7 @@ func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebh
 		}
 	}
 	if !foundRecipient {
-		return false, errors.New("delivery event recipient does not belong to the send item")
+		return false, fmt.Errorf("%w: delivery event recipient does not belong to the send item", errDeliveryEventSkipped)
 	}
 	id := newID("dev")
 	createdAt := a.now().UTC()

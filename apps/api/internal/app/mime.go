@@ -19,6 +19,27 @@ import (
 
 const smtpSessionTimeout = 45 * time.Second
 
+// errDeliveryUnknown 表示「正文字节已经写完、但没读到服务器的最终响应」。
+// 这时邮件可能已经被接受，重试会造成重复投递，必须当成不可重试处理。
+var errDeliveryUnknown = errors.New("smtp: delivery outcome unknown")
+
+// idleConn 把单一的 45 秒总超时改成「每次读写各自 45 秒空闲超时」：
+// 大附件在慢线路上传输超过 45 秒是正常的，原来会在 DATA 中途被掐断。
+type idleConn struct {
+	net.Conn
+	d time.Duration
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	_ = c.Conn.SetReadDeadline(time.Now().Add(c.d))
+	return c.Conn.Read(p)
+}
+
+func (c *idleConn) Write(p []byte) (int, error) {
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.d))
+	return c.Conn.Write(p)
+}
+
 type MIMEMessage struct {
 	From        string
 	FromName    string
@@ -48,6 +69,10 @@ func BuildMIME(m MIMEMessage) ([]byte, error) {
 	writeHeader("From", formatAddressHeader(m.FromName, m.From))
 	writeHeader("To", strings.Join(m.To, ", "))
 	writeHeader("Cc", strings.Join(m.CC, ", "))
+	if len(m.To) == 0 && len(m.CC) == 0 && len(m.BCC) > 0 {
+		// 只有密送时也必须有一个收件人头，否则不少中继/过滤器会直接判无效或加分。
+		writeHeader("To", "undisclosed-recipients:;")
+	}
 	writeHeader("Subject", mime.QEncoding.Encode("utf-8", m.Subject))
 	writeHeader("Message-ID", m.MessageID)
 	writeHeader("Date", m.Date.Format(time.RFC1123Z))
@@ -209,8 +234,7 @@ func sendSMTPPlain(addr, host string, auth smtp.Auth, from string, recipients []
 	if err != nil {
 		return err
 	}
-	_ = conn.SetDeadline(time.Now().Add(smtpSessionTimeout))
-	client, err := smtp.NewClient(conn, host)
+	client, err := smtp.NewClient(&idleConn{Conn: conn, d: smtpSessionTimeout}, host)
 	if err != nil {
 		_ = conn.Close()
 		return err
@@ -225,8 +249,7 @@ func sendSMTPImplicitTLS(addr, host string, auth smtp.Auth, from string, recipie
 	if err != nil {
 		return err
 	}
-	_ = conn.SetDeadline(time.Now().Add(smtpSessionTimeout))
-	client, err := smtp.NewClient(conn, host)
+	client, err := smtp.NewClient(&idleConn{Conn: conn, d: smtpSessionTimeout}, host)
 	if err != nil {
 		_ = conn.Close()
 		return err
@@ -240,8 +263,7 @@ func sendSMTPStartTLS(addr, host string, auth smtp.Auth, from string, recipients
 	if err != nil {
 		return err
 	}
-	_ = conn.SetDeadline(time.Now().Add(smtpSessionTimeout))
-	client, err := smtp.NewClient(conn, host)
+	client, err := smtp.NewClient(&idleConn{Conn: conn, d: smtpSessionTimeout}, host)
 	if err != nil {
 		_ = conn.Close()
 		return err
@@ -265,10 +287,28 @@ func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipient
 	if err := client.Mail(from); err != nil {
 		return err
 	}
+	// 一个收件人被拒（拼错的地址、对方域 550）不能拖垮整封信：
+	// 跳过 5xx 的收件人，4xx 视为整封可重试；一个都没接受才算失败。
+	accepted := 0
+	var firstErr error
 	for _, rcpt := range recipients {
 		if err := client.Rcpt(rcpt); err != nil {
+			var smtpErr *textproto.Error
+			if errors.As(err, &smtpErr) && smtpErr.Code >= 500 && smtpErr.Code < 600 {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			return err
 		}
+		accepted++
+	}
+	if accepted == 0 {
+		if firstErr != nil {
+			return firstErr
+		}
+		return errors.New("smtp: no recipient accepted")
 	}
 	wc, err := client.Data()
 	if err != nil {
@@ -279,7 +319,7 @@ func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipient
 		return err
 	}
 	if err := wc.Close(); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errDeliveryUnknown, err)
 	}
 	// 走到这里服务器已经返回 250，邮件确定被接受。QUIT 只是礼貌收尾：
 	// 把它的错误当成发送失败会让上层重试，收件人收到两封一样的信。

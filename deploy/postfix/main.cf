@@ -1,4 +1,9 @@
 compatibility_level = 3.6
+# 与 API 的 LANQIN_MAX_MESSAGE_MB（默认 35MB）对齐：Debian 默认 10MB，
+# 会让 API 接受、Postfix 拒收（552 5.3.4），10–35MB 的邮件发不出去。
+message_size_limit = 37748736
+# 容器里没有 /dev/log；写到 stdout 才能被 docker logs 收到。
+maillog_file = /dev/stdout
 myhostname = mail.example.com
 myorigin = $myhostname
 mydestination = localhost

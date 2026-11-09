@@ -95,7 +95,9 @@ func (a *App) enqueueSend(ctx context.Context, in sendQueueInput) (string, error
 		if existingID != id {
 			// 同一个 Message-ID 再次提交 = 用户主动重发（客户端重试走的是 delivered 标记，
 			// 不会走到这里），因此 delivered 也要重新入队。
-			if status == sendQueueStatusDelivered || status == sendQueueStatusCanceled || (status == sendQueueStatusFailed && attemptCount >= maxAttempts) {
+			// queued/failed 也要刷新载荷：用户改了收件人或正文再提交同一个
+			// Message-ID 时，不能继续拿旧的 MIME 和旧的收件人发出去。
+			if status == sendQueueStatusDelivered || status == sendQueueStatusCanceled || status == sendQueueStatusQueued || status == sendQueueStatusFailed {
 				_, err := a.db.ExecContext(ctx, `UPDATE send_queue SET user_id=?,sent_message_id=?,mail_from=?,header_from=?,recipients_json=?,mime_base64=?,status=?,attempt_count=0,next_attempt_at=?,last_error='',updated_at=?,delivered_at=NULL,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND status=?`,
 					in.UserID, in.SentMessageID, normalizeEmail(in.MailFrom), normalizeEmail(in.HeaderFrom), recipientsJSON, mimeBase64, sendQueueStatusQueued, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), existingID, status)
 				if err != nil {
@@ -345,6 +347,10 @@ func (a *App) markSendQueueFailed(ctx context.Context, item sendQueueItem, sendE
 // permanentSMTPFailure 判断是不是「重试也没用」的 5xx（收件人不存在、被拒收等）。
 // 421/450/451/452/455 是临时性错误，仍按退避重试。
 func permanentSMTPFailure(err error) bool {
+	// 「已经写完正文、但没读到最终 250」：服务器很可能已经收下，重试等于重复投递。
+	if errors.Is(err, errDeliveryUnknown) {
+		return true
+	}
 	var smtpErr *textproto.Error
 	if !errors.As(err, &smtpErr) {
 		return false

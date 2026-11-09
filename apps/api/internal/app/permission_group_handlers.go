@@ -153,6 +153,21 @@ func (a *App) handleUpdatePermissionGroup(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusForbidden, "super administrator group cannot be edited")
 		return
 	}
+	// 系统分组（含默认用户组）只有超级管理员能改：委派管理员改写它等于
+	// 一次性给全站用户加权限，或把全站用户的权限清空。
+	actor := currentUser(r)
+	if intBool(existingSystem) && (actor == nil || actor.Role != "admin") {
+		respondError(w, http.StatusForbidden, "system permission groups can only be edited by an administrator")
+		return
+	}
+	// 非管理员只能改自己所在的分组，不能顺手把别的团队清空。
+	if actor != nil && actor.Role != "admin" {
+		var member int
+		if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM user_permission_groups WHERE group_id=? AND user_id=?`, id, actor.ID).Scan(&member); err != nil || member == 0 {
+			respondError(w, http.StatusForbidden, "cannot edit a permission group you do not belong to")
+			return
+		}
+	}
 	var req struct {
 		Name        string            `json:"name"`
 		Description string            `json:"description"`

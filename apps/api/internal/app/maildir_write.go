@@ -406,7 +406,10 @@ func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, error) 
 	count := 0
 	for _, id := range ids {
 		if err := a.rewriteMessageMaildir(ctx, id); err != nil {
-			return count, err
+			// 一条写不出去（附件丢失、磁盘满、权限）就跳过它继续处理后面的，
+			// 否则这一行永远排在最前面，整条补写队列原地卡死。
+			a.log.Warn("failed to backfill maildir message", "message", id, "error", err)
+			continue
 		}
 		count++
 	}
@@ -640,10 +643,11 @@ func messageDate(msg storedMessage) time.Time {
 func maildirPathWithFlags(path string, read, starred bool) string {
 	dir := filepath.Dir(path)
 	name := filepath.Base(path)
-	if read || starred {
+	// 只改标志位时永远留在 cur/。以前「标为未读」会挪回 new/，而 new/ 的文件
+	// 没有 `:2,` 信息段，下一轮同步按规范判成未读——在 Sent/Drafts 里又会因为
+	// 「出站文件夹缺省算已读」翻回去，等于标了未读 5 秒后自己变回已读。
+	if (read || starred) && filepath.Base(dir) != "cur" {
 		dir = filepath.Join(filepath.Dir(dir), "cur")
-	} else if filepath.Base(dir) == "cur" {
-		dir = filepath.Join(filepath.Dir(dir), "new")
 	}
 	base := name
 	sep := maildirFlagSeparator()
@@ -659,7 +663,8 @@ func maildirPathWithFlags(path string, read, starred bool) string {
 	if starred {
 		flags = appendMaildirFlag(flags, 'F')
 	}
-	if flags != "" {
+	// cur/ 里的文件必须带信息段，哪怕标志位是空的（`:2,`），否则会被当成 new/。
+	if flags != "" || filepath.Base(dir) == "cur" {
 		base += sep + flags
 	}
 	return filepath.Join(dir, base)

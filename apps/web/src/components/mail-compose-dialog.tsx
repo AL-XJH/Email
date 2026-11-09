@@ -187,6 +187,8 @@ export function ComposeDialog({
   const [scheduleDialogOpen, setScheduleDialogOpen] = React.useState(false)
   const [sendIntent, setSendIntent] = React.useState<ComposeSendIntent | null>(null)
   const sendStartedRef = React.useRef(false)
+  const preparingRef = React.useRef(false)
+  const sentRecipientsRef = React.useRef<Set<string>>(new Set())
   const lastSavedPayloadRef = React.useRef("")
   const [showCc, setShowCc] = React.useState(Boolean(draft?.cc))
   const [showBcc, setShowBcc] = React.useState(Boolean(draft?.bcc))
@@ -204,7 +206,7 @@ export function ComposeDialog({
   const [quotedHtml, setQuotedHtml] = React.useState(draftSplit.quotedHtml)
   const [quotedText, setQuotedText] = React.useState(draftSplit.quotedText)
   const [body, setBody] = React.useState<ComposerValue>(() =>
-    draft?.html !== undefined
+    draft?.html
       ? htmlComposerValue(draftSplit.html)
       : plainTextComposerValue(composerText)
   )
@@ -249,7 +251,14 @@ export function ComposeDialog({
   const send = useMutation({
     mutationFn: async (payloads: SendPayload[]) => {
       const sent: MailMessage[] = []
-      for (const payload of payloads) sent.push(await api.send(payload))
+      for (const payload of payloads) {
+        // 「分别发送」逐个发，第 3 个失败时前 2 个已经发出。重试时跳过
+        // 已成功的收件人，否则他们会收到第二封。
+        const key = payload.to.join(",")
+        if (sentRecipientsRef.current.has(key)) continue
+        sent.push(await api.send(payload))
+        sentRecipientsRef.current.add(key)
+      }
       return sent
     },
     onSuccess: async (_, payloads) => {
@@ -264,6 +273,7 @@ export function ComposeDialog({
         title:
           payloads.length > 1 ? uiMessage("已分别发送 {0} 封邮件", [payloads.length]) : "发送成功",
       })
+      sentRecipientsRef.current.clear()
       setFiles([])
       setDraftId("")
       onSent()
@@ -304,10 +314,9 @@ export function ComposeDialog({
     const nextSplit = splitQuotedComposerHtml(draft?.html || "")
     // 这里只用草稿本身初始化。默认签名是异步查回来的，以前把它拼进 composerText 又放进
     // 依赖数组 —— 签名一到就重跑这个 effect，把用户已经敲好的收件人/主题/正文清空。
-    const nextBody =
-      draft?.html !== undefined
-        ? htmlComposerValue(nextSplit.html)
-        : plainTextComposerValue(draft?.text ?? "")
+    const nextBody = draft?.html
+      ? htmlComposerValue(nextSplit.html)
+      : plainTextComposerValue(draft?.text ?? "")
     const nextQuotedHtml = nextSplit.quotedHtml
     const nextQuotedText = nextSplit.quotedText
     lastSavedPayloadRef.current = JSON.stringify({
@@ -455,7 +464,20 @@ export function ComposeDialog({
   async function prepareSend() {
     if (!canSend) return
     if (!mailbox) return
+    // 附件转 base64 是异步的，转换期间「发送」按钮还没进入 isPending。
+    // 没有这个同步闸门，双击/回车会并发跑两次 prepareSend，最后发出两封一样的信。
+    if (preparingRef.current) return
     if (!attachmentsWithinLimit()) return
+    preparingRef.current = true
+    try {
+      await prepareSendPrepared()
+    } finally {
+      preparingRef.current = false
+    }
+  }
+
+  async function prepareSendPrepared() {
+    if (!mailbox) return
     const attachments = await Promise.all(files.map(fileToAttachment))
     const to = splitEmails(toValue)
     const cc = showCc ? splitEmails(ccValue) : []
@@ -508,7 +530,18 @@ export function ComposeDialog({
       toast({ title: "请选择发件邮箱" })
       return
     }
+    if (preparingRef.current) return
     if (!attachmentsWithinLimit()) return
+    preparingRef.current = true
+    try {
+      await scheduleAtPrepared(sendAt)
+    } finally {
+      preparingRef.current = false
+    }
+  }
+
+  async function scheduleAtPrepared(sendAt: string) {
+    if (!mailbox) return
     const attachments = await Promise.all(files.map(fileToAttachment))
     const payload: SendPayload & { draftId?: string; sendAt: string } = {
       mailboxId: mailbox.id,
@@ -1818,10 +1851,43 @@ function ToolbarButton({
 }
 
 function splitEmails(s: string) {
-  return s
-    .split(/[;,，\s]+/)
-    .map((v) => v.trim())
-    .filter(Boolean)
+  // 不能按空白直接 split：`John Doe <john@example.com>` 会被拆成三段。
+  // 逗号/分号永远分隔；空白只在当前已是一整个地址时才分隔。
+  const out: string[] = []
+  let current = ""
+  let quote = false
+  let angle = 0
+  const push = () => {
+    const value = current.trim()
+    if (value) out.push(value)
+    current = ""
+  }
+  for (const ch of s) {
+    if (ch === '"') {
+      quote = !quote
+      current += ch
+      continue
+    }
+    if (!quote && ch === "<") angle += 1
+    if (!quote && ch === ">" && angle > 0) angle -= 1
+    if (!quote && angle === 0 && (ch === "," || ch === ";" || ch === "，")) {
+      push()
+      continue
+    }
+    if (!quote && angle === 0 && /\s/.test(ch)) {
+      if (!current.includes("@")) {
+        current += " "
+      } else if (current.includes(">") || !current.includes("<")) {
+        push()
+      } else {
+        current += " "
+      }
+      continue
+    }
+    current += ch
+  }
+  push()
+  return out
 }
 
 function attachmentLimitBytes(limits?: PermissionLimits) {

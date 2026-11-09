@@ -73,6 +73,8 @@ postconf -e "virtual_transport = lmtp:inet:127.0.0.1:24"
 postconf -e "milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}"
 postconf -e "smtpd_milters = inet:127.0.0.1:11332"
 postconf -e "non_smtpd_milters = inet:127.0.0.1:11332"
+# 与 API 的 35MB 上限对齐（Postfix 默认只有 10MB）。
+postconf -e "message_size_limit = 37748736"
 sed -i "s#^ssl_cert = <.*#ssl_cert = <${TLS_CERT}#" /etc/dovecot/dovecot.conf
 sed -i "s#^ssl_key = <.*#ssl_key = <${TLS_KEY}#" /etc/dovecot/dovecot.conf
 sed -i "s#^auth_policy_hash_nonce = .*#auth_policy_hash_nonce = ${AUTH_POLICY_HASH_NONCE}#" /etc/dovecot/dovecot.conf

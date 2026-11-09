@@ -7,6 +7,7 @@ import {
   useLanguage,
 } from "@/lib/language"
 import { errorMessage } from "@/lib/ui-errors"
+import { copyToClipboard } from "@/lib/clipboard"
 
 import * as React from "react"
 import {
@@ -401,7 +402,8 @@ export function MailPage() {
   const canManageSelectedDrafts = canManageDrafts && selectedMailboxOwned
   const canScheduleSelectedMailbox = canScheduleMail && selectedMailboxOwned
   const canOrganizeSelectedMailbox = canOrganizeMail && selectedMailboxOwned
-  const canManageSelectedLabels = canManageLabels && selectedMailboxOwned
+  const canManageSelectedLabels =
+    canManageLabels && selectedMailboxOwned && (mailView !== "external" || externalMessagesStoredLocally)
   const restrictedSharedMailbox =
     selectedMailbox?.access === "read" && selectedMailbox.shareScope === "custom"
   const hasMailboxes = (mailboxList.data?.items.length || 0) > 0
@@ -461,7 +463,7 @@ export function MailPage() {
   const sendQueueAudit = useQuery({
     queryKey: ["send-queue-audit", sendQueueAuditId],
     queryFn: () => api.sendQueueAudit(sendQueueAuditId),
-    enabled: mailView === "sendQueue" && !!sendQueueAuditId && canViewSendQueue,
+    enabled: !!sendQueueAuditId && canViewSendQueue,
   })
   const mailRefreshInterval = publicSettings.data?.mailAutoRefresh
     ? Math.max(publicSettings.data.mailRefreshMs || 30000, 5000)
@@ -852,6 +854,9 @@ export function MailPage() {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["labels"] })
       qc.invalidateQueries({ queryKey: ["messages"] })
+      // 详情缓存键带 mailView/externalAccountId，精确键匹配不到；
+      // 用前缀失效，否则删掉的标签会一直挂在已打开邮件上。
+      qc.invalidateQueries({ queryKey: ["message"] })
     },
   })
   const del = useMutation({
@@ -1000,10 +1005,13 @@ export function MailPage() {
       // 星标/标签视图没有单一文件夹语义，仍回退为逐封标记当前列表。
       if (mailView === "folder" && folder && activeMailboxId) {
         let total = 0
-        for (let attempt = 0; attempt < 20; attempt++) {
+        let remaining = 1
+        // 服务端一次最多 500 封（逐封重命名 maildir 文件），这里续调到清空；
+        // 上限 100 轮 = 5 万封，兜住异常情况下无限循环。
+        for (let attempt = 0; attempt < 100 && remaining > 0; attempt++) {
           const result = await api.readAllFolder(activeMailboxId, folder)
           total += result.updated
-          if (result.remaining <= 0) break
+          remaining = result.remaining
         }
         return total
       }
@@ -1039,12 +1047,23 @@ export function MailPage() {
     }
   }, [mailboxList.isSuccess, mailboxList.data?.items, selectedMailboxId])
 
+  const pendingOpenIdRef = React.useRef<string | null>(null)
+
   React.useEffect(() => {
     if (selectedMailboxId) localStorage.setItem("lanqin:selected-mailbox", selectedMailboxId)
     else localStorage.removeItem("lanqin:selected-mailbox")
   }, [selectedMailboxId])
 
   React.useEffect(() => {
+    // 从星标/标签/定时视图点「新邮件」通知时，openFirstMessage 会先把
+    // mailView 切回 folder，这个 effect 又会把刚选中的邮件清掉，
+    // 结果只切了视图、详情没打开。用一个一次性 pending 值把它带过去。
+    const pending = pendingOpenIdRef.current
+    pendingOpenIdRef.current = null
+    if (pending) {
+      setSelectedId(pending)
+      return
+    }
     setSelectedId(null)
     setMailFilter("all")
   }, [mailView])
@@ -1153,9 +1172,11 @@ export function MailPage() {
         ? uiMessage("{0} 等发来新邮件", [firstSender])
         : uiMessage("{0}", [`${firstSender}${first.snippet ? ` · ${first.snippet}` : ""}`])
     const openFirstMessage = () => {
+      pendingOpenIdRef.current = first.id
       setMailView("folder")
       setFolder("Inbox")
-      setSelectedId(first.id)
+      if (mailView === "folder") setSelectedId(first.id)
+      void api.markRead(first.id, true).catch(() => undefined)
     }
     toast({
       title,
@@ -1570,7 +1591,7 @@ export function MailPage() {
         bcc: (detail.bcc || []).join(", "),
         subject: detail.subject === "(无主题)" ? "" : detail.subject,
         text: detail.bodyText || "",
-        html: detail.bodyHtml || "",
+        html: detail.bodyHtml || undefined,
         files: await attachmentFilesFromMessage(detail),
         isDraft: true,
       })
@@ -1861,8 +1882,8 @@ export function MailPage() {
   }
   async function copyCurrentMailbox() {
     if (!selectedMailbox?.address) return
-    await navigator.clipboard.writeText(selectedMailbox.address)
-    toast({ title: "邮箱地址已复制" })
+    const copied = await copyToClipboard(selectedMailbox.address)
+    toast({ title: copied ? "邮箱地址已复制" : "复制失败，请手动选择地址" })
   }
   function openSettings() {
     navigate("/profile")
@@ -2490,7 +2511,11 @@ export function MailPage() {
                     size="icon"
                     className="size-8 flex-none text-muted-foreground"
                     onClick={() => markAllRead.mutate(allMessages)}
-                    disabled={!activeMailboxId || markAllRead.isPending || unreadCount === 0}
+                    disabled={
+              !activeMailboxId ||
+              markAllRead.isPending ||
+              (mailView !== "folder" && unreadCount === 0)
+            }
                     title={uiText("全部已读")}
                   >
                     <MailCheck className="h-4 w-4" />
@@ -2665,7 +2690,7 @@ export function MailPage() {
               </div>
               <ScrollArea className="min-h-0 flex-1">
                 <div className="p-6">
-                  <TranslatableMailBody message={selected} language={language} />
+                  <TranslatableMailBody key={selected.id} message={selected} language={language} />
                   {selected.attachments && selected.attachments.length > 0 && (
                     <div className="mt-8 rounded-lg border p-4">
                       <div className="mb-3 font-medium">{uiText("附件")}</div>
@@ -4800,6 +4825,10 @@ async function attachmentFilesFromMessage(message: MailMessage) {
       const response = await fetch(`/api/mail/attachments/${attachment.id}`, {
         credentials: "include",
       })
+      // 403/404 的响应体是 JSON 错误文本，直接包成 File 会把错误页当附件发出去。
+      if (!response.ok) {
+        throw new Error(`attachment ${attachment.filename} download failed: ${response.status}`)
+      }
       const blob = await response.blob()
       return new File([blob], attachment.filename, {
         type: attachment.contentType || blob.type || "application/octet-stream",
