@@ -25,6 +25,13 @@ func (a *App) ensureMessageSearchFTS(ctx context.Context) error {
 		return err
 	}
 	created := exists == 0
+	var triggerCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='messages_fts_ai'`).Scan(&triggerCount); err != nil {
+		return err
+	}
+	// messages 表被重建过（迁移 DROP TABLE）时 FTS 表和旧 rowid 还在，
+	// 触发器却随表一起没了。只补触发器不够，必须整表 rebuild。
+	needsRebuild := created || triggerCount == 0
 	if created {
 		_, err := tx.ExecContext(ctx, `CREATE VIRTUAL TABLE messages_fts USING fts5(
 			subject, from_addr, from_name, to_addrs, recipient_addr, snippet, body_text,
@@ -60,7 +67,7 @@ func (a *App) ensureMessageSearchFTS(ctx context.Context) error {
 			return fmt.Errorf("create message search trigger: %w", err)
 		}
 	}
-	if created {
+	if needsRebuild {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("backfill message search index: %w", err)
 		}

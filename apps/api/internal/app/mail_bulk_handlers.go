@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -54,7 +55,11 @@ func (a *App) applyMessageMove(ctx context.Context, msg *MailMessage, folder str
 // 已经在 Trash 里的再删就是彻底删除，否则先移进 Trash —— 与单封删除一致。
 func (a *App) applyMessageDelete(ctx context.Context, msg *MailMessage) error {
 	if strings.EqualFold(msg.Folder, "Trash") {
-		a.deleteMessageMaildirFile(ctx, msg.ID)
+		// 文件删不掉就不能删库里的行：否则下一轮 maildir 同步会把文件
+		// 当成新邮件重新导入，「清空垃圾箱」5 秒后自己撤销。
+		if err := a.deleteMessageMaildirFile(ctx, msg.ID); err != nil {
+			return fmt.Errorf("failed to remove maildir file: %w", err)
+		}
 		a.deleteMessageFiles(ctx, msg.ID)
 		if _, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, msg.ID); err != nil {
 			return err

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -367,6 +369,13 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
+	// 删用户不能只靠外键级联：messages/attachments 行会消失，但磁盘上的
+	// 邮件原文和附件目录没有任何行再指向它们，永远留在服务器上。先把每个
+	// 邮箱的邮件文件和 maildir 树清掉，再删用户。
+	if err := a.purgeUserMailData(r.Context(), id); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to delete user mail data")
+		return
+	}
 	res, err := a.db.ExecContext(r.Context(), `DELETE FROM users WHERE id=?`, id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete user")
@@ -378,6 +387,59 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) purgeUserMailData(ctx context.Context, userID string) error {
+	type mailboxPath struct {
+		id, domain, localPart string
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,domain,local_part FROM mailboxes WHERE user_id=?`, userID)
+	if err != nil {
+		return err
+	}
+	mailboxes := []mailboxPath{}
+	for rows.Next() {
+		var item mailboxPath
+		if err := rows.Scan(&item.id, &item.domain, &item.localPart); err != nil {
+			rows.Close()
+			return err
+		}
+		mailboxes = append(mailboxes, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, mb := range mailboxes {
+		msgRows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id=?`, mb.id)
+		if err != nil {
+			return err
+		}
+		messageIDs := []string{}
+		for msgRows.Next() {
+			var messageID string
+			if err := msgRows.Scan(&messageID); err != nil {
+				msgRows.Close()
+				return err
+			}
+			messageIDs = append(messageIDs, messageID)
+		}
+		if err := msgRows.Err(); err != nil {
+			msgRows.Close()
+			return err
+		}
+		msgRows.Close()
+		for _, messageID := range messageIDs {
+			a.deleteMessage(ctx, messageID)
+		}
+		// 未登记进数据库的 maildir 文件（catch-all、上次同步中断）也要清掉。
+		base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), mb.domain, mb.localPart, "Maildir")
+		if err := os.RemoveAll(base); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) handleListDomains(w http.ResponseWriter, r *http.Request) {
@@ -660,16 +722,24 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 	stamp := a.now().UTC().Format(time.RFC3339Nano)
 	query := `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,updated_at=? WHERE id=?`
 	args := []any{userID, displayName, req.QuotaMB, status, stamp, id}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+		return
+	}
+	defer tx.Rollback()
 	if userID != existingMailbox.UserID {
-		query = `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,password_hash=?,updated_at=? WHERE id=?`
-		hash, hashErr := bcrypt.GenerateFromPassword([]byte(randomToken()), bcrypt.DefaultCost)
-		if hashErr != nil {
-			respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+		// 新主人要能立刻用这个地址认证：mailboxes.password_hash 必须和
+		// 新主人的登录口令一致。以前写 randomToken() 会把新旧主人都锁在门外。
+		var ownerHash string
+		if err := tx.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE id=?`, userID).Scan(&ownerHash); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load mailbox owner")
 			return
 		}
-		args = []any{userID, displayName, req.QuotaMB, status, string(hash), stamp, id}
+		query = `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,password_hash=?,updated_at=? WHERE id=?`
+		args = []any{userID, displayName, req.QuotaMB, status, ownerHash, stamp, id}
 	}
-	res, err := a.db.ExecContext(r.Context(), query, args...)
+	res, err := tx.ExecContext(r.Context(), query, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
 		return
@@ -680,7 +750,14 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if userID != existingMailbox.UserID {
-		a.detachMailboxOwnerArtifacts(r.Context(), id, stamp)
+		if err := a.detachMailboxOwnerArtifactsTx(r.Context(), tx, id, stamp); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to detach mailbox owner artifacts")
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+		return
 	}
 	m, err := a.mailboxByID(r.Context(), id)
 	if err != nil {
@@ -1231,13 +1308,14 @@ func (a *App) ensureFolder(ctx context.Context, mailboxID, folder string) (strin
 //   - mailbox_shares 是旧主人签发的授权，易主后不应继续生效。
 //
 // 管理端与 OpenAPI 两条改归属的路径都要调用它，少一处就是一个权限残留。
-func (a *App) detachMailboxOwnerArtifacts(ctx context.Context, mailboxID, stamp string) {
-	if _, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_accounts WHERE mailbox_id=?`, mailboxID); err != nil {
-		a.log.Warn("failed to detach external imap accounts after mailbox ownership change", "mailbox", mailboxID, "error", err)
+func (a *App) detachMailboxOwnerArtifactsTx(ctx context.Context, tx *sql.Tx, mailboxID, stamp string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM external_imap_accounts WHERE mailbox_id=?`, mailboxID); err != nil {
+		return err
 	}
-	if _, err := a.db.ExecContext(ctx, `UPDATE mailbox_shares SET revoked_at=?,updated_at=? WHERE mailbox_id=? AND revoked_at IS NULL`, stamp, stamp, mailboxID); err != nil {
-		a.log.Warn("failed to revoke mailbox shares after ownership change", "mailbox", mailboxID, "error", err)
+	if _, err := tx.ExecContext(ctx, `UPDATE mailbox_shares SET revoked_at=?,updated_at=? WHERE mailbox_id=? AND revoked_at IS NULL`, stamp, stamp, mailboxID); err != nil {
+		return err
 	}
+	return nil
 }
 
 // adminTargetGuard 拦住「有管理员权限但不是超级管理员」的人去操作管理员账号。

@@ -1083,23 +1083,29 @@ func validateAttachmentLimit(attachments []AttachmentInput, limits PermissionLim
 		return fmt.Errorf("%w: max %d", errTooManyAttachments, maxAttachmentsPerMessage)
 	}
 	limitBytes := attachmentLimitBytes(limits)
-	if limitBytes == 0 {
-		return nil
-	}
+	// 请求体 64MB（base64 后），解码上限约 48MB。逐封只查单附件的话，
+	// 多封 25MB 附件会在 decodeJSON 里以「body too large」失败，用户
+	// 看不到是哪条限制。这里按解码后总量提前给明确错误。
+	const maxTotalDecodedAttachmentBytes int64 = 45 << 20
+	var totalBytes int64
 	for i := range attachments {
 		// Reject from the encoded length first. base64 expands by 4/3 plus padding, so
 		// anything longer than that bound cannot fit under the limit once decoded, and
 		// checking it here avoids materialising an oversized attachment in memory just
 		// to refuse it. Requests are capped at 64 MB, far above the 25 MB default.
-		if int64(len(attachments[i].ContentBase64)) > limitBytes/3*4+16 {
+		if limitBytes > 0 && int64(len(attachments[i].ContentBase64)) > limitBytes/3*4+16 {
 			return fmt.Errorf("%w: max %d MB", errAttachmentTooLarge, limits.MaxAttachmentMB)
 		}
 		decoded, err := attachments[i].contentBytes()
 		if err != nil {
 			return fmt.Errorf("%w: %v", errInvalidMIME, err)
 		}
-		if int64(len(decoded)) > limitBytes {
+		if limitBytes > 0 && int64(len(decoded)) > limitBytes {
 			return fmt.Errorf("%w: max %d MB", errAttachmentTooLarge, limits.MaxAttachmentMB)
+		}
+		totalBytes += int64(len(decoded))
+		if totalBytes > maxTotalDecodedAttachmentBytes {
+			return fmt.Errorf("%w: total attachments exceed 45 MB", errAttachmentTooLarge)
 		}
 	}
 	return nil
@@ -1367,6 +1373,11 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 				replacedAttachments = append(replacedAttachments, ref)
 			}
 		}
+		if scanErr := rows.Err(); scanErr != nil {
+			rows.Close()
+			respondError(w, http.StatusInternalServerError, "failed to replace draft attachments")
+			return
+		}
 		rows.Close()
 		hasAttachments = len(*req.Attachments) > 0
 		for _, att := range *req.Attachments {
@@ -1403,6 +1414,9 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	modSeq, err := a.updateMessageModSeq(r.Context(), draftID, existing.FolderID)
 	if err != nil {
+		if req.Attachments != nil {
+			a.deleteAttachmentsExcept(r.Context(), draftID, replacedAttachments)
+		}
 		respondError(w, http.StatusInternalServerError, "failed to update draft")
 		return
 	}
@@ -1443,7 +1457,10 @@ func (a *App) handleDeleteDraft(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "draft not found")
 		return
 	}
-	a.deleteMessageMaildirFile(r.Context(), msg.ID)
+	if err := a.deleteMessageMaildirFile(r.Context(), msg.ID); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to delete draft file")
+		return
+	}
 	a.deleteMessageFiles(r.Context(), msg.ID)
 	if _, err := a.db.ExecContext(r.Context(), `DELETE FROM messages WHERE id=?`, msg.ID); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete draft")
@@ -2697,10 +2714,7 @@ func (a *App) storeAttachmentWithDB(ctx context.Context, db dbExecutor, messageI
 // 附件解码一次算配额，再逐个落盘，避免同一份 base64 解两遍。
 // 返回已落盘的文件路径（失败时也返回，供调用方回滚删除）。
 func (a *App) storeAttachmentBytesWithDB(ctx context.Context, db dbExecutor, messageID string, input AttachmentInput, data []byte) (string, error) {
-	filename := filepath.Base(strings.TrimSpace(input.Filename))
-	if filename == "." || filename == "" {
-		filename = "attachment.bin"
-	}
+	filename := sanitizeAttachmentFilename(input.Filename)
 	contentType := input.ContentType
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -2878,9 +2892,15 @@ func (a *App) deleteMessageFiles(ctx context.Context, messageID string) {
 		return
 	}
 	defer rows.Close()
+	attachmentsRoot := filepath.Join(a.config().DataDir, "attachments")
 	for rows.Next() {
 		var p string
 		if rows.Scan(&p) == nil {
+			ok, err := pathIsUnderRoot(attachmentsRoot, p)
+			if err != nil || !ok {
+				a.log.Warn("refusing to delete attachment outside data dir", "path", p, "message_id", messageID)
+				continue
+			}
 			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 				a.log.Warn("failed to delete attachment file", "error", err, "message_id", messageID)
 			}

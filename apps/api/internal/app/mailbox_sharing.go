@@ -212,6 +212,10 @@ func (a *App) handleCreateMailboxShare(w http.ResponseWriter, r *http.Request) {
 			VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, mb.ID, currentUser(r).ID, target.ID, req.Scope, req.IncludeStarred, allowAttachments, 1, *expiresAt, stamp, stamp)
 	}
 	if err != nil {
+		if isUniqueViolation(err) {
+			respondError(w, http.StatusConflict, "该邮箱已共享给此用户")
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "failed to create mailbox share")
 		return
 	}
@@ -278,7 +282,12 @@ func (a *App) handleUpdateMailboxShare(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 	stamp := now.Format(time.RFC3339Nano)
 	var result sql.Result
-	if expiresAt == nil {
+	if expiresAt == nil && share.Status == "expired" {
+		// 过期共享上「不填新的过期时间」不能继续留着过去的 expires_at：
+		// 接口返回续期成功，收件人实际仍然被拒。这里明确改成永久。
+		result, err = tx.ExecContext(r.Context(), `UPDATE mailbox_shares SET scope=?,include_starred=?,allow_attachments=?,expires_at=NULL,revoked_at=NULL,left_at=NULL,version=version+1,updated_at=?
+			WHERE id=? AND owner_user_id=? AND mailbox_id=? AND version=?`, req.Scope, req.IncludeStarred, allowAttachments, stamp, id, user.ID, mb.ID, req.Version)
+	} else if expiresAt == nil {
 		result, err = tx.ExecContext(r.Context(), `UPDATE mailbox_shares SET scope=?,include_starred=?,allow_attachments=?,revoked_at=NULL,left_at=NULL,version=version+1,updated_at=?
 			WHERE id=? AND owner_user_id=? AND mailbox_id=? AND version=?`, req.Scope, req.IncludeStarred, allowAttachments, stamp, id, user.ID, mb.ID, req.Version)
 	} else {

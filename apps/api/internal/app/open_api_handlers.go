@@ -329,18 +329,24 @@ func (a *App) handleOpenAPIUpdateMailbox(w http.ResponseWriter, r *http.Request)
 	}
 	query := `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,updated_at=? WHERE id=?`
 	args := []any{userID, displayName, quotaMB, status, stamp, id}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+		return
+	}
+	defer tx.Rollback()
 	if ownerChanged {
-		// 换主必须同时换掉邮箱口令：password_hash 是 SMTP/IMAP 认证用的，
-		// 不换的话前主人还能拿旧密码继续收发这个地址的信。
-		hash, hashErr := bcrypt.GenerateFromPassword([]byte(randomToken()), bcrypt.DefaultCost)
-		if hashErr != nil {
-			respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+		// 换主必须同时换掉邮箱口令：password_hash 是 SMTP/IMAP 认证用的。
+		// 用新主人的登录口令，新旧主人都不会落在「邮箱存在但谁也认证不了」的状态。
+		var ownerHash string
+		if err := tx.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE id=?`, userID).Scan(&ownerHash); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load mailbox owner")
 			return
 		}
 		query = `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,password_hash=?,updated_at=? WHERE id=?`
-		args = []any{userID, displayName, quotaMB, status, string(hash), stamp, id}
+		args = []any{userID, displayName, quotaMB, status, ownerHash, stamp, id}
 	}
-	res, err := a.db.ExecContext(r.Context(), query, args...)
+	res, err := tx.ExecContext(r.Context(), query, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
 		return
@@ -350,7 +356,14 @@ func (a *App) handleOpenAPIUpdateMailbox(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if ownerChanged {
-		a.detachMailboxOwnerArtifacts(r.Context(), id, stamp)
+		if err := a.detachMailboxOwnerArtifactsTx(r.Context(), tx, id, stamp); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to detach mailbox owner artifacts")
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+		return
 	}
 	mailbox, err := a.mailboxByID(r.Context(), id)
 	if err != nil {

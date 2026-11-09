@@ -395,7 +395,7 @@ func (a *App) handleTwoFactorDisable(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "invalid verification code")
 		return
 	}
-	if _, err := a.db.ExecContext(r.Context(), `UPDATE users SET two_factor_secret='', two_factor_enabled=0, updated_at=? WHERE id=?`, a.now().UTC().Format(time.RFC3339Nano), user.ID); err != nil {
+	if _, err := a.db.ExecContext(r.Context(), `UPDATE users SET two_factor_secret='', two_factor_enabled=0, two_factor_last_counter=0, updated_at=? WHERE id=?`, a.now().UTC().Format(time.RFC3339Nano), user.ID); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to disable two-factor authentication")
 		return
 	}
@@ -451,7 +451,7 @@ func (a *App) handleAdminResetTwoFactor(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(r.Context(), `UPDATE users SET two_factor_secret='', two_factor_enabled=0, updated_at=? WHERE id=?`, now, id)
+	res, err := tx.ExecContext(r.Context(), `UPDATE users SET two_factor_secret='', two_factor_enabled=0, two_factor_last_counter=0, updated_at=? WHERE id=?`, now, id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to reset two-factor authentication")
 		return

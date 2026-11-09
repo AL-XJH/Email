@@ -6,6 +6,7 @@ import {
   useLanguage as useUiLanguage,
 } from "@/lib/language"
 import { errorMessage } from "@/lib/ui-errors"
+import { copyToClipboard } from "@/lib/clipboard"
 import { MailStatistics } from "@/components/mail-statistics"
 
 import * as React from "react"
@@ -768,8 +769,8 @@ export function ProfilePage() {
 
   const logout = useLogout()
   async function copy(text: string) {
-    await navigator.clipboard.writeText(text)
-    toast({ title: "已复制" })
+    const ok = await copyToClipboard(text)
+    toast({ title: ok ? "已复制" : "复制失败，请手动选择文本" })
   }
   function setTab(next: Tab) {
     const visibleNext = visibleTabKeys.includes(next) ? next : "profile"
@@ -979,11 +980,25 @@ export function ProfilePage() {
             navigate("/")
           }}
           onApply={(payload) => applyMailbox.mutateAsync(payload).then(() => undefined)}
-          onCreateExternal={(payload) => createExternalImap.mutate(payload)}
+          onCreateExternal={async (payload) => {
+            try {
+              await createExternalImap.mutateAsync(payload)
+              return true
+            } catch {
+              return false
+            }
+          }}
           onStartExternalOAuth={(provider, payload) =>
             startExternalOAuth.mutate({ provider, ...payload })
           }
-          onUpdateExternal={(id, payload) => updateExternalImap.mutate({ id, payload })}
+          onUpdateExternal={async (id, payload) => {
+            try {
+              await updateExternalImap.mutateAsync({ id, payload })
+              return true
+            } catch {
+              return false
+            }
+          }}
           onDeleteExternal={(id) => deleteExternalImap.mutate(id)}
           onTestExternal={(id) => testExternalImap.mutate(id)}
           onSyncExternal={(id) => syncExternalImap.mutate(id)}
@@ -1595,12 +1610,12 @@ function MailboxManagement({
   onCopy: (text: string) => void
   onOpen: (id: string) => void
   onApply: (payload: { domainId: string; localPart: string; displayName: string }) => Promise<void>
-  onCreateExternal: (payload: ExternalImapAccountPayload) => void
+  onCreateExternal: (payload: ExternalImapAccountPayload) => Promise<boolean>
   onStartExternalOAuth: (
     provider: ExternalImapOAuthProvider,
     payload: { mailboxId: string; email: string; storageMode: ExternalImapStorageMode }
   ) => void
-  onUpdateExternal: (id: string, payload: ExternalImapAccountPayload) => void
+  onUpdateExternal: (id: string, payload: ExternalImapAccountPayload) => Promise<boolean>
   onDeleteExternal: (id: string) => void
   onTestExternal: (id: string) => void
   onSyncExternal: (id: string) => void
@@ -1608,6 +1623,8 @@ function MailboxManagement({
 }) {
   useUiLanguage()
 
+  const [deleteExternalTarget, setDeleteExternalTarget] =
+    React.useState<ExternalImapAccount | null>(null)
 
   const canApply = !!applyOptions?.enabled && (applyOptions.domains || []).length > 0
   const selectedMailbox = mailboxes.find((item) => item.id === selectedMailboxId)
@@ -1800,7 +1817,7 @@ function MailboxManagement({
                           variant="destructive"
                           size="sm"
                           disabled={externalPending}
-                          onClick={() => onDeleteExternal(account.id)}
+                          onClick={() => setDeleteExternalTarget(account)}
                         >
                           {uiText("删除")}
                         </Button>
@@ -1822,6 +1839,22 @@ function MailboxManagement({
           </CardContent>
         </Card>
       )}
+      <ConfirmDialog
+        open={!!deleteExternalTarget}
+        title="删除外部邮箱？"
+        description="会同时删除已经同步到本地的全部邮件和镜像文件夹，无法恢复。"
+        confirmText="删除"
+        destructive
+        pending={externalPending}
+        onOpenChange={(next) => {
+          if (!next) setDeleteExternalTarget(null)
+        }}
+        onConfirm={() => {
+          if (!deleteExternalTarget) return
+          onDeleteExternal(deleteExternalTarget.id)
+          setDeleteExternalTarget(null)
+        }}
+      />
     </div>
   )
 }
@@ -2018,7 +2051,7 @@ function ExternalImapDialog({
   mailboxId: string
   disabled?: boolean
   pending: boolean
-  onSubmit: (payload: ExternalImapAccountPayload) => void
+  onSubmit: (payload: ExternalImapAccountPayload) => Promise<boolean>
 }) {
   useUiLanguage()
 
@@ -2052,8 +2085,23 @@ function ExternalImapDialog({
       syncReadState,
       enabled,
     }
-    onSubmit(payload)
-    if (!pending) setOpen(false)
+    // 改连接参数会让服务端清空已同步邮件：提交前明确确认。
+    if (
+      account &&
+      (payload.host !== account.host ||
+        payload.port !== account.port ||
+        payload.tlsMode !== account.tlsMode ||
+        payload.username !== account.username ||
+        payload.storageMode !== account.storageMode ||
+        payload.mailboxId !== account.mailboxId) &&
+      !window.confirm("修改服务器/账号/绑定邮箱会删除已同步的邮件并重新同步，确定继续？")
+    ) {
+      return
+    }
+    void (async () => {
+      const ok = await onSubmit(payload)
+      if (ok) setOpen(false)
+    })()
   }
 
   return (

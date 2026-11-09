@@ -3,6 +3,7 @@ import { localizePermissionInfo, permissionMessages } from "@/lib/permission-tra
 import { dnsCheckMessage, dnsStatusLabel } from "@/lib/diagnostic-messages"
 import { uiMessage, type UiText, uiText, useLanguage as useUiLanguage } from "@/lib/language"
 import { errorMessage } from "@/lib/ui-errors"
+import { copyToClipboard } from "@/lib/clipboard"
 
 import * as React from "react"
 import { useSearchParams } from "react-router-dom"
@@ -3270,9 +3271,9 @@ function RegistrationInvitesPanel() {
                       title={uiText("复制邀请码")}
                       aria-label={uiText("复制邀请码")}
                       onClick={() =>
-                        navigator.clipboard
-                          .writeText(item.code)
-                          .then(() => toast({ title: "邀请码已复制" }))
+                        void copyToClipboard(item.code).then((ok) =>
+                          toast({ title: ok ? "邀请码已复制" : "复制失败，请手动选择" })
+                        )
                       }
                     >
                       <Copy className="h-4 w-4" />
@@ -5206,8 +5207,9 @@ function DNSRecordRow({ record }: { record: DNSRecord }) {
           variant="ghost"
           className="h-7 gap-1 text-xs"
           onClick={() => {
-            navigator.clipboard.writeText(text)
-            toast({ title: "已复制" })
+            void copyToClipboard(text).then((ok) =>
+              toast({ title: ok ? "已复制" : "复制失败，请手动选择" })
+            )
           }}
         >
           <Copy className="h-3.5 w-3.5" />

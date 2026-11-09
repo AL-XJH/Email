@@ -110,7 +110,9 @@ func (a *App) syncMaildirOnceTracked(ctx context.Context, interval time.Duration
 		nextRunAt = &next
 	}
 	a.maildirHealth.markRunFinished(finishedAt, counts, err, nextRunAt)
-	if err == nil && counts.clientVisibleChanges() > 0 {
+	// 即使本轮清理报错，已经导入的邮件也必须广播出去；否则客户端要等到
+	// 下一次完全成功的扫描才看得见新邮件（可能是几分钟后）。
+	if counts.clientVisibleChanges() > 0 {
 		a.publishSyncEventForCounts(ctx, counts)
 	}
 	return counts, err
@@ -193,8 +195,35 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 			return counts, err
 		}
 	}
+	hasUnregistered := false
+	for _, item := range pending {
+		if item.target.Mailbox.Unregistered {
+			hasUnregistered = true
+			break
+		}
+	}
+	if hasUnregistered {
+		// knownMaildirFilesInFolders 只查 folder_id，catch-all 邮件 folder_id 为 NULL，
+		// 缓存里永远没有它们，于是每个目录每轮都被整封重新解析（含附件 base64）。
+		rows, err := a.db.QueryContext(ctx, `SELECT raw_path FROM messages WHERE mailbox_id IS NULL AND raw_path<>''`)
+		if err != nil {
+			return counts, err
+		}
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err == nil && path != "" {
+				knownFiles[path] = knownMaildirFile{}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return counts, err
+		}
+		rows.Close()
+	}
 	seenFiles := make(map[string]struct{}, len(knownFiles))
 	scannedDirs := make(map[string]struct{}, len(pending))
+	unscannedDirs := make(map[string]struct{})
 	for _, item := range pending {
 		target := item.target
 		dir := target.Directory
@@ -206,6 +235,7 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 			// 更不能把它算作「已扫过」——否则 cleanup 会把里面所有邮件当成
 			// 磁盘上已消失而删掉。
 			delete(scannedDirs, dir)
+			unscannedDirs[dir] = struct{}{}
 			delete(a.maildirDirs, dir)
 			a.log.Warn("skip unreadable maildir directory", "dir", dir, "error", err)
 			continue
@@ -286,7 +316,7 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 		a.log.Warn("maildir backfill stopped early", "error", backfillErr, "backfilled", backfilled)
 	}
 	counts.Backfilled += backfilled
-	cleaned, cleanedMailboxIDs, err := a.cleanupMissingMaildirMessages(ctx, seenFiles, scannedDirs, fullScan)
+	cleaned, cleanedMailboxIDs, err := a.cleanupMissingMaildirMessages(ctx, seenFiles, scannedDirs, unscannedDirs, fullScan)
 	if err != nil {
 		return counts, err
 	}
@@ -631,7 +661,7 @@ func (a *App) maildirMessageExists(ctx context.Context, mailboxID, folderID, raw
 
 func (a *App) unregisteredMaildirMessageExists(ctx context.Context, rawPath, messageID, recipient string) (bool, error) {
 	var count int
-	err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id IS NULL AND (raw_path=? OR (recipient_addr=? AND message_id=? AND message_id <> ''))`, rawPath, recipient, messageID).Scan(&count)
+	err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id IS NULL AND (raw_path=? OR (recipient_addr=? AND message_id=? AND message_id <> '' AND COALESCE(raw_path,'')=''))`, rawPath, recipient, messageID).Scan(&count)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
@@ -751,7 +781,7 @@ func (a *App) syncExistingMaildirMessageState(ctx context.Context, mailboxID, fo
 // cleanupMissingMaildirMessages removes rows whose Maildir file is gone. It also
 // returns the mailboxes it touched, so the resulting sync event only wakes the clients
 // that can actually see the deletion.
-func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scannedDirs map[string]struct{}, fullScan bool) (int, []string, error) {
+func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scannedDirs, unscannedDirs map[string]struct{}, fullScan bool) (int, []string, error) {
 	if strings.TrimSpace(a.config().MaildirRoot) == "" {
 		return 0, nil, nil
 	}
@@ -790,8 +820,14 @@ func (a *App) cleanupMissingMaildirMessages(ctx context.Context, seenFiles, scan
 		if !ok {
 			continue
 		}
+		dir := filepath.Clean(filepath.Dir(it.RawPath))
+		if _, bad := unscannedDirs[dir]; bad {
+			// 这轮压根没读成这个目录（权限/NFS/挂载），里面所有文件都会
+			// 报 ErrNotExist；全量扫描也必须跳过，否则一次抖动清空整个邮箱。
+			continue
+		}
 		if !fullScan {
-			if _, scanned := scannedDirs[filepath.Clean(filepath.Dir(it.RawPath))]; !scanned {
+			if _, scanned := scannedDirs[dir]; !scanned {
 				continue
 			}
 		}
@@ -1035,15 +1071,27 @@ func transferReader(encoding string, r io.Reader) io.Reader {
 	}
 }
 
+// sanitizeAttachmentFilename 同时挡 / 和 \\：Windows 上反斜杠是分隔符，
+// 只过 filepath.Base 会把 "..\\..\\x" 原样留下。
+func sanitizeAttachmentFilename(name string) string {
+	name = strings.ReplaceAll(strings.TrimSpace(name), "\\", "/")
+	name = strings.ReplaceAll(name, "\x00", "")
+	name = filepath.Base(name)
+	if name == "." || name == ".." || name == "" {
+		return "attachment.bin"
+	}
+	return name
+}
+
 func partFilename(header textproto.MIMEHeader) string {
 	if _, params, err := mime.ParseMediaType(header.Get("Content-Disposition")); err == nil {
 		if name := strings.TrimSpace(params["filename"]); name != "" {
-			return filepath.Base(decodeMIMEHeader(name))
+			return sanitizeAttachmentFilename(decodeMIMEHeader(name))
 		}
 	}
 	if _, params, err := mime.ParseMediaType(header.Get("Content-Type")); err == nil {
 		if name := strings.TrimSpace(params["name"]); name != "" {
-			return filepath.Base(decodeMIMEHeader(name))
+			return sanitizeAttachmentFilename(decodeMIMEHeader(name))
 		}
 	}
 	return ""

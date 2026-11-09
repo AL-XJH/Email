@@ -146,18 +146,6 @@ func (a *App) writeRawMessageToMaildirFolder(ctx context.Context, messageID, fol
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if replace || state.RawPath != "" {
-		// Skip the removal when the rewrite landed on the same path it came from.
-		//
-		// maildirFilename is derived from the wall clock, whose granularity is about
-		// 0.5 ms on Windows. Saving a message and immediately rewriting it therefore
-		// produces the identical filename, os.Rename overwrites in place, and removing
-		// the old path would delete the file just written — leaving raw_path pointing
-		// at nothing while the database still claims the message is on disk.
-		if !sameMaildirPath(state.RawPath, finalPath) {
-			a.removeMaildirPath(ctx, state.RawPath)
-		}
-	}
 	if updateFolder {
 		if state.IMAPUID > 0 && folderID == "" {
 			modSeq, metaErr := a.bumpFolderModSeq(ctx, state.FolderID)
@@ -179,7 +167,19 @@ func (a *App) writeRawMessageToMaildirFolder(ctx context.Context, messageID, fol
 		}
 		_, err = a.db.ExecContext(ctx, `UPDATE messages SET raw_path=?,imap_modseq=CASE WHEN ? > 0 THEN ? ELSE imap_modseq END,updated_at=? WHERE id=?`, finalPath, modSeq, modSeq, a.now().UTC().Format(time.RFC3339Nano), messageID)
 	}
-	return err
+	if err != nil {
+		// 数据库没更新成功：新文件不能留，旧文件和旧 raw_path 必须原样可用。
+		if !sameMaildirPath(state.RawPath, finalPath) {
+			_ = os.Remove(finalPath)
+		}
+		return err
+	}
+	// 先让库指向新文件，再删旧文件。顺序反过来的话 UPDATE 一旦失败
+	// （单连接下 SQLITE_BUSY 很常见），旧文件已经没了、新文件没人引用。
+	if (replace || state.RawPath != "") && !sameMaildirPath(state.RawPath, finalPath) {
+		a.removeMaildirPath(ctx, state.RawPath)
+	}
+	return nil
 }
 
 func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID string) error {
@@ -205,6 +205,11 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 		return err
 	}
 	if state.MailboxID == "" {
+		return nil
+	}
+	if state.FolderID == targetFolderID && state.RawPath != "" {
+		// 已经在目标文件夹：不能再 nextIMAPMetadata，否则 UID/MODSEQ 白涨一次，
+		// CONDSTORE 客户端会看到一次并不存在的变更。
 		return nil
 	}
 	state.FolderID = targetFolderID
@@ -250,7 +255,9 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 			return err
 		}
 		if err := applyMaildirOwnership(targetPath); err != nil {
-			return err
+			// rename 已经完成，这里再返回错误只会让库里的 raw_path 指向旧路径。
+			// chown 失败在 NFS root-squash / userns 映射下是常态，记日志继续。
+			a.log.Warn("failed to chown moved maildir file", "path", targetPath, "error", err)
 		}
 	}
 	if state.FolderID != "" && state.FolderID != targetFolderID {
@@ -295,12 +302,12 @@ func (a *App) writeMessageToNewMaildirFolder(ctx context.Context, messageID, fol
 	return a.writeRawMessageToMaildirFolder(ctx, messageID, folderID, raw, true, true)
 }
 
-func (a *App) deleteMessageMaildirFile(ctx context.Context, messageID string) {
+func (a *App) deleteMessageMaildirFile(ctx context.Context, messageID string) error {
 	var rawPath string
 	if err := a.db.QueryRowContext(ctx, `SELECT raw_path FROM messages WHERE id=?`, messageID).Scan(&rawPath); err != nil {
-		return
+		return err
 	}
-	a.removeMaildirPath(ctx, rawPath)
+	return a.removeMaildirPath(ctx, rawPath)
 }
 
 func (a *App) updateMessageMaildirFlags(ctx context.Context, messageID string, read, starred *bool) error {
@@ -346,7 +353,7 @@ func (a *App) updateMessageMaildirFlags(ctx context.Context, messageID string, r
 		return err
 	}
 	if err := applyMaildirOwnership(targetPath); err != nil {
-		return err
+		a.log.Warn("failed to chown maildir file after flag change", "path", targetPath, "error", err)
 	}
 	modSeq, err := a.bumpFolderModSeq(ctx, state.FolderID)
 	if err != nil {
@@ -356,28 +363,29 @@ func (a *App) updateMessageMaildirFlags(ctx context.Context, messageID string, r
 	return err
 }
 
-func (a *App) removeMaildirPath(ctx context.Context, rawPath string) {
+func (a *App) removeMaildirPath(ctx context.Context, rawPath string) error {
 	rawPath = strings.TrimSpace(rawPath)
 	if rawPath == "" {
-		return
+		return nil
 	}
 	ok, err := a.pathIsUnderMaildirRoot(rawPath)
 	if err != nil || !ok {
 		if err != nil {
-			a.log.Warn("failed to validate maildir path", "path", rawPath, "error", err)
+			return err
 		}
-		return
+		return errors.New("maildir path outside root")
 	}
 	if err := os.Remove(rawPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		a.log.Warn("failed to remove maildir message", "path", rawPath, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, error) {
 	if strings.TrimSpace(a.config().MaildirRoot) == "" {
 		return 0, nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id IS NOT NULL AND mailbox_id<>'' AND folder_id IS NOT NULL AND folder_id<>'' AND raw_path='' ORDER BY created_at LIMIT 100`)
+	rows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id IS NOT NULL AND mailbox_id<>'' AND folder_id IS NOT NULL AND folder_id<>'' AND raw_path='' ORDER BY updated_at LIMIT 100`)
 	if err != nil {
 		return 0, err
 	}
@@ -409,6 +417,8 @@ func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, error) 
 			// 一条写不出去（附件丢失、磁盘满、权限）就跳过它继续处理后面的，
 			// 否则这一行永远排在最前面，整条补写队列原地卡死。
 			a.log.Warn("failed to backfill maildir message", "message", id, "error", err)
+			// 把失败行推到队尾：否则前 100 条永远失败的坏行会饿死后面所有邮件。
+			_, _ = a.db.ExecContext(ctx, `UPDATE messages SET updated_at=? WHERE id=?`, a.now().UTC().Format(time.RFC3339Nano), id)
 			continue
 		}
 		count++
