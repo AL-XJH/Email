@@ -204,45 +204,28 @@ func (a *App) processDueSendQueue(ctx context.Context) error {
 func (a *App) recoverStaleSendQueueItems(ctx context.Context) error {
 	cutoff := a.now().UTC().Add(-sendQueueStaleAfter).Format(time.RFC3339Nano)
 	nowText := a.now().UTC().Format(time.RFC3339Nano)
-	rows, err := a.db.QueryContext(ctx, `SELECT id,user_id,mailbox_id,sent_message_id,message_id,source,mail_from,header_from,recipients_json,mime_base64,attempt_count,max_attempts,lease_token FROM send_queue WHERE status=? AND (lease_until<=? OR (lease_until IS NULL AND updated_at<=?)) LIMIT 20`, sendQueueStatusSending, nowText, cutoff)
+	rows, err := a.db.QueryContext(ctx, `SELECT id,user_id,mailbox_id,sent_message_id,message_id,source,mail_from,header_from,recipients_json,attempt_count,max_attempts,lease_token FROM send_queue WHERE status=? AND (lease_until<=? OR (lease_until IS NULL AND updated_at<=?)) LIMIT 20`, sendQueueStatusSending, nowText, cutoff)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var items []sendQueueItem
-	// 载荷坏掉（base64 解不开）的行单独收着：不能因为一行坏数据让整轮恢复失败，
-	// 那样整个发送队列会每 10 秒卡在同一条上。
-	var broken []sendQueueItem
+	// 这里不再把邮件正文（mime_base64）读出来：恢复要的是租约和尝试次数，
+	// 一次捞 20 封带大附件的邮件就是几百 MB 内存。载荷在 claim 时单行读取，
+	// 真坏了也在那一步收尾成失败。
 	for rows.Next() {
 		var item sendQueueItem
-		var recipientsJSON, mimeBase64 string
-		if err := rows.Scan(&item.ID, &item.UserID, &item.MailboxID, &item.SentMessageID, &item.MessageID, &item.Source, &item.MailFrom, &item.HeaderFrom, &recipientsJSON, &mimeBase64, &item.AttemptCount, &item.MaxAttempts, &item.LeaseToken); err != nil {
+		var recipientsJSON string
+		if err := rows.Scan(&item.ID, &item.UserID, &item.MailboxID, &item.SentMessageID, &item.MessageID, &item.Source, &item.MailFrom, &item.HeaderFrom, &recipientsJSON, &item.AttemptCount, &item.MaxAttempts, &item.LeaseToken); err != nil {
 			return err
 		}
 		item.Recipients = jsonDecodeSlice(recipientsJSON)
-		delivered, err := a.hasSendQueueDeliveredMarker(item.ID)
-		if err != nil {
-			return err
-		}
-		if delivered {
-			items = append(items, item)
-			continue
-		}
-		mimeBytes, err := base64.StdEncoding.DecodeString(mimeBase64)
-		if err != nil {
-			broken = append(broken, item)
-			continue
-		}
-		item.MIMEBytes = mimeBytes
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	for _, item := range broken {
-		a.failSendQueueRow(ctx, item, "stored message payload is corrupt")
-	}
 	for _, item := range items {
 		delivered, err := a.hasSendQueueDeliveredMarker(item.ID)
 		if err != nil {
@@ -328,7 +311,9 @@ func (a *App) claimSendQueueItem(ctx context.Context, id string) (sendQueueItem,
 	item.Recipients = jsonDecodeSlice(recipientsJSON)
 	mimeBytes, err := base64.StdEncoding.DecodeString(mimeBase64)
 	if err != nil {
-		return sendQueueItem{}, err
+		// 载荷坏了就别再放回队列：否则每 10 秒重试一次、永远是这条。
+		a.failSendQueueRow(ctx, item, "stored message payload is corrupt")
+		return sendQueueItem{}, sql.ErrNoRows
 	}
 	item.MIMEBytes = mimeBytes
 	return item, nil

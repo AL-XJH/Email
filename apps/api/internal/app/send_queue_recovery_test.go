@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/textproto"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,7 +48,8 @@ func TestRecoverStaleSendQueueFailsExhaustedRows(t *testing.T) {
 	}
 }
 
-// 一行载荷坏掉不能让整轮恢复失败，否则整个发送队列每 10 秒卡在同一条上。
+// 恢复只处理租约，不读正文；坏载荷在 claim 那一步收尾成失败，
+// 而且不能因为一行坏数据让整轮恢复失败。
 func TestRecoverStaleSendQueueSkipsCorruptPayload(t *testing.T) {
 	a := newTestApp(t)
 	insertStuckSendQueueRow(t, a, "snd_corrupt", 1, 5, "!!!not-base64!!!")
@@ -63,11 +65,25 @@ func TestRecoverStaleSendQueueSkipsCorruptPayload(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT status FROM send_queue WHERE id=?`, "snd_healthy").Scan(&healthyStatus); err != nil {
 		t.Fatalf("load healthy row: %v", err)
 	}
-	if corruptStatus != sendQueueStatusFailed {
-		t.Fatalf("corrupt row status=%q, want failed", corruptStatus)
+	// 恢复阶段不看载荷，两行都回到队列。
+	if corruptStatus != sendQueueStatusQueued {
+		t.Fatalf("corrupt row status=%q, want queued", corruptStatus)
 	}
 	if healthyStatus != sendQueueStatusQueued {
 		t.Fatalf("healthy row status=%q, want queued", healthyStatus)
+	}
+
+	// claim 时才发现载荷坏了 —— 就地收尾成失败，不再无限重试。
+	a.processSendQueueItem(context.Background(), "snd_corrupt")
+	var status, lastError string
+	if err := a.db.QueryRow(`SELECT status,last_error FROM send_queue WHERE id=?`, "snd_corrupt").Scan(&status, &lastError); err != nil {
+		t.Fatalf("load corrupt row: %v", err)
+	}
+	if status != sendQueueStatusFailed {
+		t.Fatalf("corrupt row status=%q, want failed (last_error=%q)", status, lastError)
+	}
+	if !strings.Contains(lastError, "corrupt") {
+		t.Fatalf("last_error=%q, want corrupt payload reason", lastError)
 	}
 }
 
