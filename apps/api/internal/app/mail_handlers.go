@@ -1602,7 +1602,7 @@ func (a *App) handleSendQueue(w http.ResponseWriter, r *http.Request) {
 		args = append(args, cursorCreatedAt, cursorCreatedAt, cursorID)
 	}
 	args = append(args, limit+1)
-	query := `SELECT sq.id,sq.mailbox_id,sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
+	query := `SELECT sq.id,sq.mailbox_id,COALESCE(mb.address,''),sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
 		FROM send_queue sq JOIN mailboxes mb ON mb.id=sq.mailbox_id LEFT JOIN messages m ON m.id=sq.sent_message_id WHERE ` + where + ` ORDER BY sq.created_at DESC, sq.id DESC LIMIT ?`
 	if offsetCursor > 0 {
 		args = append(args, offsetCursor)
@@ -1767,7 +1767,7 @@ func scanSendQueueEntry(row sendQueueEntryScanner) (SendQueueEntry, error) {
 	var item SendQueueEntry
 	var recipientsJSON, nextAttemptAt, createdAt, updatedAt string
 	var deliveredAt sql.NullString
-	err := row.Scan(&item.ID, &item.MailboxID, &item.SentMessageID, &item.MessageID, &item.Subject, &item.Source, &item.MailFrom, &item.HeaderFrom, &recipientsJSON, &item.Status, &item.AttemptCount, &item.MaxAttempts, &nextAttemptAt, &item.LastError, &createdAt, &updatedAt, &deliveredAt)
+	err := row.Scan(&item.ID, &item.MailboxID, &item.MailboxAddress, &item.SentMessageID, &item.MessageID, &item.Subject, &item.Source, &item.MailFrom, &item.HeaderFrom, &recipientsJSON, &item.Status, &item.AttemptCount, &item.MaxAttempts, &nextAttemptAt, &item.LastError, &createdAt, &updatedAt, &deliveredAt)
 	if err != nil {
 		return item, err
 	}
@@ -1780,7 +1780,7 @@ func scanSendQueueEntry(row sendQueueEntryScanner) (SendQueueEntry, error) {
 }
 
 func (a *App) loadSendQueueEntryForUser(ctx context.Context, id, userID string) (SendQueueEntry, error) {
-	row := a.db.QueryRowContext(ctx, `SELECT sq.id,sq.mailbox_id,sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
+	row := a.db.QueryRowContext(ctx, `SELECT sq.id,sq.mailbox_id,COALESCE(mb.address,''),sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
 		FROM send_queue sq JOIN mailboxes mb ON mb.id=sq.mailbox_id LEFT JOIN messages m ON m.id=sq.sent_message_id WHERE sq.id=? AND mb.user_id=?`, id, userID)
 	return scanSendQueueEntry(row)
 }

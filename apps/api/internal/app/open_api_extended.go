@@ -232,7 +232,7 @@ func (a *App) handleOpenAPIListSends(w http.ResponseWriter, r *http.Request) {
 		limitClause += " OFFSET ?"
 		args = append(args, cursorOffset)
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT sq.id,sq.mailbox_id,sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
+	rows, err := a.db.QueryContext(r.Context(), `SELECT sq.id,sq.mailbox_id,COALESCE(mb.address,''),sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
 		FROM send_queue sq JOIN mailboxes mb ON mb.id=sq.mailbox_id LEFT JOIN messages m ON m.id=sq.sent_message_id
 		WHERE `+where+` ORDER BY sq.created_at DESC,sq.id DESC`+limitClause, args...)
 	if err != nil {
@@ -247,7 +247,7 @@ func (a *App) handleOpenAPIListSends(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "failed to scan sends")
 			return
 		}
-		status := openAPISendStatusFromQueue(item, item.MailFrom)
+		status := openAPISendStatusFromQueue(item, sendQueueMailboxAddress(item))
 		a.applyDeliveryStatus(r.Context(), &status)
 		items = append(items, status)
 	}
@@ -305,7 +305,7 @@ func (a *App) handleOpenAPIRetrySend(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordSendAudit(r.Context(), sendAuditRetry, sendQueueStatusQueued, sendAuditInputFromEntry(item, currentUser(r).ID, ""))
 	updated, _ := a.loadSendQueueEntryForUser(r.Context(), item.ID, currentUser(r).ID)
-	respondJSON(w, http.StatusOK, openAPISendStatusFromQueue(updated, updated.MailFrom))
+	respondJSON(w, http.StatusOK, openAPISendStatusFromQueue(updated, sendQueueMailboxAddress(updated)))
 }
 
 func (a *App) handleOpenAPICancelSend(w http.ResponseWriter, r *http.Request) {
@@ -330,7 +330,7 @@ func (a *App) handleOpenAPICancelSend(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordSendAudit(r.Context(), sendAuditCanceled, sendQueueStatusCanceled, sendAuditInputFromEntry(item, currentUser(r).ID, ""))
 	updated, _ := a.loadSendQueueEntryForUser(r.Context(), item.ID, currentUser(r).ID)
-	respondJSON(w, http.StatusOK, openAPISendStatusFromQueue(updated, updated.MailFrom))
+	respondJSON(w, http.StatusOK, openAPISendStatusFromQueue(updated, sendQueueMailboxAddress(updated)))
 }
 
 func sendAuditInputFromEntry(item SendQueueEntry, userID, errorText string) sendAuditInput {

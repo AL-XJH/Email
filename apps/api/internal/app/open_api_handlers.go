@@ -697,6 +697,13 @@ type openAPIRecipientStatus struct {
 	OccurredAt time.Time `json:"occurredAt"`
 }
 
+func sendQueueMailboxAddress(item SendQueueEntry) string {
+	if item.MailboxAddress != "" {
+		return item.MailboxAddress
+	}
+	return item.MailFrom
+}
+
 func openAPISendStatusFromQueue(item SendQueueEntry, mailboxAddress string) openAPISendStatus {
 	status := item.Status
 	if status == sendQueueStatusDelivered {
@@ -926,15 +933,15 @@ func respondSendError(w http.ResponseWriter, err error) {
 }
 
 func (a *App) loadLatestSendQueueForMessage(ctx context.Context, sentMessageID, userID string) (SendQueueEntry, error) {
-	row := a.db.QueryRowContext(ctx, `SELECT sq.id,sq.mailbox_id,sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
+	row := a.db.QueryRowContext(ctx, `SELECT sq.id,sq.mailbox_id,COALESCE(mb.address,''),sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
 		FROM send_queue sq JOIN mailboxes mb ON mb.id=sq.mailbox_id LEFT JOIN messages m ON m.id=sq.sent_message_id
 		WHERE sq.sent_message_id=? AND mb.user_id=? ORDER BY sq.created_at DESC, sq.id DESC LIMIT 1`, sentMessageID, userID)
 	return scanSendQueueEntry(row)
 }
 
 func (a *App) loadLatestSendQueueForMailboxMessage(ctx context.Context, sentMessageID, mailboxID string) (SendQueueEntry, error) {
-	row := a.db.QueryRowContext(ctx, `SELECT sq.id,sq.mailbox_id,sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
-		FROM send_queue sq LEFT JOIN messages m ON m.id=sq.sent_message_id
+	row := a.db.QueryRowContext(ctx, `SELECT sq.id,sq.mailbox_id,COALESCE(mb.address,''),sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
+		FROM send_queue sq JOIN mailboxes mb ON mb.id=sq.mailbox_id LEFT JOIN messages m ON m.id=sq.sent_message_id
 		WHERE sq.sent_message_id=? AND sq.mailbox_id=? ORDER BY sq.created_at DESC, sq.id DESC LIMIT 1`, sentMessageID, mailboxID)
 	return scanSendQueueEntry(row)
 }
