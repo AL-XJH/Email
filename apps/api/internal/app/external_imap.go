@@ -1367,6 +1367,18 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 				processed++
 				continue
 			}
+			// 外部 IMAP 的整封信当前只能整封读进内存（BODY[] 落在 []byte）。
+			// 超大附件会把进程内存顶穿，连带 SMTP/IMAP/网页全挂；这里先按
+			// RFC822.SIZE 拦住，宁可跳过这一封并留日志，也不要整个服务 OOM。
+			if limit := a.externalIMAPMaxMessageBytes(); limit > 0 && item.SizeBytes > limit {
+				a.log.Warn("external imap message exceeds size limit, skipped",
+					"account", account.ID, "folder", folder.Name, "uid", item.UID,
+					"size_bytes", item.SizeBytes, "limit_bytes", limit)
+				skipped++
+				lastUID = item.UID
+				processed++
+				continue
+			}
 			raw := item.Raw
 			if len(raw) == 0 {
 				var fetched externalIMAPRemoteMessage
@@ -2376,4 +2388,14 @@ func (a *App) deleteExternalIMAPLocalData(ctx context.Context, accountID, userID
 			a.log.Warn("failed to delete external imap local folder", "folder", id, "error", err)
 		}
 	}
+}
+
+// externalIMAPMaxMessageBytes 是单封外部邮件允许整封载入内存的上限。
+// 0 表示不限制（不推荐）。默认 50MB。
+func (a *App) externalIMAPMaxMessageBytes() int64 {
+	mb := a.config().ExternalIMAPMaxMessageMB
+	if mb <= 0 {
+		return 0
+	}
+	return int64(mb) << 20
 }

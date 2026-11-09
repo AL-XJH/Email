@@ -46,3 +46,15 @@ func TestExternalIMAPInlineBodyUIDsZeroLimitKeepsAll(t *testing.T) {
 		t.Fatalf("count = %d, want 1 when limit is disabled", count)
 	}
 }
+
+func TestExternalIMAPMaxMessageBytes(t *testing.T) {
+	a := newTestApp(t)
+	a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPMaxMessageMB = 50 })
+	if got, want := a.externalIMAPMaxMessageBytes(), int64(50)<<20; got != want {
+		t.Fatalf("limit = %d, want %d", got, want)
+	}
+	a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPMaxMessageMB = 0 })
+	if got := a.externalIMAPMaxMessageBytes(); got != 0 {
+		t.Fatalf("unlimited limit = %d, want 0", got)
+	}
+}
