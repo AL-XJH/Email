@@ -449,7 +449,7 @@ func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
 		case "smtpUsername":
 			a.updateConfig(func(cfg *Config) { cfg.SMTPUsername = value })
 		case "smtpPassword":
-			a.updateConfig(func(cfg *Config) { cfg.SMTPPassword = value })
+			a.updateConfig(func(cfg *Config) { cfg.SMTPPassword = a.openSettingSecret(value) })
 		case "smtpRequireTls":
 			a.updateConfig(func(cfg *Config) { cfg.SMTPRequireTLS = value == "true" })
 		case "maildirRoot":
@@ -475,7 +475,7 @@ func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
 		case "turnstileSiteKey":
 			a.updateConfig(func(cfg *Config) { cfg.TurnstileSiteKey = value })
 		case "turnstileSecretKey":
-			a.updateConfig(func(cfg *Config) { cfg.TurnstileSecretKey = value })
+			a.updateConfig(func(cfg *Config) { cfg.TurnstileSecretKey = a.openSettingSecret(value) })
 		case "linuxDoSSOEnabled":
 			a.updateConfig(func(cfg *Config) { cfg.LinuxDoSSOEnabled = value == "true" })
 		case "linuxDoRegistrationEnabled":
@@ -485,7 +485,7 @@ func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
 		case "linuxDoClientId":
 			a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientID = value })
 		case "linuxDoClientSecret":
-			a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientSecret = value })
+			a.updateConfig(func(cfg *Config) { cfg.LinuxDoClientSecret = a.openSettingSecret(value) })
 		case "catchAllEnabled":
 			a.updateConfig(func(cfg *Config) { cfg.CatchAllEnabled = value == "true" })
 		case "mailAutoRefresh":
@@ -503,7 +503,7 @@ func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
 		case "externalImapEnabled":
 			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPEnabled = value == "true" })
 		case "externalImapSecretKey":
-			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPSecretKey = value })
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPSecretKey = a.openSettingSecret(value) })
 		case "externalImapSyncSeconds":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPSyncSeconds = n })
@@ -513,14 +513,41 @@ func (a *App) loadPersistedSystemSettings(ctx context.Context) error {
 		case "externalImapGmailClientId":
 			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPGmailClientID = value })
 		case "externalImapGmailClientSecret":
-			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPGmailClientSecret = value })
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPGmailClientSecret = a.openSettingSecret(value) })
 		case "externalImapOutlookClientId":
 			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPOutlookClientID = value })
 		case "externalImapOutlookClientSecret":
-			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPOutlookClientSecret = value })
+			a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPOutlookClientSecret = a.openSettingSecret(value) })
 		}
 	}
 	return rows.Err()
+}
+
+func (a *App) sealSettingSecret(value string) string {
+	if strings.TrimSpace(value) == "" || strings.HasPrefix(value, "enc:v1:") {
+		return value
+	}
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
+		return value
+	}
+	sealed, err := a.encryptNotificationSecret(value)
+	if err != nil {
+		a.log.Warn("failed to encrypt setting secret", "error", err)
+		return value
+	}
+	return "enc:v1:" + sealed
+}
+
+func (a *App) openSettingSecret(value string) string {
+	if !strings.HasPrefix(value, "enc:v1:") {
+		return value
+	}
+	plain, err := a.decryptNotificationSecret(strings.TrimPrefix(value, "enc:v1:"))
+	if err != nil {
+		a.log.Warn("failed to decrypt setting secret", "error", err)
+		return ""
+	}
+	return plain
 }
 
 func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {
@@ -561,7 +588,7 @@ func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {
 		"externalImapGmailClientId":       cfg.ExternalIMAPGmailClientID,
 		"externalImapGmailClientSecret":   cfg.ExternalIMAPGmailClientSecret,
 		"externalImapOutlookClientId":     cfg.ExternalIMAPOutlookClientID,
-		"externalImapOutlookClientSecret": cfg.ExternalIMAPOutlookClientSecret,
+		"externalImapOutlookClientSecret": a.sealSettingSecret(cfg.ExternalIMAPOutlookClientSecret),
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	keyColumn := keyColumnSQL(databaseDriverSQLite)
