@@ -2966,13 +2966,16 @@ function SystemSettingsSection({
         </Card>
       )}
 
-      {settingsTab === "templates" && canViewTemplates && (
-        <MailTemplatesPanel
-          templates={templates.data?.items || []}
-          loading={templates.isLoading}
-          canUpdate={canUpdateTemplates}
-          canReset={canResetTemplates}
-        />
+      {canViewTemplates && (
+        // 保持挂载：模板正文是长 HTML，切到别的标签就卸载会把未保存内容静默丢掉。
+        <div className={settingsTab === "templates" ? "" : "hidden"}>
+          <MailTemplatesPanel
+            templates={templates.data?.items || []}
+            loading={templates.isLoading}
+            canUpdate={canUpdateTemplates}
+            canReset={canResetTemplates}
+          />
+        </div>
       )}
 
       {settingsTab === "security" && (

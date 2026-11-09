@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	smtpserver "github.com/emersion/go-smtp"
+	"golang.org/x/net/netutil"
 
 	"lanqin-email-api/internal/app"
 )
@@ -33,12 +36,14 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	submissionServers := &app.SubmissionServers{}
+	var submissionTLSConfig *tls.Config
 	if strings.TrimSpace(cfg.SubmissionAddr) != "" || strings.TrimSpace(cfg.SubmissionTLSAddr) != "" {
 		tlsConfig, err := app.LoadServerTLSConfig(cfg)
 		if err != nil {
 			logger.Error("failed to initialize TLS config", "error", err)
 			os.Exit(1)
 		}
+		submissionTLSConfig = tlsConfig
 		submissionServers = svc.NewSubmissionServers(tlsConfig)
 	}
 
@@ -49,19 +54,34 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+	// 提交端口是公网可连的：不限连接数时，每个连接都占一个 goroutine + 45s，
+	// 洪泛能把 webmail/IMAP/worker 一起饿死。200 并发之后直接拒绝新连接。
+	const submissionConnectionLimit = 200
 	if submissionServers.Plain != nil {
+		listener, err := net.Listen("tcp", cfg.SubmissionAddr)
+		if err != nil {
+			logger.Error("failed to listen for SMTP submission", "error", err)
+			os.Exit(1)
+		}
+		listener = netutil.LimitListener(listener, submissionConnectionLimit)
 		go func() {
 			logger.Info("LanQin SMTP submission listening", "addr", cfg.SubmissionAddr)
-			if err := submissionServers.Plain.ListenAndServe(); err != nil && !errors.Is(err, smtpserver.ErrServerClosed) {
+			if err := submissionServers.Plain.Serve(listener); err != nil && !errors.Is(err, smtpserver.ErrServerClosed) {
 				logger.Error("smtp submission server stopped unexpectedly", "error", err)
 				os.Exit(1)
 			}
 		}()
 	}
 	if submissionServers.TLS != nil {
+		listener, err := net.Listen("tcp", cfg.SubmissionTLSAddr)
+		if err != nil {
+			logger.Error("failed to listen for SMTP submission TLS", "error", err)
+			os.Exit(1)
+		}
+		listener = netutil.LimitListener(tls.NewListener(listener, submissionTLSConfig), submissionConnectionLimit)
 		go func() {
 			logger.Info("LanQin SMTP implicit TLS submission listening", "addr", cfg.SubmissionTLSAddr)
-			if err := submissionServers.TLS.ListenAndServeTLS(); err != nil && !errors.Is(err, smtpserver.ErrServerClosed) {
+			if err := submissionServers.TLS.Serve(listener); err != nil && !errors.Is(err, smtpserver.ErrServerClosed) {
 				logger.Error("smtp tls submission server stopped unexpectedly", "error", err)
 				os.Exit(1)
 			}
