@@ -544,7 +544,6 @@ func (a *App) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_messages_received_id ON messages(received_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_id ON messages(mailbox_id, received_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_folder_read ON messages(folder_id, is_read)`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_thread ON messages(mailbox_id, thread_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_starred_received_id ON messages(mailbox_id, received_at DESC, id DESC) WHERE is_starred=1`,
 		`DROP INDEX IF EXISTS idx_messages_mailbox_folder_received`,
 		`DROP INDEX IF EXISTS idx_messages_mailbox_starred_received`,
@@ -875,6 +874,14 @@ func (a *App) migrate(ctx context.Context) error {
 	if err := a.migrateDraftTokens(ctx); err != nil {
 		return err
 	}
+	// 这两列必须先 ALTER 再建索引：旧库升级时 schema 里的
+	// CREATE TABLE IF NOT EXISTS 是空操作，索引会因列不存在直接启动失败。
+	if err := a.migrateSendQueueMessageID(ctx); err != nil {
+		return err
+	}
+	if err := a.migrateMessageThreads(ctx); err != nil {
+		return err
+	}
 	if err := a.migrateHotPathIndexes(ctx); err != nil {
 		return err
 	}
@@ -893,9 +900,9 @@ func (a *App) migrate(ctx context.Context) error {
 	if err := a.migrateMailRulesBuilder(ctx); err != nil {
 		return err
 	}
-	if err := a.migrateLegacyBootstrapMailbox(ctx); err != nil {
-		return err
-	}
+	// 不再自动删除旧版 seed 建的 "LanQin Admin" 邮箱：这个匹配条件在真实
+	// 升级库里可能命中的就是管理员唯一邮箱，删掉等于清空管理员全部邮件。
+	// 保留旧邮箱无害，绝不能每次启动都执行这种破坏性迁移。
 	if err := a.migratePermissionGroupLimits(ctx); err != nil {
 		return err
 	}
@@ -908,13 +915,7 @@ func (a *App) migrate(ctx context.Context) error {
 	if err := a.migrateSMTPRateRecipients(ctx); err != nil {
 		return err
 	}
-	if err := a.migrateSendQueueMessageID(ctx); err != nil {
-		return err
-	}
 	if err := a.migrateQueueLeases(ctx); err != nil {
-		return err
-	}
-	if err := a.migrateMessageThreads(ctx); err != nil {
 		return err
 	}
 	if err := a.migrateIMAPMetadata(ctx); err != nil {

@@ -27,11 +27,14 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 #    sqlite3 的 .backup 在源文件不存在时会「成功」创建一个空库，
 #    所以必须先确认源存在，再确认备份里真的有表。
 tmp_db="/data/.lanqin-backup-$$.db"
+# 任何中途失败都要删掉容器里的半成品快照，避免 0644 的库副本留在 /data。
+trap 'docker exec "$CONTAINER" rm -f "$tmp_db" 2>/dev/null || true' EXIT
 if ! docker exec "$CONTAINER" test -f /data/lanqin.db; then
 	log "backup failed: /data/lanqin.db not found in $CONTAINER"
 	exit 1
 fi
 docker exec "$CONTAINER" sqlite3 /data/lanqin.db ".backup '$tmp_db'"
+docker exec "$CONTAINER" chmod 600 "$tmp_db"
 if ! docker exec "$CONTAINER" sqlite3 "$tmp_db" "PRAGMA quick_check;" | grep -q '^ok$'; then
 	docker exec "$CONTAINER" rm -f "$tmp_db" || true
 	log "backup failed: quick_check did not return ok"

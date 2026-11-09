@@ -237,7 +237,7 @@ func (a *App) registerOpenAPIRoutes(r chi.Router) {
 	r.With(a.requireAPITokenScope("mailboxes:write"), a.requireAdminAccess, a.requirePermission(PermissionMailboxesCreate)).Post("/mailboxes", a.handleOpenAPICreateMailbox)
 	r.With(a.requireAPITokenScope("mailboxes:read"), a.requireAdminAccess, a.requireAnyPermission(PermissionMailboxesView, PermissionMessagesView)).Get("/mailboxes/{id}", a.handleOpenAPIGetMailbox)
 	r.With(a.requireAPITokenScope("mailboxes:write"), a.requireAdminAccess, a.requirePermission(PermissionMailboxesUpdate), a.collectionMutationLock).Post("/mailboxes/{id}", a.handleOpenAPIUpdateMailbox)
-	r.With(a.requireAPITokenScope("mailboxes:write"), a.requireAdminAccess, a.requirePermission(PermissionUsersResetPassword)).Post("/mailboxes/{id}/password", a.handleOpenAPIResetMailboxPassword)
+	r.With(a.requireAPITokenScope("users:reset-password"), a.requireAdminAccess, a.requirePermission(PermissionUsersResetPassword)).Post("/mailboxes/{id}/password", a.handleOpenAPIResetMailboxPassword)
 	r.With(a.requireAPITokenScope("mailboxes:write"), a.requireAdminAccess, a.requirePermission(PermissionMailboxesDelete), a.collectionMutationLock).Delete("/mailboxes/{id}", a.handleOpenAPIDeleteMailbox)
 	r.With(a.requireAPITokenScope("messages:send"), a.requirePermission(PermissionMailSend)).Post("/send", a.handleOpenAPISendMail)
 	r.With(a.requireAPITokenScope("messages:read"), a.requirePermission(PermissionMailRead)).Get("/send", a.handleOpenAPIListSends)

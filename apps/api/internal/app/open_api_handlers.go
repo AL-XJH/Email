@@ -229,6 +229,28 @@ func (a *App) handleOpenAPICreateMailbox(w http.ResponseWriter, r *http.Request)
 	if displayName == "" {
 		displayName = address
 	}
+	if strings.TrimSpace(req.UserID) != "" && !a.canAdministerTarget(r, strings.TrimSpace(req.UserID)) {
+		respondError(w, http.StatusForbidden, "cannot manage an account with permissions you do not hold")
+		return
+	}
+	if strings.TrimSpace(req.UserID) == "" {
+		ownerEmail := normalizeEmail(req.OwnerEmail)
+		if ownerEmail != "" {
+			var existingOwner int
+			_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(1) FROM users WHERE email=? AND disabled=0`, ownerEmail).Scan(&existingOwner)
+			if existingOwner == 0 && !userHasPermission(currentUser(r), PermissionUsersCreate) {
+				respondError(w, http.StatusForbidden, "admin.users.create permission required to create a new owner")
+				return
+			}
+			if existingOwner > 0 {
+				var existingID string
+				if err := a.db.QueryRowContext(r.Context(), `SELECT id FROM users WHERE email=? AND disabled=0`, ownerEmail).Scan(&existingID); err == nil && !a.canAdministerTarget(r, existingID) {
+					respondError(w, http.StatusForbidden, "cannot manage an account with permissions you do not hold")
+					return
+				}
+			}
+		}
+	}
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to hash password")
@@ -245,6 +267,15 @@ func (a *App) handleOpenAPICreateMailbox(w http.ResponseWriter, r *http.Request)
 		respondMailboxOwnerError(w, err)
 		return
 	}
+	// 已存在的 owner 必须沿用其登录口令哈希；调用方传的 password 只能用于
+	// 新建用户，不能用来给别人的邮箱设置一个已知口令。
+	// 注意：这里已经在 tx 里，必须用 tx 查；a.db 只有一条连接，会自己等自己。
+	var ownerPasswordHash string
+	if err := tx.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE id=?`, userID).Scan(&ownerPasswordHash); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load owner password")
+		return
+	}
+	passwordHash = []byte(ownerPasswordHash)
 	// Same rationale as the admin panel: an API caller with mailbox-write scope is
 	// trusted to exceed a user's quota, but the creation is still counted.
 	mailboxID, err := a.createMailboxWithPasswordHashTx(r.Context(), tx, userID, req.DomainID, localPart, displayName, string(passwordHash), req.QuotaMB, "active", nil)
@@ -386,6 +417,11 @@ func (a *App) handleOpenAPIDeleteMailbox(w http.ResponseWriter, r *http.Request)
 	var owner string
 	if err := a.db.QueryRowContext(r.Context(), `SELECT user_id FROM mailboxes WHERE id=?`, id).Scan(&owner); err != nil {
 		respondError(w, http.StatusNotFound, "mailbox not found")
+		return
+	}
+	// 删除别人的邮箱也要过 dominance：否则有 admin.mailboxes.delete 的客服
+	// 可以删掉超管邮箱，再用 create 建回来改成自己的口令。
+	if !a.adminTargetGuard(w, r, owner) {
 		return
 	}
 	current := currentUser(r)

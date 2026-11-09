@@ -113,11 +113,11 @@ services:
 
   rspamd:
     image: ${LANQIN_RSPAMD_IMAGE:-ghcr.io/lanqin996/lanqin-email-rspamd:latest}
-    env_file: .env
     environment:
       # .env 里的 127.0.0.1 在 rspamd 容器里指向它自己；split 部署必须显式指到服务名。
       LANQIN_REDIS_ADDR: redis:6379
       LANQIN_RSPAMD_DNS: ${LANQIN_STACK_RSPAMD_DNS:-127.0.0.11:53}
+      LANQIN_DB_PATH: /data/lanqin.db
     depends_on:
       redis:
         condition: service_healthy

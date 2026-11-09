@@ -2556,6 +2556,7 @@ const apiTokenScopeOptions = [
   ["domains:write", "管理域名"],
   ["mailboxes:read", "查看邮箱"],
   ["mailboxes:write", "管理邮箱"],
+  ["users:reset-password", "重置用户密码"],
   ["dns:read", "查看 DNS"],
   ["dns:check", "执行 DNS 检测"],
   ["aliases:read", "查看别名"],

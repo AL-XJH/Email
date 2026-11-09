@@ -16,18 +16,19 @@ import (
 const defaultAPITokenTTL = 90 * 24 * time.Hour
 
 var validAPITokenScopes = map[string]bool{
-	"*":               true,
-	"domains:read":    true,
-	"domains:write":   true,
-	"mailboxes:read":  true,
-	"mailboxes:write": true,
-	"messages:read":   true,
-	"messages:send":   true,
-	"messages:manage": true,
-	"aliases:read":    true,
-	"aliases:write":   true,
-	"dns:read":        true,
-	"dns:check":       true,
+	"*":                    true,
+	"domains:read":         true,
+	"domains:write":        true,
+	"mailboxes:read":       true,
+	"mailboxes:write":      true,
+	"messages:read":        true,
+	"messages:send":        true,
+	"messages:manage":      true,
+	"users:reset-password": true,
+	"aliases:read":         true,
+	"aliases:write":        true,
+	"dns:read":             true,
+	"dns:check":            true,
 }
 
 func (a *App) handleListAPITokens(w http.ResponseWriter, r *http.Request) {

@@ -15,7 +15,7 @@ set -eu
 : "${LANQIN_TLS_CERT_FILE:=}"
 : "${LANQIN_TLS_KEY_FILE:=}"
 # Rspamd 的 DNS 解析器：必须是本地递归解析器，公共 DNS 会让 DNSBL 全部失效。
-: "${LANQIN_RSPAMD_DNS:=127.0.0.1:53}"
+: "${LANQIN_RSPAMD_DNS:=127.0.0.11:53}"
 # Rspamd 的后端存储（Bayes / 灰名单 / ratelimit）。留空则这些模块保持禁用。
 : "${LANQIN_REDIS_ADDR:=127.0.0.1:6379}"
 
@@ -92,7 +92,7 @@ fi
 /usr/local/bin/lanqin-api >/tmp/lanqin-api-bootstrap.log 2>&1 &
 bootstrap_pid=$!
 bootstrap_ready=0
-for i in $(seq 1 60); do
+for i in $(seq 1 900); do
 	if curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
 		bootstrap_ready=1
 		break
