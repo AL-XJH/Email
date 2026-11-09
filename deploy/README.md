@@ -52,6 +52,35 @@ docker compose up -d
 docker compose down
 ```
 
+## 备份（强烈建议配）
+
+`deploy/backup/lanqin-backup.sh` 做一份完整快照：SQLite 一致性备份（用 `sqlite3 .backup`，
+不是直接 cp，避免拿到半个事务）+ `.env` + `dkim` 私钥 + `docker-compose.yml` + 附件 + maildir。
+
+装到服务器上每天 04:10 跑一次：
+
+```bash
+install -m 755 deploy/backup/lanqin-backup.sh /usr/local/bin/lanqin-backup
+cat > /etc/cron.d/lanqin-backup <<'CRON'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+10 4 * * * root /usr/local/bin/lanqin-backup >> /var/log/lanqin-backup.log 2>&1
+CRON
+```
+
+默认放在 `/root/lanqin-backups/<时间戳>/`，保留 14 天（`KEEP_DAYS` 可调），
+每次约等于数据库大小。备份前会先跑 `PRAGMA quick_check`，坏了就不落盘并返回非零。
+
+恢复：
+
+```bash
+docker compose down
+cp /root/lanqin-backups/<时间戳>/lanqin.db data/lanqin.db
+tar -C . -xzf /root/lanqin-backups/<时间戳>/config.tgz   # .env
+tar -C . -xzf /root/lanqin-backups/<时间戳>/dkim.tgz
+docker compose up -d
+```
+
 ## GHCR 镜像权限
 
 默认镜像：

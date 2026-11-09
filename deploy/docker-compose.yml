@@ -30,3 +30,10 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    # 日志默认无限增长，长期跑会把 / 撑满（mail、rspamd、postfix 都在往 stdout 写）。
+    # 每份 10MB 留 3 份，排障够用，最多占 30MB。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
