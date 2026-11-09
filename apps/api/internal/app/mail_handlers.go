@@ -332,14 +332,7 @@ func (a *App) handleDeleteMailFolder(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to load inbox")
 		return
 	}
-	now := a.now().UTC().Format(time.RFC3339Nano)
-	tx, err := a.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete folder")
-		return
-	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(r.Context(), `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? ORDER BY received_at,id`, mb.ID, folderID)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? ORDER BY received_at,id`, mb.ID, folderID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load folder messages")
 		return
@@ -360,25 +353,25 @@ func (a *App) handleDeleteMailFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
+	// 必须逐封走 moveMessageMaildir，而不能只改 folder_id：
+	// 只改库的话 maildir 文件还留在旧目录里，IMAP 客户端仍能看到这个文件夹，
+	// 之后重建同名文件夹时旧邮件又会被同步吸回来。
+	failed := 0
 	for _, messageID := range messageIDs {
-		meta, err := a.nextIMAPMetadata(r.Context(), tx, inboxID)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to allocate message uid")
-			return
-		}
-		if _, err := tx.ExecContext(r.Context(), `UPDATE messages SET folder_id=?,imap_uid=?,imap_modseq=?,updated_at=? WHERE id=?`, inboxID, meta.UID, meta.ModSeq, now, messageID); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to move folder messages")
-			return
+		if err := a.moveMessageMaildir(r.Context(), messageID, inboxID); err != nil {
+			failed++
+			a.log.Warn("failed to move message out of deleted folder", "message", messageID, "folder", folderID, "error", err)
 		}
 	}
-	if _, err := tx.ExecContext(r.Context(), `DELETE FROM folders WHERE id=? AND mailbox_id=?`, folderID, mb.ID); err != nil {
+	if failed > 0 {
+		respondError(w, http.StatusInternalServerError, "failed to move folder messages")
+		return
+	}
+	if _, err := a.db.ExecContext(r.Context(), `DELETE FROM folders WHERE id=? AND mailbox_id=?`, folderID, mb.ID); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete folder")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete folder")
-		return
-	}
+	a.removeMaildirFolderIfEmpty(mb.ID, folderName)
 	_, _ = a.bumpFolderModSeq(r.Context(), inboxID)
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "moved": len(messageIDs)})
 }
@@ -1346,12 +1339,22 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	size := int64(len(compose.Text) + len(compose.HTML))
 	hasAttachments := existing.HasAttachments
+	var replacedAttachments []attachmentFileRef
 	if req.Attachments != nil {
-		a.deleteMessageFiles(r.Context(), draftID)
-		if _, err := a.db.ExecContext(r.Context(), `DELETE FROM attachments WHERE message_id=?`, draftID); err != nil {
+		// 先记住旧附件，不要立刻删：新附件或正文任何一步失败，旧附件都还在，
+		// 用户不会因为一次保存失败丢掉整份草稿的附件。
+		rows, queryErr := a.db.QueryContext(r.Context(), `SELECT id,storage_path FROM attachments WHERE message_id=?`, draftID)
+		if queryErr != nil {
 			respondError(w, http.StatusInternalServerError, "failed to replace draft attachments")
 			return
 		}
+		for rows.Next() {
+			var ref attachmentFileRef
+			if scanErr := rows.Scan(&ref.ID, &ref.Path); scanErr == nil {
+				replacedAttachments = append(replacedAttachments, ref)
+			}
+		}
+		rows.Close()
 		hasAttachments = len(*req.Attachments) > 0
 		for _, att := range *req.Attachments {
 			if decoded, err := base64.StdEncoding.DecodeString(att.ContentBase64); err == nil {
@@ -1363,6 +1366,28 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 		_ = a.db.QueryRowContext(r.Context(), `SELECT COALESCE(SUM(size_bytes),0) FROM attachments WHERE message_id=?`, draftID).Scan(&attachmentBytes)
 		size += attachmentBytes
 	}
+	// 草稿也能把邮箱撑爆：加附件后要按新旧差值做一次配额检查，
+	// 否则之后正常来信会被拒收。
+	if size > existing.SizeBytes {
+		if err := a.ensureMailboxQuotaAvailable(r.Context(), a.db, mb.ID, size-existing.SizeBytes); err != nil {
+			if errors.Is(err, errMailboxQuotaExceeded) {
+				respondError(w, http.StatusInsufficientStorage, err.Error())
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to check mailbox quota")
+			return
+		}
+	}
+	if req.Attachments != nil {
+		// 新附件先写；失败就只清掉本次新写的，旧附件与正文都保持原样。
+		for _, att := range *req.Attachments {
+			if err := a.storeAttachment(r.Context(), draftID, att); err != nil {
+				a.deleteAttachmentsExcept(r.Context(), draftID, replacedAttachments)
+				respondError(w, http.StatusInternalServerError, "failed to store draft attachment")
+				return
+			}
+		}
+	}
 	modSeq, err := a.updateMessageModSeq(r.Context(), draftID, existing.FolderID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update draft")
@@ -1371,14 +1396,23 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 	_, err = a.db.ExecContext(r.Context(), `UPDATE messages SET subject=?,to_addrs=?,cc_addrs=?,bcc_addrs=?,sent_at=?,received_at=?,snippet=?,body_text=?,body_html=?,is_read=1,has_attachments=?,size_bytes=?,imap_modseq=CASE WHEN ? > 0 THEN ? ELSE imap_modseq END,updated_at=? WHERE id=?`,
 		subject, jsonEncode(compose.To), jsonEncode(compose.CC), jsonEncode(compose.BCC), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), snippetFrom(compose.Text, compose.HTML), compose.Text, compose.HTML, boolInt(hasAttachments), size, modSeq, modSeq, now.Format(time.RFC3339Nano), draftID)
 	if err != nil {
+		if req.Attachments != nil {
+			a.deleteAttachmentsExcept(r.Context(), draftID, replacedAttachments)
+		}
 		respondError(w, http.StatusInternalServerError, "failed to update draft")
 		return
 	}
 	if req.Attachments != nil {
-		for _, att := range *req.Attachments {
-			if err := a.storeAttachment(r.Context(), draftID, att); err != nil {
-				respondError(w, http.StatusInternalServerError, "failed to store draft attachment")
-				return
+		// 正文更新成功后才真正删旧附件；即使这里部分失败，也只是残留文件，
+		// 不会出现「正文已改、附件全丢」的不可恢复状态。
+		for _, ref := range replacedAttachments {
+			if ref.Path != "" {
+				if rmErr := os.Remove(ref.Path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+					a.log.Warn("failed to remove replaced draft attachment file", "path", ref.Path, "error", rmErr)
+				}
+			}
+			if _, delErr := a.db.ExecContext(r.Context(), `DELETE FROM attachments WHERE id=?`, ref.ID); delErr != nil {
+				a.log.Warn("failed to remove replaced draft attachment row", "attachment", ref.ID, "error", delErr)
 			}
 		}
 	}
@@ -2529,7 +2563,12 @@ func (a *App) insertMessageWithDB(ctx context.Context, db dbExecutor, msg stored
 	}
 	for _, att := range attachments {
 		if err := a.storeAttachmentWithDB(ctx, db, id, att); err != nil {
+			// 附件没写成就不能把 messages 行留下：否则会有一条
+			// has_attachments=1 却没有附件的半截邮件，删除/重试都很难对齐。
 			a.deleteMessageFiles(ctx, id)
+			if _, delErr := db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, id); delErr != nil {
+				a.log.Warn("failed to roll back message after attachment failure", "message", id, "error", delErr)
+			}
 			return "", err
 		}
 	}
@@ -2933,4 +2972,41 @@ func validUTF8(value string) string {
 		return value
 	}
 	return strings.ToValidUTF8(value, "\uFFFD")
+}
+
+type attachmentFileRef struct {
+	ID   string
+	Path string
+}
+
+// deleteAttachmentsExcept 删除某邮件下不在 keep 里的附件（行 + 文件）。
+// 用于「新附件写到一半失败」时只回滚本次写入，旧附件原样保留。
+func (a *App) deleteAttachmentsExcept(ctx context.Context, messageID string, keep []attachmentFileRef) {
+	keepIDs := make(map[string]bool, len(keep))
+	for _, ref := range keep {
+		keepIDs[ref.ID] = true
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,storage_path FROM attachments WHERE message_id=?`, messageID)
+	if err != nil {
+		a.log.Warn("failed to list attachments for rollback", "message", messageID, "error", err)
+		return
+	}
+	var stale []attachmentFileRef
+	for rows.Next() {
+		var ref attachmentFileRef
+		if scanErr := rows.Scan(&ref.ID, &ref.Path); scanErr == nil && !keepIDs[ref.ID] {
+			stale = append(stale, ref)
+		}
+	}
+	rows.Close()
+	for _, ref := range stale {
+		if ref.Path != "" {
+			if rmErr := os.Remove(ref.Path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				a.log.Warn("failed to remove orphan attachment file", "path", ref.Path, "error", rmErr)
+			}
+		}
+		if _, delErr := a.db.ExecContext(ctx, `DELETE FROM attachments WHERE id=?`, ref.ID); delErr != nil {
+			a.log.Warn("failed to remove orphan attachment row", "attachment", ref.ID, "error", delErr)
+		}
+	}
 }

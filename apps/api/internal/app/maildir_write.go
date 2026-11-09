@@ -689,3 +689,26 @@ func maildirFlagSeparator() string {
 	}
 	return ":2,"
 }
+
+// removeMaildirFolderIfEmpty 删掉自定义文件夹在磁盘上的空目录。
+// 只在 cur/new/tmp 全空时动手，避免误删还能被同步回来的邮件。
+func (a *App) removeMaildirFolderIfEmpty(mailboxID, folderName string) {
+	root := strings.TrimSpace(a.config().MaildirRoot)
+	if root == "" || strings.TrimSpace(mailboxID) == "" || strings.TrimSpace(folderName) == "" {
+		return
+	}
+	mb, err := a.maildirMailboxByID(context.Background(), mailboxID)
+	if err != nil {
+		return
+	}
+	folderBase := maildirFolderPath(filepath.Join(root, mb.Domain, mb.LocalPart, "Maildir"), folderName)
+	for _, sub := range []string{"cur", "new", "tmp"} {
+		entries, readErr := os.ReadDir(filepath.Join(folderBase, sub))
+		if readErr != nil || len(entries) > 0 {
+			return
+		}
+	}
+	if err := os.RemoveAll(folderBase); err != nil {
+		a.log.Warn("failed to remove maildir folder after delete", "folder", folderBase, "error", err)
+	}
+}

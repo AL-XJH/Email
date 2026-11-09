@@ -229,6 +229,10 @@ func (a *App) nextIMAPMetadataMySQL(ctx context.Context, db dbExecutor, rowDB db
 		}
 		defer func() { _ = tx.Rollback() }()
 		ownTx, exec = tx, tx
+		// rowDB 也必须指向这个事务：否则 SELECT ... FOR UPDATE 在事务外
+		// 自动提交，行锁立刻释放，两个并发插入会读到同一个 uid_next，
+		// 在 MySQL 上撞 (folder_id,imap_uid) 唯一索引。
+		rowDB = tx
 	}
 	var current, modSeq int64
 	if err := rowDB.QueryRowContext(ctx, `SELECT uid_next,highest_modseq FROM folders WHERE id=? FOR UPDATE`, folderID).Scan(&current, &modSeq); err != nil {
