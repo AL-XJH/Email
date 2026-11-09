@@ -1619,6 +1619,30 @@ export function MailPage() {
       ...quoteMessage(full),
     })
   }
+  async function openReplyAll(message: MailMessage) {
+    if (!canSendSelectedMailbox) return
+    const full = await withFullBody(message)
+    const self = (full.mailboxAddress || "").toLowerCase()
+    const primary = (full.replyTo || full.from).trim()
+    const to = Array.from(
+      new Set([primary, ...(full.to || [])].filter((address) => address.toLowerCase() !== self))
+    )
+    const toLower = new Set(to.map((address) => address.toLowerCase()))
+    const cc = Array.from(
+      new Set(
+        (full.cc || []).filter(
+          (address) => address.toLowerCase() !== self && !toLower.has(address.toLowerCase())
+        )
+      )
+    )
+    openCompose({
+      key: `reply-all-${full.id}-${Date.now()}`,
+      to: to.join(", "),
+      cc: cc.join(", "),
+      subject: withPrefix(full.subject, "Re:"),
+      ...quoteMessage(full),
+    })
+  }
   async function openForward(message: MailMessage) {
     if (!canSendSelectedMailbox) return
     try {
@@ -2464,6 +2488,7 @@ export function MailPage() {
           star.mutate({ id: message.id, starred: !message.isStarred })
       }}
       onReply={openReply}
+      onReplyAll={openReplyAll}
       onForward={openForward}
       onSendTimeline={openMessageSendTimeline}
       onArchive={(message) => {
@@ -2612,7 +2637,7 @@ export function MailPage() {
               </div>
             </div>
           </div>
-          <ScrollArea key={`mail-page-${messagePageIndex}`} className="min-h-0 flex-1">
+          <ScrollArea key={`mail-page-${mailListScope}-${messagePageIndex}`} className="min-h-0 flex-1">
             {(mailView === "external" ? externalMessages.isLoading : messages.isLoading) && (
               <MessageSkeleton />
             )}
@@ -4544,6 +4569,7 @@ function CompactMailView({
   onCloseReader,
   onStar,
   onReply,
+  onReplyAll,
   onForward,
   onSendTimeline,
   onArchive,
@@ -4591,6 +4617,7 @@ function CompactMailView({
   onCloseReader: () => void
   onStar: (message: MailMessage) => void
   onReply: (message: MailMessage) => void
+  onReplyAll: (message: MailMessage) => void
   onForward: (message: MailMessage) => void
   onSendTimeline: (message: MailMessage) => void
   onArchive: (message: MailMessage) => void
@@ -4630,6 +4657,7 @@ function CompactMailView({
         onSelect={onSelect}
         onStar={onStar}
         onReply={onReply}
+        onReplyAll={onReplyAll}
         onForward={onForward}
         onSendTimeline={onSendTimeline}
         onArchive={onArchive}

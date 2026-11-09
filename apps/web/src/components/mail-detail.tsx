@@ -9,6 +9,7 @@ import {
   PencilLine,
   Plus,
   Reply,
+  ReplyAll,
   Star,
   Trash2,
   X,
@@ -65,6 +66,7 @@ export function CompactMessageDetail({
   onSelect,
   onStar,
   onReply,
+  onReplyAll,
   onForward,
   onSendTimeline,
   onArchive,
@@ -89,6 +91,7 @@ export function CompactMessageDetail({
   onSelect: (id: string | null) => void
   onStar: (message: MailMessage) => void
   onReply: (message: MailMessage) => void
+  onReplyAll: (message: MailMessage) => void
   onForward: (message: MailMessage) => void
   onSendTimeline: (message: MailMessage) => void
   onArchive: (message: MailMessage) => void
@@ -151,6 +154,12 @@ export function CompactMessageDetail({
                       <DropdownMenuItem onSelect={() => onReply(selected)}>
                         <Reply className="h-4 w-4" />
                         {uiText("回复")}
+                      </DropdownMenuItem>
+                    )}
+                    {canSend && (
+                      <DropdownMenuItem onSelect={() => onReplyAll(selected)}>
+                        <ReplyAll className="h-4 w-4" />
+                        {uiText("全部回复")}
                       </DropdownMenuItem>
                     )}
                     {canSend && (
@@ -220,6 +229,12 @@ export function CompactMessageDetail({
                   <Button variant="outline" size="sm" onClick={() => onReply(selected)}>
                     <Reply className="h-4 w-4" />
                     {uiText("回复")}
+                  </Button>
+                )}
+                {selected && canSend && (
+                  <Button variant="outline" size="sm" onClick={() => onReplyAll(selected)}>
+                    <ReplyAll className="h-4 w-4" />
+                    {uiText("全部回复")}
                   </Button>
                 )}
                 {selected && canSend && (
