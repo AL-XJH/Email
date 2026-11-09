@@ -415,7 +415,8 @@ func (a *App) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			share_id TEXT NOT NULL REFERENCES mailbox_shares(id) ON DELETE CASCADE,
 			mailbox_id TEXT NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
-			actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+			actor_email TEXT NOT NULL DEFAULT '',
 			event TEXT NOT NULL,
 			details_json TEXT NOT NULL DEFAULT '{}',
 			created_at TEXT NOT NULL
@@ -923,6 +924,9 @@ func (a *App) migrate(ctx context.Context) error {
 	if err := a.migrateMailboxSharing(ctx); err != nil {
 		return err
 	}
+	if err := a.migrateMailboxShareAuditActors(ctx); err != nil {
+		return err
+	}
 	if err := a.ensureDefaultPermissionGroups(ctx); err != nil {
 		return err
 	}
@@ -1027,6 +1031,64 @@ func (a *App) migrateMailboxSharing(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (a *App) migrateMailboxShareAuditActors(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `PRAGMA table_info(mailbox_share_audit_events)`)
+	if err != nil {
+		return err
+	}
+	hasActorEmail := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "actor_email" {
+			hasActorEmail = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if hasActorEmail {
+		return nil
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE mailbox_share_audit_events_new (
+		id TEXT PRIMARY KEY,
+		share_id TEXT NOT NULL REFERENCES mailbox_shares(id) ON DELETE CASCADE,
+		mailbox_id TEXT NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+		actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+		actor_email TEXT NOT NULL DEFAULT '',
+		event TEXT NOT NULL,
+		details_json TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_share_audit_events_new(id,share_id,mailbox_id,actor_user_id,actor_email,event,details_json,created_at)
+		SELECT e.id,e.share_id,e.mailbox_id,e.actor_user_id,COALESCE(u.email,''),e.event,e.details_json,e.created_at
+		FROM mailbox_share_audit_events e LEFT JOIN users u ON u.id=e.actor_user_id`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE mailbox_share_audit_events`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE mailbox_share_audit_events_new RENAME TO mailbox_share_audit_events`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_mailbox_share_audit_share ON mailbox_share_audit_events(share_id, created_at DESC)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *App) migrateAPITokenScopes(ctx context.Context) error {

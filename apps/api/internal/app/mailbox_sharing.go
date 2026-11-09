@@ -410,8 +410,8 @@ func (a *App) handleMailboxShareAudit(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "mailbox share not found")
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT e.id,e.share_id,u.email,e.event,e.details_json,e.created_at
-		FROM mailbox_share_audit_events e JOIN users u ON u.id=e.actor_user_id WHERE e.share_id=? ORDER BY e.created_at DESC`, id)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT e.id,e.share_id,COALESCE(NULLIF(e.actor_email,''),u.email,''),e.event,e.details_json,e.created_at
+		FROM mailbox_share_audit_events e LEFT JOIN users u ON u.id=e.actor_user_id WHERE e.share_id=? ORDER BY e.created_at DESC`, id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load mailbox share audit")
 		return
@@ -791,8 +791,9 @@ func (a *App) addMailboxShareAudit(ctx context.Context, executor dbExecutor, sha
 		details = map[string]any{}
 	}
 	encoded, _ := json.Marshal(details)
-	if _, err := executor.ExecContext(ctx, `INSERT INTO mailbox_share_audit_events(id,share_id,mailbox_id,actor_user_id,event,details_json,created_at) VALUES(?,?,?,?,?,?,?)`,
-		newID("sha"), shareID, mailboxID, actorUserID, event, string(encoded), a.now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := executor.ExecContext(ctx, `INSERT INTO mailbox_share_audit_events(id,share_id,mailbox_id,actor_user_id,actor_email,event,details_json,created_at)
+		VALUES(?,?,?,?,(SELECT email FROM users WHERE id=?),?,?,?)`,
+		newID("sha"), shareID, mailboxID, actorUserID, actorUserID, event, string(encoded), a.now().UTC().Format(time.RFC3339Nano)); err != nil {
 		a.log.Warn("failed to record mailbox share audit event", "error", err, "share_id", shareID, "event", event)
 	}
 }
