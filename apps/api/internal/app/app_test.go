@@ -5779,6 +5779,61 @@ func withoutPermissions(items []string, removed ...string) []string {
 	return out
 }
 
+// 移动邮件时目标文件名必须按库里的已读状态重写 flags。
+// 源文件可能叫 `...:2,S` 而库里是未读，原样搬过去会让下一轮同步把它改回已读。
+func TestMoveMessageMaildirRewritesStaleFlags(t *testing.T) {
+	a := newTestApp(t)
+	ctx := context.Background()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
+	user, _, err := a.userByEmail(ctx, "admin@lanqin.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb, err := a.mailboxByAddress(ctx, "admin@lanqin.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := a.sendMailNow(ctx, user, mb, mailComposeInput{
+		MailboxID: mb.ID,
+		To:        []string{"recipient@example.test"},
+		Subject:   "stale flags",
+		Text:      "body",
+		HTML:      "<p>body</p>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawPath := maildirRawPathForTest(t, a, msg.ID)
+	stalePath := maildirPathWithFlags(rawPath, true, false)
+	if err := os.MkdirAll(filepath.Dir(stalePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(rawPath, stalePath); err != nil {
+		t.Fatal(err)
+	}
+	// 文件叫 `:2,S`，库里却是未读。
+	if _, err := a.db.ExecContext(ctx, `UPDATE messages SET is_read=0,raw_path=? WHERE id=?`, stalePath, msg.ID); err != nil {
+		t.Fatal(err)
+	}
+	archiveID, err := a.ensureFolder(ctx, mb.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.moveMessageMaildir(ctx, msg.ID, archiveID); err != nil {
+		t.Fatal(err)
+	}
+	var movedPath string
+	if err := a.db.QueryRowContext(ctx, `SELECT raw_path FROM messages WHERE id=?`, msg.ID).Scan(&movedPath); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(filepath.Base(movedPath), maildirFlagSeparator()+"S") {
+		t.Fatalf("moved file kept stale S flag: %s", movedPath)
+	}
+	if _, err := os.Stat(movedPath); err != nil {
+		t.Fatalf("moved file missing: %v", err)
+	}
+}
+
 func maildirRawPathForTest(t *testing.T, a *App, messageID string) string {
 	t.Helper()
 	var rawPath string

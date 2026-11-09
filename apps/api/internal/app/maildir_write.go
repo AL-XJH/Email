@@ -237,11 +237,14 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 	if err := ensureMaildirFolderDirs(base, folderBase); err != nil {
 		return err
 	}
-	subdir := "cur"
-	if strings.EqualFold(folderName, "Inbox") && !state.IsRead {
-		subdir = "new"
-	}
-	targetPath := filepath.Join(folderBase, subdir, filepath.Base(state.RawPath))
+	// 目标文件名必须按库里的已读/星标状态重新生成 flags，不能直接沿用源文件名：
+	// 源文件可能叫 `...:2,S` 而库里是未读（标记未读只改了库/或上次改名失败），
+	// 原样搬过去后下一轮 maildir 同步又会按 `S` 把它改回已读，标记未读等于没标。
+	targetPath := maildirPathWithFlags(
+		filepath.Join(folderBase, "cur", filepath.Base(state.RawPath)),
+		state.IsRead,
+		state.IsStarred,
+	)
 	if filepath.Clean(targetPath) != filepath.Clean(state.RawPath) {
 		if err := os.Rename(state.RawPath, targetPath); err != nil {
 			return err
