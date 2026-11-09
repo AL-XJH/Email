@@ -58,6 +58,7 @@ type Config struct {
 	ExternalIMAPSyncSeconds         int
 	ExternalIMAPMaxMessageMB        int
 	ExternalIMAPAllowPrivateHosts   bool
+	ExternalIMAPAllowInsecure       bool
 	ExternalIMAPGmailClientID       string
 	ExternalIMAPGmailClientSecret   string
 	ExternalIMAPOutlookClientID     string
@@ -122,6 +123,7 @@ func LoadConfig() Config {
 		ExternalIMAPSyncSeconds:         getenvInt("LANQIN_EXTERNAL_IMAP_SYNC_SECONDS", 300),
 		ExternalIMAPMaxMessageMB:        getenvInt("LANQIN_EXTERNAL_IMAP_MAX_MESSAGE_MB", 50),
 		ExternalIMAPAllowPrivateHosts:   getenvBool("LANQIN_EXTERNAL_IMAP_ALLOW_PRIVATE_HOSTS", false),
+		ExternalIMAPAllowInsecure:       getenvBool("LANQIN_EXTERNAL_IMAP_ALLOW_INSECURE", false),
 		ExternalIMAPGmailClientID:       getenv("LANQIN_EXTERNAL_IMAP_GMAIL_CLIENT_ID", ""),
 		ExternalIMAPGmailClientSecret:   getenv("LANQIN_EXTERNAL_IMAP_GMAIL_CLIENT_SECRET", ""),
 		ExternalIMAPOutlookClientID:     getenv("LANQIN_EXTERNAL_IMAP_OUTLOOK_CLIENT_ID", ""),

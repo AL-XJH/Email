@@ -940,6 +940,12 @@ func (a *App) normalizeExternalIMAPPayload(ctx context.Context, req externalIMAP
 	if req.TLSMode != externalIMAPTLS && req.TLSMode != externalIMAPStartTLS && req.TLSMode != externalIMAPPlain {
 		return req, errors.New("invalid TLS mode")
 	}
+	// 明文 IMAP 等于把邮箱口令和整箱邮件交给同一网段：只允许回环地址
+	// （测试用），自建服务器请用 TLS 或 STARTTLS，确需放开时显式设
+	// LANQIN_EXTERNAL_IMAP_ALLOW_INSECURE=true。
+	if req.TLSMode == externalIMAPPlain && !a.plaintextIMAPAllowed(req.Host) {
+		return req, errors.New("plaintext IMAP is only allowed for loopback hosts; use TLS or STARTTLS")
+	}
 	if req.Port <= 0 {
 		if req.TLSMode == externalIMAPTLS {
 			req.Port = 993
@@ -1647,6 +1653,19 @@ func trimExternalIMAPError(value string) string {
 		return value[:500]
 	}
 	return value
+}
+
+func (a *App) plaintextIMAPAllowed(host string) bool {
+	return a.config().ExternalIMAPAllowInsecure || isLoopbackHost(host)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func normalizeExternalIMAPFolderName(name string) string {
