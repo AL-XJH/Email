@@ -9,7 +9,7 @@
 - `apps/web`：基于 React、TypeScript、Vite 的邮箱前台与管理界面，使用 Tailwind、shadcn/ui、React Query 和 Tiptap。
 - `apps/api`：Go API，入口位于 `cmd/server`，业务代码与测试位于 `internal/app`。
 - 当前功能包括本地邮箱、外部 IMAP 账户、邮箱共享、权限组、附件、定时发送和投递队列。修改时应覆盖受影响的访问路径，不能只考虑主邮箱页面。
-- 数据库支持 SQLite、PostgreSQL 和 MySQL。修改持久化逻辑前，先检查数据库方言辅助函数、表结构及数据库契约测试。
+- 数据库只支持 SQLite（PostgreSQL / MySQL 支持已移除）。写 SQL 直接用 SQLite 语法；`dialect_sql.go` 里保留的 driver 参数是历史签名，不要再加方言分支。
 - `deploy/` 存放邮件服务及数据库部署配置；`docs/API.md` 和 `docs/openapi.json` 描述对外 API。
 - 修改前阅读相关实现与局部规范。前端变更必须先阅读 `apps/web/SHADCN_RULES.md`、`apps/web/scripts/check-shadcn.mjs` 和 `apps/web/package.json`。
 - 工具版本及验证命令以依赖清单、锁文件、`apps/api/go.mod` 和 `.github/workflows/ci.yml` 为准，不直接照搬可能过期的说明文档。
@@ -140,7 +140,7 @@ go test ./...
 ```
 
 - `gofmt -l .` 应不输出任何文件名。只格式化本次修改的 Go 文件，不修改无关文件。
-- 持久化逻辑变更应使用 `.github/workflows/ci.yml` 中描述的测试 DSN，在隔离的 PostgreSQL 和 MySQL 实例上运行 `TestExternalDatabaseContract`。缺少服务或跳过测试，不代表跨数据库验证通过。
+- 持久化逻辑变更跑 `go test ./...` 即可；跨数据库契约测试已随 PG/MySQL 支持一起删除。
 - 部署变更应执行 CI 中适用的 shell 格式、语法检查及 Compose 数据库配置组合验证。不得为复现 CI 覆盖已有 `deploy/.env`，或启动、删除生产服务及数据卷。
 - `make api-check` 还会执行格式化并依赖 `staticcheck`，不等同于 CI 中不会改写源码的 API 验证流程。
 

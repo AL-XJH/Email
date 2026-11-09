@@ -1416,8 +1416,8 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 	}
 	// UIDVALIDITY 变了就不能再对 last_uid 取 max：新空间里的 UID 可能更小，
 	// 取 max 会把游标永久钉在旧值上，之后的邮件全部漏掉。
-	maxLastUID := scalarMaxSQL(a.config().DBDriver, "last_uid", "excluded.last_uid")
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,last_sync_at,created_at,updated_at)
+	maxLastUID := scalarMaxSQL(databaseDriverSQLite, "last_uid", "excluded.last_uid")
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,last_sync_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder)`,
 		`local_folder_id=excluded.local_folder_id,uid_validity=excluded.uid_validity,last_uid=CASE WHEN external_imap_folder_states.uid_validity=excluded.uid_validity THEN `+maxLastUID+` ELSE excluded.last_uid END,last_sync_at=excluded.last_sync_at,updated_at=excluded.updated_at`,
 		`local_folder_id=VALUES(local_folder_id),uid_validity=VALUES(uid_validity),last_uid=CASE WHEN uid_validity=VALUES(uid_validity) THEN GREATEST(last_uid,VALUES(last_uid)) ELSE VALUES(last_uid) END,last_sync_at=VALUES(last_sync_at),updated_at=VALUES(updated_at)`)
@@ -1490,7 +1490,7 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 		return "", err
 	}
 	defer tx.Rollback()
-	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,is_read,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder,uid_validity,uid)`)
+	query := insertIgnoreSQL(databaseDriverSQLite, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,is_read,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, `(account_id,remote_folder,uid_validity,uid)`)
 	res, err := tx.ExecContext(ctx, query, account.ID, folder, item.UIDValidity, item.UID, msg.MessageID, boolInt(item.IsRead), now, now)
 	if err != nil {
 		return "", err

@@ -41,9 +41,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   curl -fsSL "https://packages.redis.io/gpg" | gpg --dearmor > /etc/apt/keyrings/redis.gpg && \
   echo "deb [signed-by=/etc/apt/keyrings/redis.gpg] $REDIS_REPO bookworm main" > /etc/apt/sources.list.d/redis.list && \
   apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates tzdata curl sqlite3 default-mysql-client postgresql-client supervisor nginx \
-    postfix postfix-sqlite postfix-mysql postfix-pgsql \
-    dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-sqlite dovecot-mysql dovecot-pgsql ssl-cert \
+    ca-certificates tzdata curl sqlite3 supervisor nginx \
+    postfix postfix-sqlite \
+    dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-sqlite ssl-cert \
     rspamd \
     redis-server redis-tools
 

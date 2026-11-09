@@ -11,34 +11,11 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Serialize configuration and resource lifecycle writes. External deployments
-// use a database advisory lock so multiple API replicas share the same boundary.
+// 串行化配置与资源生命周期的写入。单实例 SQLite 只需要进程内互斥。
 func (a *App) collectionMutationLock(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.collectionMu.Lock()
 		defer a.collectionMu.Unlock()
-		if a.config().DBDriver != databaseDriverSQLite {
-			// A dedicated connection avoids holding the final pooled connection
-			// while the handler needs that pool to perform the protected write.
-			lockDB, err := openDatabase(r.Context(), *a.config())
-			if err != nil {
-				respondError(w, 503, "collection configuration busy")
-				return
-			}
-			defer lockDB.Close()
-			conn, err := lockDB.Conn(r.Context())
-			if err != nil {
-				respondError(w, 503, "collection configuration busy")
-				return
-			}
-			defer conn.Close()
-			unlock, err := lockExternalSchema(r.Context(), conn, a.config().DBDriver)
-			if err != nil {
-				respondError(w, 503, "collection configuration busy")
-				return
-			}
-			defer unlock()
-		}
 		next.ServeHTTP(w, r)
 	})
 }

@@ -2,87 +2,45 @@ package app
 
 import "strings"
 
-func insertIgnoreSQL(driver, insert, conflictTarget string) string {
-	switch sqlDialect(driver) {
-	case databaseDriverMySQL:
-		return strings.Replace(insert, "INSERT INTO", "INSERT IGNORE INTO", 1)
-	case databaseDriverPostgres:
-		return insert + " ON CONFLICT " + conflictTarget + " DO NOTHING"
-	default:
-		return strings.Replace(insert, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
-	}
+// SQL 生成只面向 SQLite。
+//
+// 这些函数的第一参数曾经是数据库方言，用来在 SQLite / MySQL / PostgreSQL 之间
+// 切换（MySQL 的 INSERT IGNORE、Postgres 的 ON CONFLICT 等）。PostgreSQL/MySQL
+// 支持已删除，参数保留只是为了不动几十个调用点；生成的永远是 SQLite 语法。
+
+func insertIgnoreSQL(_, insert, _ string) string {
+	return strings.Replace(insert, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
 }
 
-func upsertSQL(driver, insert, conflictTarget, update, mysqlUpdate string) string {
-	if sqlDialect(driver) == databaseDriverMySQL {
-		return insert + " ON DUPLICATE KEY UPDATE " + mysqlUpdate
-	}
+func upsertSQL(_, insert, conflictTarget, update, _ string) string {
 	return insert + " ON CONFLICT " + conflictTarget + " DO UPDATE SET " + update
 }
 
-func scalarMaxSQL(driver, left, right string) string {
-	if sqlDialect(driver) == databaseDriverSQLite {
-		return "MAX(" + left + "," + right + ")"
-	}
-	return "GREATEST(" + left + "," + right + ")"
+// scalarMaxSQL 在 SQLite 里是 MAX(a,b)，不再需要 GREATEST。
+func scalarMaxSQL(_, left, right string) string {
+	return "MAX(" + left + "," + right + ")"
 }
 
-func permissionGroupRenameSQL(driver string) string {
-	if sqlDialect(driver) == databaseDriverMySQL {
-		return `UPDATE permission_groups SET name=CONCAT(name,' (',id,')') WHERE name=? AND id<>?`
-	}
+func permissionGroupRenameSQL(_ string) string {
 	return `UPDATE permission_groups SET name=name || ' (' || id || ')' WHERE name=? AND id<>?`
 }
 
-func permissionGroupSystemColumnSQL(driver string) string {
-	if sqlDialect(driver) == databaseDriverMySQL {
-		return "`system`"
-	}
+func permissionGroupSystemColumnSQL(_ string) string {
 	return "system"
 }
 
-func keyColumnSQL(driver string) string {
-	if sqlDialect(driver) == databaseDriverMySQL {
-		return "`key`"
-	}
+func keyColumnSQL(_ string) string {
 	return "key"
 }
 
-func apiTokenLastUsedUpdateSQL(driver string) string {
-	if sqlDialect(driver) == databaseDriverSQLite {
-		return `UPDATE api_tokens SET last_used_at=?
-			WHERE id=? AND (last_used_at IS NULL OR julianday(last_used_at) < julianday(?))`
-	}
+func apiTokenLastUsedUpdateSQL(_ string) string {
+	// SQLite 把时间存成文本，直接字符串比较对 RFC3339 不可靠，统一用 julianday。
 	return `UPDATE api_tokens SET last_used_at=?
-		WHERE id=? AND (last_used_at IS NULL OR last_used_at < ?)`
+		WHERE id=? AND (last_used_at IS NULL OR julianday(last_used_at) < julianday(?))`
 }
 
-func sqlDialect(driver string) string {
-	switch strings.ToLower(strings.TrimSpace(driver)) {
-	case "mysql":
-		return databaseDriverMySQL
-	case "pg", "pgsql", "postgres", "postgresql":
-		return databaseDriverPostgres
-	default:
-		return databaseDriverSQLite
-	}
-}
-
-// lockUserQuotaRowSQL returns a statement that takes an exclusive lock on a user's
-// row, used to serialize rate-limit checks that must count rows before inserting.
-//
-// Counting and then inserting is not safe on its own: PostgreSQL's READ COMMITTED
-// and MySQL's REPEATABLE READ both let two concurrent transactions observe the same
-// count, and SQLite's busy-timeout retries only the blocked statement, leaving the
-// earlier count stale. Serializing on the user row makes the second transaction wait
-// until the first commits, so its subsequent count sees the new row.
-//
-// SQLite has no row-level locking and no FOR UPDATE, so a no-op write is used there
-// to promote the transaction to a writer. Elsewhere FOR UPDATE locks without
-// producing a dead tuple.
-func lockUserQuotaRowSQL(driver string) string {
-	if sqlDialect(driver) == databaseDriverSQLite {
-		return `UPDATE users SET updated_at=updated_at WHERE id=?`
-	}
-	return `SELECT id FROM users WHERE id=? FOR UPDATE`
+// lockUserQuotaRowSQL 用一个空写把事务提升为写事务，串行化「先计数再插入」。
+// SQLite 没有行级锁和 FOR UPDATE，这是它唯一的做法。
+func lockUserQuotaRowSQL(_ string) string {
+	return `UPDATE users SET updated_at=updated_at WHERE id=?`
 }

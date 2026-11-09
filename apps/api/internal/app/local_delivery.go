@@ -152,7 +152,7 @@ func (a *App) deliverLocalRecipients(ctx context.Context, sourceID string, recip
 	jobs := []string{}
 	for target := range targets {
 		id := newID("ldj")
-		query := upsertSQL(a.config().DBDriver, "INSERT INTO local_delivery_jobs(id,source_id,target_mailbox_id,payload,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?,?)", "(source_id,target_mailbox_id)", "source_id=excluded.source_id", "source_id=VALUES(source_id)")
+		query := upsertSQL(databaseDriverSQLite, "INSERT INTO local_delivery_jobs(id,source_id,target_mailbox_id,payload,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?,?)", "(source_id,target_mailbox_id)", "source_id=excluded.source_id", "source_id=VALUES(source_id)")
 		if _, err = tx.ExecContext(ctx, query, id, sourceID, target, string(payload), now, now, now); err != nil {
 			return err
 		}

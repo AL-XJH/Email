@@ -405,7 +405,7 @@ func (a *App) authenticateAPIToken(r *http.Request) (*User, map[string]bool, err
 	lastUsed, lastUsedErr := time.Parse(time.RFC3339Nano, lastUsedAt.String)
 	cutoff := nowTime.Add(-time.Minute)
 	if !lastUsedAt.Valid || lastUsedErr != nil || lastUsed.Before(cutoff) {
-		_, _ = a.db.ExecContext(r.Context(), apiTokenLastUsedUpdateSQL(a.config().DBDriver), now, tokenID, cutoff.Format(time.RFC3339Nano))
+		_, _ = a.db.ExecContext(r.Context(), apiTokenLastUsedUpdateSQL(databaseDriverSQLite), now, tokenID, cutoff.Format(time.RFC3339Nano))
 	}
 	scopes := map[string]bool{}
 	for _, scope := range jsonDecodeSlice(scopesJSON) {

@@ -200,7 +200,7 @@ func (a *App) handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	}
 	id := newID("ctc")
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO contacts(id,user_id,name,email,note,created_at,updated_at)
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO contacts(id,user_id,name,email,note,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?)`, `(user_id,email)`,
 		`name=excluded.name,note=excluded.note,updated_at=excluded.updated_at`,
 		`name=VALUES(name),note=VALUES(note),updated_at=VALUES(updated_at)`)
@@ -616,7 +616,7 @@ func (a *App) handleCreateBlockedSender(w http.ResponseWriter, r *http.Request) 
 	}
 	id := newID("blk")
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO blocked_senders(id,user_id,mailbox_id,email,reason,created_at,updated_at)
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO blocked_senders(id,user_id,mailbox_id,email,reason,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?)`, `(user_id,mailbox_id,email)`,
 		`reason=excluded.reason,updated_at=excluded.updated_at`,
 		`reason=VALUES(reason),updated_at=VALUES(updated_at)`)
@@ -692,7 +692,7 @@ func (a *App) handleCreateAllowedSender(w http.ResponseWriter, r *http.Request) 
 	}
 	id := newID("alw")
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO allowed_senders(id,user_id,mailbox_id,email,reason,created_at,updated_at)
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO allowed_senders(id,user_id,mailbox_id,email,reason,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?)`, `(user_id,mailbox_id,email)`,
 		`reason=excluded.reason,updated_at=excluded.updated_at`,
 		`reason=VALUES(reason),updated_at=VALUES(updated_at)`)
@@ -1521,7 +1521,7 @@ func (a *App) applyRuleLabel(ctx context.Context, mailboxID, messageID string, a
 			return err
 		}
 	}
-	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO message_labels(message_id,label_id,created_at) VALUES(?,?,?)`, `(message_id,label_id)`)
+	query := insertIgnoreSQL(databaseDriverSQLite, `INSERT INTO message_labels(message_id,label_id,created_at) VALUES(?,?,?)`, `(message_id,label_id)`)
 	_, err = a.db.ExecContext(ctx, query, messageID, label.ID, a.now().UTC().Format(time.RFC3339Nano))
 	return err
 }

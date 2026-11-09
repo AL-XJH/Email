@@ -315,7 +315,7 @@ func randomForwardVerificationCode() (string, error) {
 }
 
 func (a *App) forwardAddressStatesForUser(ctx context.Context, userID string) ([]forwardAddressState, error) {
-	keyColumn := keyColumnSQL(a.config().DBDriver)
+	keyColumn := keyColumnSQL(databaseDriverSQLite)
 	rows, err := a.db.QueryContext(ctx, `SELECT value FROM system_settings WHERE `+keyColumn+` LIKE ?`, forwardAddressSettingPrefix+strings.TrimSpace(userID)+":%")
 	if err != nil {
 		return nil, err
@@ -354,7 +354,7 @@ func (a *App) forwardAddressStateByID(ctx context.Context, userID, id string) (f
 }
 
 func (a *App) forwardAddressStateByIDWithRaw(ctx context.Context, userID, id string) (forwardAddressState, string, error) {
-	keyColumn := keyColumnSQL(a.config().DBDriver)
+	keyColumn := keyColumnSQL(databaseDriverSQLite)
 	var raw string
 	if err := a.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE `+keyColumn+`=?`, forwardAddressSettingKey(userID, id)).Scan(&raw); err != nil {
 		return forwardAddressState{}, "", err
@@ -367,16 +367,16 @@ func (a *App) forwardAddressStateByIDWithRaw(ctx context.Context, userID, id str
 }
 
 func (a *App) saveForwardAddressState(ctx context.Context, userID string, state forwardAddressState) error {
-	keyColumn := keyColumnSQL(a.config().DBDriver)
+	keyColumn := keyColumnSQL(databaseDriverSQLite)
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO system_settings(`+keyColumn+`,value,updated_at) VALUES(?,?,?)`, `(`+keyColumn+`)`,
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO system_settings(`+keyColumn+`,value,updated_at) VALUES(?,?,?)`, `(`+keyColumn+`)`,
 		`value=excluded.value,updated_at=excluded.updated_at`, `value=VALUES(value),updated_at=VALUES(updated_at)`)
 	_, err := a.db.ExecContext(ctx, query, forwardAddressSettingKey(userID, state.ID), jsonEncode(state), now)
 	return err
 }
 
 func (a *App) compareAndSwapForwardAddressState(ctx context.Context, userID, previous string, state forwardAddressState) (bool, error) {
-	keyColumn := keyColumnSQL(a.config().DBDriver)
+	keyColumn := keyColumnSQL(databaseDriverSQLite)
 	result, err := a.db.ExecContext(ctx, `UPDATE system_settings SET value=?,updated_at=? WHERE `+keyColumn+`=? AND value=?`,
 		jsonEncode(state), a.now().UTC().Format(time.RFC3339Nano), forwardAddressSettingKey(userID, state.ID), previous)
 	if err != nil {
@@ -387,7 +387,7 @@ func (a *App) compareAndSwapForwardAddressState(ctx context.Context, userID, pre
 }
 
 func (a *App) deleteForwardAddressState(ctx context.Context, userID, id string) error {
-	keyColumn := keyColumnSQL(a.config().DBDriver)
+	keyColumn := keyColumnSQL(databaseDriverSQLite)
 	_, err := a.db.ExecContext(ctx, `DELETE FROM system_settings WHERE `+keyColumn+`=?`, forwardAddressSettingKey(userID, id))
 	return err
 }

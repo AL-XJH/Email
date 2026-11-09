@@ -39,7 +39,7 @@ func (a *App) enqueueStatusWebhook(ctx context.Context, db dbExecutor, eventKey,
 	now := a.now().UTC()
 	id := newID("whk")
 	payload := jsonEncode(statusWebhookEnvelope{ID: id, Type: eventType, CreatedAt: now.Format(time.RFC3339Nano), Data: data})
-	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO status_webhook_outbox(id,event_key,event_type,mailbox_id,payload_json,next_attempt_at,created_at,updated_at)
+	query := insertIgnoreSQL(databaseDriverSQLite, `INSERT INTO status_webhook_outbox(id,event_key,event_type,mailbox_id,payload_json,next_attempt_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, `(event_key)`)
 	_, err := db.ExecContext(ctx, query, id, eventKey, eventType, mailboxID, payload, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	return err

@@ -98,16 +98,6 @@ func (a *App) checkSchemaReady(ctx context.Context) error {
 			return err
 		}
 	}
-	if a.config().DBDriver == databaseDriverSQLite {
-		return nil
-	}
-	var count, version int
-	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&count, &version); err != nil {
-		return err
-	}
-	if count != externalSchemaVersion || version != externalSchemaVersion {
-		return context.Canceled
-	}
 	return nil
 }
 

@@ -769,7 +769,7 @@ func (a *App) handleAddMessageLabel(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO message_labels(message_id,label_id,created_at) VALUES(?,?,?)`, `(message_id,label_id)`)
+	query := insertIgnoreSQL(databaseDriverSQLite, `INSERT INTO message_labels(message_id,label_id,created_at) VALUES(?,?,?)`, `(message_id,label_id)`)
 	_, err = a.db.ExecContext(r.Context(), query, msg.ID, label.ID, a.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to add label")

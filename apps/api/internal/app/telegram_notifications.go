@@ -168,7 +168,7 @@ func (a *App) handleSaveTelegramSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer tx.Rollback()
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO telegram_notification_settings(user_id,bot_token_ciphertext,bot_username,chat_id,enabled,last_error,created_at,updated_at)
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO telegram_notification_settings(user_id,bot_token_ciphertext,bot_username,chat_id,enabled,last_error,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?)`, `(user_id)`,
 		`bot_token_ciphertext=excluded.bot_token_ciphertext,bot_username=excluded.bot_username,chat_id=excluded.chat_id,enabled=excluded.enabled,last_error='',updated_at=excluded.updated_at`,
 		`bot_token_ciphertext=VALUES(bot_token_ciphertext),bot_username=VALUES(bot_username),chat_id=VALUES(chat_id),enabled=VALUES(enabled),last_error='',updated_at=VALUES(updated_at)`)
@@ -341,7 +341,7 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	eventKey := "telegram:" + ruleID + ":" + messageID
-	query := insertIgnoreSQL(a.config().DBDriver, `INSERT INTO telegram_notification_outbox(id,event_key,user_id,mailbox_id,message_id,rule_id,payload_json,next_attempt_at,created_at,updated_at)
+	query := insertIgnoreSQL(databaseDriverSQLite, `INSERT INTO telegram_notification_outbox(id,event_key,user_id,mailbox_id,message_id,rule_id,payload_json,next_attempt_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`, `(event_key)`)
 	_, err = a.db.ExecContext(ctx, query, newID("tgn"), eventKey, userID, mailboxID, messageID, ruleID, jsonEncode(payload), now, now, now)
 	return err

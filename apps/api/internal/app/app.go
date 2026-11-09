@@ -88,7 +88,6 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	cfg = normalizeDatabaseConfig(cfg)
 	if strings.TrimSpace(cfg.SiteTitle) == "" {
 		cfg.SiteTitle = "LanQin Email"
 	}
@@ -97,10 +96,8 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		// so anyone on the path can lift a login. It exists for local development.
 		logger.Warn("LANQIN_ALLOW_INSECURE_HTTP is enabled: session cookies are sent without Secure and non-HTTPS callbacks are accepted; do not use this in production")
 	}
-	if cfg.DBDriver == databaseDriverSQLite {
-		if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
-			return nil, fmt.Errorf("create db dir: %w", err)
-		}
+	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "attachments"), 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -116,11 +113,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	a.setNow(time.Now)
 	a.externalIMAP = a
 	a.linuxDoOAuth = newLinuxDoHTTPClient()
-	if cfg.DBDriver == databaseDriverSQLite {
-		if err := a.configureSQLite(context.Background()); err != nil {
-			db.Close()
-			return nil, err
-		}
+	if err := a.configureSQLite(context.Background()); err != nil {
+		db.Close()
+		return nil, err
 	}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
@@ -224,13 +219,6 @@ func (a *App) configureSQLite(ctx context.Context) error {
 }
 
 func (a *App) migrate(ctx context.Context) error {
-	if a.config().DBDriver != databaseDriverSQLite {
-		if err := initializeExternalSchema(ctx, a.db, a.config().DBDriver); err != nil {
-			return err
-		}
-		return a.ensureDefaultPermissionGroups(ctx)
-	}
-
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
@@ -2107,6 +2095,6 @@ func (a *App) seedWelcomeMessage(ctx context.Context, mailboxID string) error {
 // lockUserQuotaRowTx serializes concurrent quota checks for one user. See
 // lockUserQuotaRowSQL for why counting without this is unsafe on every driver.
 func (a *App) lockUserQuotaRowTx(ctx context.Context, tx *sql.Tx, userID string) error {
-	_, err := tx.ExecContext(ctx, lockUserQuotaRowSQL(a.config().DBDriver), userID)
+	_, err := tx.ExecContext(ctx, lockUserQuotaRowSQL(databaseDriverSQLite), userID)
 	return err
 }

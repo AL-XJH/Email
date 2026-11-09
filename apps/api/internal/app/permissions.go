@@ -550,17 +550,17 @@ func permissionGroupNames() map[string]string {
 
 func (a *App) ensureDefaultPermissionGroups(ctx context.Context) error {
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	systemColumn := permissionGroupSystemColumnSQL(a.config().DBDriver)
+	systemColumn := permissionGroupSystemColumnSQL(databaseDriverSQLite)
 	for _, item := range defaultPermissionGroups() {
-		if _, err := a.db.ExecContext(ctx, permissionGroupRenameSQL(a.config().DBDriver), item.Name, item.ID); err != nil {
+		if _, err := a.db.ExecContext(ctx, permissionGroupRenameSQL(databaseDriverSQLite), item.Name, item.ID); err != nil {
 			return err
 		}
-		query := upsertSQL(a.config().DBDriver, `INSERT INTO permission_groups(id,name,description,permissions_json,limits_json,`+systemColumn+`,created_at,updated_at)
+		query := upsertSQL(databaseDriverSQLite, `INSERT INTO permission_groups(id,name,description,permissions_json,limits_json,`+systemColumn+`,created_at,updated_at)
 			VALUES(?,?,?,?,?,?,?,?)`, `(id)`,
 			`name=excluded.name,description=excluded.description,permissions_json=excluded.permissions_json,limits_json=excluded.limits_json,`+systemColumn+`=excluded.`+systemColumn+`,updated_at=excluded.updated_at`,
 			`name=VALUES(name),description=VALUES(description),permissions_json=VALUES(permissions_json),limits_json=VALUES(limits_json),`+systemColumn+`=VALUES(`+systemColumn+`),updated_at=VALUES(updated_at)`)
 		if item.ID == PermissionGroupRegular {
-			query = upsertSQL(a.config().DBDriver, `INSERT INTO permission_groups(id,name,description,permissions_json,limits_json,`+systemColumn+`,created_at,updated_at)
+			query = upsertSQL(databaseDriverSQLite, `INSERT INTO permission_groups(id,name,description,permissions_json,limits_json,`+systemColumn+`,created_at,updated_at)
 				VALUES(?,?,?,?,?,?,?,?)`, `(id)`,
 				`name=excluded.name,description=excluded.description,`+systemColumn+`=excluded.`+systemColumn+`,updated_at=excluded.updated_at`,
 				`name=VALUES(name),description=VALUES(description),`+systemColumn+`=VALUES(`+systemColumn+`),updated_at=VALUES(updated_at)`)
@@ -580,7 +580,7 @@ func (a *App) ensureDefaultPermissionGroups(ctx context.Context) error {
 
 func (a *App) ensureRegularUserMailPermissions(ctx context.Context) error {
 	var migrated string
-	keyColumn := keyColumnSQL(a.config().DBDriver)
+	keyColumn := keyColumnSQL(databaseDriverSQLite)
 	err := a.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE `+keyColumn+`=?`, regularUserPermissionMigrationKey).Scan(&migrated)
 	if err == nil && migrated == "1" {
 		return nil
@@ -615,7 +615,7 @@ func (a *App) ensureRegularUserMailPermissions(ctx context.Context) error {
 			return err
 		}
 	}
-	query := upsertSQL(a.config().DBDriver, `INSERT INTO system_settings(`+keyColumn+`,value,updated_at) VALUES(?,?,?)`, `(`+keyColumn+`)`,
+	query := upsertSQL(databaseDriverSQLite, `INSERT INTO system_settings(`+keyColumn+`,value,updated_at) VALUES(?,?,?)`, `(`+keyColumn+`)`,
 		`value=excluded.value,updated_at=excluded.updated_at`,
 		`value=VALUES(value),updated_at=VALUES(updated_at)`)
 	_, err = a.db.ExecContext(ctx, query, regularUserPermissionMigrationKey, "1", now)
@@ -623,7 +623,7 @@ func (a *App) ensureRegularUserMailPermissions(ctx context.Context) error {
 }
 
 func (a *App) cleanupLegacyDefaultPermissionGroups(ctx context.Context) error {
-	systemColumn := permissionGroupSystemColumnSQL(a.config().DBDriver)
+	systemColumn := permissionGroupSystemColumnSQL(databaseDriverSQLite)
 	for _, groupID := range legacyDefaultPermissionGroupIDs {
 		var userCount int
 		if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_permission_groups WHERE group_id=?`, groupID).Scan(&userCount); err != nil {
@@ -1123,7 +1123,7 @@ func (a *App) validateAssignableGroupIDsTx(ctx context.Context, tx *sql.Tx, grou
 }
 
 func (a *App) permissionGroupByID(ctx context.Context, id string) (*PermissionGroup, error) {
-	systemColumn := "pg." + permissionGroupSystemColumnSQL(a.config().DBDriver)
+	systemColumn := "pg." + permissionGroupSystemColumnSQL(databaseDriverSQLite)
 	row := a.db.QueryRowContext(ctx, `SELECT pg.id,pg.name,pg.description,pg.permissions_json,pg.limits_json,`+systemColumn+`,pg.created_at,pg.updated_at,COUNT(upg.user_id)
 		FROM permission_groups pg
 		LEFT JOIN user_permission_groups upg ON upg.group_id=pg.id

@@ -774,7 +774,7 @@ func saveMailboxShareScopes(ctx context.Context, tx *sql.Tx, shareID string, fol
 // addMailboxShareAudit records who touched a shared mailbox. It cannot return an
 // error without changing every caller, so a failure is at least logged: silently
 // losing an audit row would leave cross-account access untraceable.
-func (a *App) addMailboxShareAudit(ctx context.Context, executor externalSchemaExecutor, shareID, mailboxID, actorUserID, event string, details map[string]any) {
+func (a *App) addMailboxShareAudit(ctx context.Context, executor dbExecutor, shareID, mailboxID, actorUserID, event string, details map[string]any) {
 	if details == nil {
 		details = map[string]any{}
 	}
@@ -785,7 +785,7 @@ func (a *App) addMailboxShareAudit(ctx context.Context, executor externalSchemaE
 	}
 }
 
-func (a *App) addNotification(ctx context.Context, executor externalSchemaExecutor, userID, kind, title, body string, data map[string]any, dedupeKey string) {
+func (a *App) addNotification(ctx context.Context, executor dbExecutor, userID, kind, title, body string, data map[string]any, dedupeKey string) {
 	if data == nil {
 		data = map[string]any{}
 	}
