@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -435,19 +436,21 @@ func (a *App) deleteSentDedupeKey(ctx context.Context, mailboxID, folderID, mess
 }
 
 func readMessageHeader(raw []byte) (textproto.MIMEHeader, []byte, error) {
-	msg, err := netmail.ReadMessage(bytes.NewReader(raw))
+	// 用 bufio 精确记录头结束位置，正文直接切片复用 raw 的底层数组，
+	// 避免再把整封正文复制一份（大附件时这一份就是几十 MB）。
+	br := bufio.NewReader(bytes.NewReader(raw))
+	tp := textproto.NewReader(br)
+	header, err := tp.ReadMIMEHeader()
 	if err != nil {
 		return nil, nil, err
 	}
-	body, err := io.ReadAll(msg.Body)
-	if err != nil {
-		return nil, nil, err
-	}
-	return textproto.MIMEHeader(msg.Header), body, nil
+	body := raw[len(raw)-br.Buffered():]
+	return header, body, nil
 }
 
 func serializeMessage(header textproto.MIMEHeader, body []byte) []byte {
 	var buf bytes.Buffer
+	buf.Grow(len(body) + 512)
 	keys := make([]string, 0, len(header))
 	for key := range header {
 		keys = append(keys, key)
