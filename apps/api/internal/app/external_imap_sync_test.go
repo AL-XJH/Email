@@ -95,7 +95,9 @@ func TestExternalIMAPSyncFolderUsesBatchBodiesAndRetriesFailedUID(t *testing.T) 
 	if err := a.db.QueryRow(`SELECT last_uid FROM external_imap_folder_states WHERE account_id=? AND remote_folder=?`, accountID, "INBOX").Scan(&lastUID); err != nil {
 		t.Fatal(err)
 	}
-	if lastUID != 1 {
-		t.Fatalf("last UID checkpoint=%d, want successful UID 1", lastUID)
+	// 失败的那封跳过并把游标推过去，否则下一轮又从同一 UID 重来，
+	// 后面所有邮件永远同步不到。
+	if lastUID != 2 {
+		t.Fatalf("last UID checkpoint=%d, want 2 (advance past the failed UID)", lastUID)
 	}
 }

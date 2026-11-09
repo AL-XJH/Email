@@ -433,6 +433,11 @@ func (a *App) enqueueRuleForward(ctx context.Context, mailboxID, messageID, rule
 	if user.Disabled || !userHasPermission(user, PermissionMailRules) {
 		return nil
 	}
+	// 转发等于用这个邮箱再发一封出去：没有发信权限 / 邮箱访问权限时不做，
+	// 否则「只有规则权限」的账号就能把收到的信全部转发出去。
+	if !userHasPermission(user, PermissionMailSend) || !userHasPermission(user, PermissionMailAccess) {
+		return nil
+	}
 	if verified, err := a.ruleForwardAddressesVerified(ctx, user.ID, recipients); err != nil || !verified {
 		return err
 	}
@@ -454,10 +459,9 @@ func (a *App) enqueueRuleForward(ctx context.Context, mailboxID, messageID, rule
 	if err != nil {
 		return err
 	}
-	queueMessageID := strings.TrimSpace(stored.MessageID)
-	if queueMessageID == "" {
-		queueMessageID = "local:" + messageID
-	}
+	// 去重键必须用本地 message id：两封不同邮件复用同一个 RFC Message-ID 时，
+	// 用 header 里的 ID 会让第二封的转发直接被判成重复而丢掉。
+	queueMessageID := "local:" + messageID
 	source := ruleForwardSource(ruleID)
 	var existing int
 	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM send_queue WHERE mailbox_id=? AND source=? AND message_id=?`, mailboxID, source, queueMessageID).Scan(&existing); err != nil {

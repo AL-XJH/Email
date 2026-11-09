@@ -309,6 +309,16 @@ func (a *App) handleUpdateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	// 换了服务器/账号/绑定邮箱/存储模式，旧的 UID 游标和已导入邮件都不再对应
+	// 同一个空间：留着会让新服务器上 UID 更小的邮件被永久跳过，或者让旧邮件
+	// 挂在新邮箱下永远看不见。直接按「重新接入」处理，清了重新同步。
+	if normalized.Host != current.Host || normalized.Port != current.Port ||
+		normalized.TLSMode != current.TLSMode || normalized.Username != current.Username ||
+		normalized.MailboxID != current.MailboxID || normalized.StorageMode != current.StorageMode {
+		a.log.Info("external imap account connection changed, clearing imported data",
+			"account", current.ID, "host", normalized.Host, "mailbox", normalized.MailboxID)
+		a.deleteExternalIMAPLocalData(r.Context(), current.ID, user.ID)
+	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	_, err = a.db.ExecContext(r.Context(), `UPDATE external_imap_accounts SET mailbox_id=?,name=?,host=?,port=?,tls_mode=?,username=?,password_ciphertext=?,storage_mode=?,sync_read_state=?,enabled=?,updated_at=? WHERE id=? AND user_id=?`,
 		normalized.MailboxID, normalized.Name, normalized.Host, normalized.Port, normalized.TLSMode, normalized.Username, ciphertext, normalized.StorageMode, boolInt(*normalized.SyncReadState), boolInt(*normalized.Enabled), now, id, user.ID)
@@ -563,6 +573,11 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, "oauth account email does not match requested external email")
 		return
 	}
+	// OAuth 窗口有 10 分钟：期间邮箱可能被转走，落库前再确认一次归属。
+	if _, err := a.mailboxForUserByID(r.Context(), state.UserID, state.MailboxID); err != nil {
+		respondError(w, http.StatusBadRequest, "mailbox not found for this account")
+		return
+	}
 	id := newID("ximap")
 	_, err = a.db.ExecContext(r.Context(), `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,auth_mode,oauth_provider,oauth_email,oauth_access_token_ciphertext,oauth_refresh_token_ciphertext,oauth_expiry,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, state.UserID, state.MailboxID, name, profile.Host, profile.Port, externalIMAPTLS, authorizedEmail, "", externalIMAPAuthOAuth2, provider, authorizedEmail, accessCipher, refreshCipher, expiry, state.StorageMode, boolInt(state.SyncReadState), boolInt(state.Enabled), "idle", now, now)
@@ -708,6 +723,10 @@ func (a *App) handleExternalIMAPMessage(w http.ResponseWriter, r *http.Request) 
 	defer client.Close()
 	raw, remote, err := client.FetchRaw(r.Context(), folder, uid)
 	if err != nil {
+		if errors.Is(err, errExternalIMAPMessageTooLarge) {
+			respondError(w, http.StatusRequestEntityTooLarge, "邮件超过单封大小上限，无法在网页打开")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "failed to load remote message")
 		return
 	}
@@ -795,6 +814,10 @@ func (a *App) handleExternalIMAPAttachment(w http.ResponseWriter, r *http.Reques
 	if partID != "raw" {
 		data, att, err := client.FetchPart(r.Context(), folder, uid, partID)
 		if err != nil {
+			if errors.Is(err, errExternalIMAPMessageTooLarge) {
+				respondError(w, http.StatusRequestEntityTooLarge, "附件超过单个大小上限")
+				return
+			}
 			respondError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
@@ -804,6 +827,10 @@ func (a *App) handleExternalIMAPAttachment(w http.ResponseWriter, r *http.Reques
 	}
 	raw, remote, err := client.FetchRaw(r.Context(), folder, uid)
 	if err != nil {
+		if errors.Is(err, errExternalIMAPMessageTooLarge) {
+			respondError(w, http.StatusRequestEntityTooLarge, "邮件超过单封大小上限")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "failed to load remote message")
 		return
 	}
@@ -1335,7 +1362,8 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 	}
 	imported, skipped, failed := 0, 0, 0
 	lastUID := state.LastUID
-	if state.UIDValidity != 0 && state.UIDValidity != folder.UIDValidity {
+	uidValidityChanged := state.UIDValidity != 0 && folder.UIDValidity != 0 && state.UIDValidity != folder.UIDValidity
+	if uidValidityChanged {
 		// 远端重建了 UID 空间（迁移/重建索引）。旧的 last_uid 在新空间里没有意义，
 		// 继续用它会导致「新邮件 UID 比旧值小」而被永久跳过。从头扫一遍，
 		// 重复的邮件靠 Message-ID 去重。
@@ -1388,25 +1416,49 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 				}
 			}
 			if err != nil {
+				// 单封取不下来（远端异常、超过大小上限）不能卡住整个文件夹：
+				// 以前这里 break 且不推进 last_uid，下一轮从同一 UID 重来，
+				// 后面所有邮件永远同步不到。
 				failed++
-				stop = true
-				break
+				a.log.Warn("failed to fetch external imap message, skipped", "account", account.ID, "folder", folder.Name, "uid", item.UID, "error", err)
+				lastUID = item.UID
+				processed++
+				continue
 			}
 			stored, attachments, err := a.parseMaildirMessage(raw, account.Username)
 			if err != nil {
 				failed++
-				stop = true
-				break
+				a.log.Warn("failed to parse external imap message, skipped", "account", account.ID, "folder", folder.Name, "uid", item.UID, "error", err)
+				lastUID = item.UID
+				processed++
+				continue
 			}
 			stored.MailboxID = account.MailboxID
 			stored.FolderID = localFolderID
 			stored.RecipientAddr = account.Username
+			// 排序用 IMAP 的 InternalDate（真实到达时间），不要用发件人可伪造的 Date 头。
+			if !item.ReceivedAt.IsZero() {
+				stored.ReceivedAt = item.ReceivedAt
+			}
+			if stored.MessageID == "" && item.MessageID != "" {
+				stored.MessageID = item.MessageID
+			}
+			if strings.TrimSpace(stored.Subject) == "" && strings.TrimSpace(item.Subject) != "" {
+				stored.Subject = item.Subject
+			}
 			stored.IsRead = item.IsRead
-			msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, folder.Name, item, stored, attachments)
+			msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, folder.Name, item, stored, attachments, uidValidityChanged)
 			if err != nil {
 				failed++
-				stop = true
-				break
+				if errors.Is(err, errMailboxQuotaExceeded) {
+					// 配额是用户可恢复的：不要吞邮件，停下来等用户清理。
+					stop = true
+					break
+				}
+				a.log.Warn("failed to import external imap message, skipped", "account", account.ID, "folder", folder.Name, "uid", item.UID, "error", err)
+				lastUID = item.UID
+				processed++
+				continue
 			}
 			if msgID != "" {
 				if err := a.writeStoredMessageToMaildir(ctx, msgID, stored, attachments); err != nil {
@@ -1495,7 +1547,7 @@ func (a *App) externalIMAPRemoteMessageExists(ctx context.Context, accountID, fo
 	return exists == 1
 }
 
-func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externalIMAPAccountRecord, folder string, item externalIMAPRemoteMessage, msg storedMessage, attachments []AttachmentInput) (string, error) {
+func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externalIMAPAccountRecord, folder string, item externalIMAPRemoteMessage, msg storedMessage, attachments []AttachmentInput, dedupeByMessageID bool) (string, error) {
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1510,8 +1562,9 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", tx.Commit()
 	}
-	if msg.MessageID != "" {
-		// UIDVALIDITY 重置后重扫，同一封信会以新的 UID 再出现一次。
+	if msg.MessageID != "" && dedupeByMessageID {
+		// 只在 UIDVALIDITY 重置后的重扫里按 Message-ID 去重：
+		// 平时两封不同邮件复用同一个 Message-ID（营销邮件、坏客户端）不能吞掉一封。
 		// 这里按 Message-ID 认一下：已经在本地就直接补映射，不再插一封重复的邮件。
 		var existingID string
 		err := tx.QueryRowContext(ctx, `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? LIMIT 1`,
@@ -1821,7 +1874,7 @@ func (a *App) openExternalIMAPClient(ctx context.Context, account externalIMAPAc
 			return nil, err
 		}
 	}
-	return &goExternalIMAPClient{client: c}, nil
+	return &goExternalIMAPClient{client: c, maxMessageBytes: a.externalIMAPMaxMessageBytes()}, nil
 }
 
 type externalIMAPXOAUTH2Client struct {
@@ -1892,6 +1945,9 @@ func (a *App) externalIMAPOAuthAccessToken(ctx context.Context, account external
 
 type goExternalIMAPClient struct {
 	client *imapclient.Client
+	// 单封邮件允许整封载入内存的上限。UI 的 FetchRaw/FetchPart 也要走这个闸门：
+	// 只给同步循环加限制挡不住「打开一封 2GB 的远端邮件」。
+	maxMessageBytes int64
 }
 
 func (c *goExternalIMAPClient) Close() error {
@@ -1906,7 +1962,7 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 	caps := c.client.Caps()
 	var options *imap.ListOptions
 	if caps.Has(imap.CapIMAP4rev2) || caps.Has(imap.CapListStatus) {
-		options = &imap.ListOptions{ReturnStatus: &imap.StatusOptions{NumMessages: true, NumUnseen: true}}
+		options = &imap.ListOptions{ReturnStatus: &imap.StatusOptions{NumMessages: true, NumUnseen: true, UIDValidity: true}}
 	}
 	list, err := c.client.List("", "*", options).Collect()
 	if err != nil && options != nil {
@@ -1933,6 +1989,7 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 			if item.Status.NumUnseen != nil {
 				f.UnreadCount = int(*item.Status.NumUnseen)
 			}
+			f.UIDValidity = item.Status.UIDValidity
 		}
 		if strings.EqualFold(item.Mailbox, "INBOX") {
 			f.Name = "INBOX"
@@ -1940,7 +1997,7 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 		folders = append(folders, f)
 	}
 	if options == nil {
-		statusOptions := &imap.StatusOptions{NumMessages: true, NumUnseen: true}
+		statusOptions := &imap.StatusOptions{NumMessages: true, NumUnseen: true, UIDValidity: true}
 		for i := range folders {
 			status, err := c.client.Status(folders[i].Name, statusOptions).Wait()
 			if err != nil {
@@ -1952,6 +2009,7 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 			if status.NumUnseen != nil {
 				folders[i].UnreadCount = int(*status.NumUnseen)
 			}
+			folders[i].UIDValidity = status.UIDValidity
 		}
 	}
 	if len(folders) == 0 {
@@ -2184,10 +2242,26 @@ func boundedSearchUIDs(numSet imap.NumSet, limit int, newestFirst bool) []imap.U
 	return uids
 }
 
+var errExternalIMAPMessageTooLarge = errors.New("external imap message exceeds size limit")
+
 func (c *goExternalIMAPClient) FetchRaw(ctx context.Context, folder string, uid uint32) ([]byte, externalIMAPRemoteMessage, error) {
 	selected, err := c.client.Select(folder, nil).Wait()
 	if err != nil {
 		return nil, externalIMAPRemoteMessage{}, err
+	}
+	if c.maxMessageBytes > 0 {
+		// 先只取 RFC822.SIZE，确认体积再用 BODY[]；否则 Collect() 会在返回前
+		// 就把整封读进内存，限制写在后面已经来不及。
+		metas, err := c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, RFC822Size: true}).Collect()
+		if err != nil {
+			return nil, externalIMAPRemoteMessage{}, err
+		}
+		if len(metas) == 0 {
+			return nil, externalIMAPRemoteMessage{}, sql.ErrNoRows
+		}
+		if metas[0].RFC822Size > c.maxMessageBytes {
+			return nil, externalIMAPRemoteMessage{}, errExternalIMAPMessageTooLarge
+		}
 	}
 	bodySection := &imap.FetchItemBodySection{Peek: true}
 	messages, err := c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
@@ -2251,6 +2325,9 @@ func (c *goExternalIMAPClient) FetchPart(ctx context.Context, folder string, uid
 	}
 	if att.ID == "" {
 		return nil, Attachment{}, sql.ErrNoRows
+	}
+	if c.maxMessageBytes > 0 && att.SizeBytes > c.maxMessageBytes {
+		return nil, Attachment{}, errExternalIMAPMessageTooLarge
 	}
 	bodySection := &imap.FetchItemBodySection{Part: path, Peek: true}
 	messages, err := c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()

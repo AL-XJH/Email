@@ -152,7 +152,16 @@ func (a *App) deliverLocalRecipients(ctx context.Context, sourceID string, recip
 	jobs := []string{}
 	for target := range targets {
 		id := newID("ldj")
-		query := upsertSQL(databaseDriverSQLite, "INSERT INTO local_delivery_jobs(id,source_id,target_mailbox_id,payload,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?,?)", "(source_id,target_mailbox_id)", "source_id=excluded.source_id", "source_id=VALUES(source_id)")
+		// 同一个 (source, target) 之前失败过时，重投必须能复活这条 job：
+		// 原样 upsert 只会更新 source_id（等于没改），队列里永远是一条 failed。
+		query := `INSERT INTO local_delivery_jobs(id,source_id,target_mailbox_id,payload,status,next_attempt_at,created_at,updated_at)
+			VALUES(?,?,?,?,'queued',?,?,?)
+			ON CONFLICT(source_id,target_mailbox_id) DO UPDATE SET
+				status=CASE WHEN local_delivery_jobs.status IN ('failed','canceled') THEN 'queued' ELSE local_delivery_jobs.status END,
+				payload=CASE WHEN local_delivery_jobs.status IN ('failed','canceled') THEN excluded.payload ELSE local_delivery_jobs.payload END,
+				attempts=CASE WHEN local_delivery_jobs.status IN ('failed','canceled') THEN 0 ELSE local_delivery_jobs.attempts END,
+				next_attempt_at=CASE WHEN local_delivery_jobs.status IN ('failed','canceled') THEN excluded.next_attempt_at ELSE local_delivery_jobs.next_attempt_at END,
+				updated_at=excluded.updated_at`
 		if _, err = tx.ExecContext(ctx, query, id, sourceID, target, string(payload), now, now, now); err != nil {
 			return err
 		}
@@ -245,7 +254,8 @@ func (a *App) processLocalDelivery(ctx context.Context, id string) {
 		status = "failed"
 	}
 	delay := time.Duration(30*(1<<min(attempts, 7))) * time.Second
-	_, _ = a.db.ExecContext(ctx, "UPDATE local_delivery_jobs SET status=?,next_attempt_at=?,last_error=?,lease_token='',lease_until='',payload=CASE WHEN ?='failed' THEN '' ELSE payload END,updated_at=? WHERE id=? AND lease_token=?", status, now.Add(delay).Format(time.RFC3339Nano), code, status, stamp, id, token)
+	// 保留 payload：这是收件人最后一份副本，清掉就真的没了。清理任务会按保留期删掉终态行。
+	_, _ = a.db.ExecContext(ctx, "UPDATE local_delivery_jobs SET status=?,next_attempt_at=?,last_error=?,lease_token='',lease_until='',updated_at=? WHERE id=? AND lease_token=?", status, now.Add(delay).Format(time.RFC3339Nano), code, stamp, id, token)
 	a.log.Warn("local delivery deferred", "job_id", id, "status", status, "reason", code)
 }
 

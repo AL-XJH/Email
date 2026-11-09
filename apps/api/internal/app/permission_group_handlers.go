@@ -167,6 +167,17 @@ func (a *App) handleUpdatePermissionGroup(w http.ResponseWriter, r *http.Request
 			respondError(w, http.StatusForbidden, "cannot edit a permission group you do not belong to")
 			return
 		}
+		// 成员资格只说明「能改」，不说明「有资格改」：整组权限是覆盖式写入，
+		// 一个成员可以把全组的权限清空，哪怕他自己并没有这些权限。
+		var existingPermissions string
+		if err := a.db.QueryRowContext(r.Context(), `SELECT permissions_json FROM permission_groups WHERE id=?`, id).Scan(&existingPermissions); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load permission group")
+			return
+		}
+		if !actorCanGrantPermissions(actor, decodeStoredPermissions(existingPermissions)) {
+			respondError(w, http.StatusForbidden, "cannot edit a group with permissions you do not hold")
+			return
+		}
 	}
 	var req struct {
 		Name        string            `json:"name"`

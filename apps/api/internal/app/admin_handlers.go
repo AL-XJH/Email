@@ -205,6 +205,10 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Disabled != nil {
 		disabled = *req.Disabled
 	}
+	if disabled && !existing.Disabled && !a.canAdministerTarget(r, id) {
+		respondError(w, http.StatusForbidden, "cannot disable an account with permissions you do not hold")
+		return
+	}
 	if disabled {
 		if err := a.collectionTargetInUse(r.Context(), "user", id); err != nil {
 			respondCollectionGuardError(w, err)
@@ -355,8 +359,8 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	} else if a.isDefaultAdminUser(target) {
 		badRequest(w, errors.New("default administrator cannot be deleted"))
 		return
-	} else if target.Role == "admin" && (current == nil || current.Role != "admin") {
-		respondError(w, http.StatusForbidden, "only administrators can delete administrator users")
+	} else if !a.canAdministerTarget(r, id) {
+		respondError(w, http.StatusForbidden, "cannot delete an account with permissions you do not hold")
 		return
 	}
 	if err := a.ensureAdminRemains(r.Context(), id, "user", true); err != nil {
@@ -1238,18 +1242,68 @@ func (a *App) detachMailboxOwnerArtifacts(ctx context.Context, mailboxID, stamp 
 
 // adminTargetGuard 拦住「有管理员权限但不是超级管理员」的人去操作管理员账号。
 // 能重置管理员口令 / 清掉管理员两步验证，等于直接接管对方账号。
-func (a *App) adminTargetGuard(w http.ResponseWriter, r *http.Request, targetUserID string) bool {
-	target, err := a.userByID(r.Context(), targetUserID)
+// adminPlanePermissionsForUser 返回目标用户持有的「管理面」权限（admin.*）。
+// 邮件权限不参与比较：客服没有 mail.* 也应该能重置普通用户的口令。
+func (a *App) adminPlanePermissionsForUser(ctx context.Context, userID string) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT group_id FROM user_permission_groups WHERE user_id=?`, userID)
 	if err != nil {
+		return nil, err
+	}
+	groupIDs := []string{}
+	for rows.Next() {
+		var groupID string
+		if err := rows.Scan(&groupID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(groupIDs) == 0 {
+		return nil, nil
+	}
+	permissions, err := a.permissionsForGroupIDs(ctx, nil, groupIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(permissions))
+	for _, permission := range permissions {
+		if strings.HasPrefix(permission, "admin.") {
+			out = append(out, permission)
+		}
+	}
+	return out, nil
+}
+
+// canAdministerTarget 判断当前操作者是否有权管理目标账号：超级管理员随意，
+// 其余人必须已经持有目标身上的全部管理面权限。只看 role 不够——一个只有
+// admin.users.reset_password 的客服可以把比自己权限更高的账号直接接管。
+func (a *App) canAdministerTarget(r *http.Request, targetUserID string) bool {
+	current := currentUser(r)
+	if current == nil {
+		return false
+	}
+	if current.Role == "admin" {
+		return true
+	}
+	permissions, err := a.adminPlanePermissionsForUser(r.Context(), targetUserID)
+	if err != nil {
+		return false
+	}
+	return actorCanGrantPermissions(current, permissions)
+}
+
+func (a *App) adminTargetGuard(w http.ResponseWriter, r *http.Request, targetUserID string) bool {
+	if _, err := a.userByID(r.Context(), targetUserID); err != nil {
 		respondError(w, http.StatusNotFound, "user not found")
 		return false
 	}
-	if target.Role != "admin" {
-		return true
-	}
-	current := currentUser(r)
-	if current == nil || current.Role != "admin" {
-		respondError(w, http.StatusForbidden, "only administrators can manage administrator accounts")
+	if !a.canAdministerTarget(r, targetUserID) {
+		respondError(w, http.StatusForbidden, "cannot manage an account with permissions you do not hold")
 		return false
 	}
 	return true

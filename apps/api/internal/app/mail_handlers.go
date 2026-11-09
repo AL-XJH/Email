@@ -224,10 +224,8 @@ func (a *App) handleReorderMailFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	if len(customIDs) != len(req.Folders) {
-		badRequest(w, errors.New("invalid folder order"))
-		return
-	}
+	// 只校验「提交的每个 id 都是这个邮箱的自定义文件夹」：要求请求必须
+	// 包含全部文件夹时，另一个标签页新建一个文件夹就会让拖拽排序直接 400。
 	for _, item := range req.Folders {
 		if !customIDs[item.ID] {
 			badRequest(w, errors.New("invalid folder order"))
@@ -416,11 +414,13 @@ func (a *App) handleMailMessages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		folder = normalized
 	}
+	// 读列表不能顺手建文件夹：GET 必须幂等，否则任何 ?folder=xxx 都会变成
+	// 一个真实的文件夹（还会绕过创建接口的校验和配额）。
 	var folderID string
-	if access.Owner {
-		folderID, err = a.ensureFolder(r.Context(), mb.ID, folder)
-	} else {
-		err = a.db.QueryRowContext(r.Context(), `SELECT id FROM folders WHERE mailbox_id=? AND lower(name)=lower(?)`, mb.ID, folder).Scan(&folderID)
+	err = a.db.QueryRowContext(r.Context(), `SELECT id FROM folders WHERE mailbox_id=? AND lower(name)=lower(?)`, mb.ID, folder).Scan(&folderID)
+	if errors.Is(err, sql.ErrNoRows) {
+		respondJSON(w, http.StatusOK, map[string]any{"items": []MailMessage{}, "nextCursor": ""})
+		return
 	}
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load folder")
@@ -450,9 +450,14 @@ func (a *App) handleMailThreads(w http.ResponseWriter, r *http.Request) {
 			limit = min(parsed, 500)
 		}
 	}
-	threadArgs := append([]any{mb.ID}, shareArgs...)
+	// 线程锚点必须也在「这个共享用户能看到的范围」里找：否则最新一封在 Sent
+	// 里（未共享）就会把整个线程从共享视图里抹掉；空 thread_id 也不能互相归并。
+	anchorShareClause, anchorShareArgs := a.mailShareVisibilitySQL(access, "m2")
+	threadArgs := []any{mb.ID}
+	threadArgs = append(threadArgs, shareArgs...)
+	threadArgs = append(threadArgs, anchorShareArgs...)
 	threadArgs = append(threadArgs, limit)
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id) ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC LIMIT ?`, threadArgs...)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id<>'' AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND m2.thread_id<>'' AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id)`+anchorShareClause+` ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC LIMIT ?`, threadArgs...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load threads")
 		return
@@ -497,7 +502,7 @@ func (a *App) handleMailMessageThread(w http.ResponseWriter, r *http.Request) {
 	}
 	shareClause, shareArgs := a.mailShareVisibilitySQL(access, "m")
 	threadArgs := append([]any{msg.MailboxID, msg.ThreadID}, shareArgs...)
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id=?`+shareClause+` ORDER BY m.received_at,m.id`, threadArgs...)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` ORDER BY m.received_at,m.id`, threadArgs...)
 	if err != nil {
 		respondError(w, 500, "failed to load thread")
 		return
@@ -923,7 +928,8 @@ func (a *App) handleMailSend(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInsufficientStorage, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		a.log.Error("request failed", "handler", "send message", "error", err)
+		respondError(w, http.StatusInternalServerError, "failed to send message")
 		return
 	}
 	respondJSON(w, http.StatusCreated, msg)
@@ -1020,7 +1026,9 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 
 	if strings.TrimSpace(a.config().SMTPHost) == "" {
 		if err := a.deliverLocalRecipients(ctx, sentID, allRecipients, base, req.Attachments); err != nil {
-			return nil, fmt.Errorf("failed to persist local delivery: %w", err)
+			// 这时 Sent 副本和队列行都已经落库了，再返回 500 会让客户端重发，
+			// 结果是第二份 Sent 副本 + 第二次投递。失败交给 local_delivery_jobs 重试。
+			a.log.Warn("local delivery failed, left to retry worker", "message", sentID, "error", err)
 		}
 	}
 
@@ -1285,7 +1293,8 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 				badRequest(w, err)
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
+			a.log.Error("request failed", "handler", "save draft", "error", err)
+			respondError(w, http.StatusInternalServerError, "failed to save draft")
 			return
 		}
 	}
@@ -1447,21 +1456,27 @@ func (a *App) handleScheduledSends(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
 	}
+	// payload_json 里带着附件 base64，可能几十 MB。这里只能按行取出后立刻
+	// 关游标，再解析——SQLite 只有一条连接，边遍历边 Unmarshal 等于把整库锁住。
 	rows, err := a.db.QueryContext(r.Context(), `SELECT id,mailbox_id,draft_id,payload_json,send_at,status,error,created_at,updated_at,sent_at
 		FROM scheduled_sends
 		WHERE user_id=? AND mailbox_id=? AND status IN ('pending','sending','failed')
-		ORDER BY send_at ASC, created_at DESC`, user.ID, mb.ID)
+		ORDER BY send_at ASC, created_at DESC LIMIT 200`, user.ID, mb.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load scheduled sends")
 		return
 	}
-	defer rows.Close()
-	items := []ScheduledSend{}
+	type pendingScheduled struct {
+		item        ScheduledSend
+		payloadJSON string
+	}
+	pending := make([]pendingScheduled, 0, 16)
 	for rows.Next() {
 		var item ScheduledSend
 		var draftID, errorText, sentAt sql.NullString
 		var payloadJSON, sendAt, createdAt, updatedAt string
 		if err := rows.Scan(&item.ID, &item.MailboxID, &draftID, &payloadJSON, &sendAt, &item.Status, &errorText, &createdAt, &updatedAt, &sentAt); err != nil {
+			rows.Close()
 			respondError(w, http.StatusInternalServerError, "failed to scan scheduled sends")
 			return
 		}
@@ -1475,12 +1490,18 @@ func (a *App) handleScheduledSends(w http.ResponseWriter, r *http.Request) {
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
 		item.SentAt = nullableTime(sentAt)
-		applyScheduledSendPreview(&item, payloadJSON)
-		items = append(items, item)
+		pending = append(pending, pendingScheduled{item: item, payloadJSON: payloadJSON})
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		respondError(w, http.StatusInternalServerError, "failed to load scheduled sends")
 		return
+	}
+	rows.Close()
+	items := make([]ScheduledSend, 0, len(pending))
+	for _, entry := range pending {
+		applyScheduledSendPreview(&entry.item, entry.payloadJSON)
+		items = append(items, entry.item)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -1825,7 +1846,8 @@ func (a *App) handleScheduleSend(w http.ResponseWriter, r *http.Request) {
 			badRequest(w, err)
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		a.log.Error("request failed", "handler", "schedule send", "error", err)
+		respondError(w, http.StatusInternalServerError, "failed to schedule send")
 		return
 	}
 	compose.To, compose.CC, compose.BCC = dedupeEmails(compose.To), dedupeEmails(compose.CC), dedupeEmails(compose.BCC)
@@ -1862,7 +1884,13 @@ func (a *App) handleScheduleSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func applyScheduledSendPreview(item *ScheduledSend, payloadJSON string) {
-	var payload scheduledSendPayload
+	// 只解预览需要的字段：完整 payload 会顺带把每个附件的 base64 都解成字符串。
+	var payload struct {
+		Subject string   `json:"subject"`
+		To      []string `json:"to"`
+		Text    string   `json:"text"`
+		HTML    string   `json:"html"`
+	}
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		item.Subject = "(no subject)"
 		return
@@ -1889,7 +1917,8 @@ func (a *App) handleCancelScheduledSend(w http.ResponseWriter, r *http.Request) 
 	}
 	// 带上状态条件：SELECT 之后、UPDATE 之前，发送循环可能已经把它推进到
 	// sending/sent，无条件覆盖会把已发出的信改成「已取消」。
-	res, err := a.db.ExecContext(r.Context(), `UPDATE scheduled_sends SET status='cancelled',updated_at=? WHERE id=? AND user_id=? AND status IN ('pending','failed')`, a.now().UTC().Format(time.RFC3339Nano), id, user.ID)
+	// 取消后这份 payload 永远不会再被用到，里面还压着完整附件；立刻清掉。
+	res, err := a.db.ExecContext(r.Context(), `UPDATE scheduled_sends SET status='cancelled',payload_json='{}',updated_at=? WHERE id=? AND user_id=? AND status IN ('pending','failed')`, a.now().UTC().Format(time.RFC3339Nano), id, user.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to cancel scheduled send")
 		return
@@ -1942,6 +1971,11 @@ func (a *App) cleanupStaleEvents(ctx context.Context) {
 		} else if n, _ := result.RowsAffected(); n > 0 {
 			a.log.Debug("event cleanup deleted rows", "table", table, "count", n)
 		}
+	}
+	// 已发送/已取消的定时信没有任何界面入口，payload 里却还有完整的附件 base64。
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM scheduled_sends WHERE status IN ('sent','cancelled') AND updated_at<?`,
+		a.now().UTC().Add(-30*24*time.Hour).Format(time.RFC3339Nano)); err != nil {
+		a.log.Warn("scheduled send cleanup failed", "error", err)
 	}
 }
 

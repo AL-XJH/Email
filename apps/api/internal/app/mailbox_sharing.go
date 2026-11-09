@@ -196,8 +196,11 @@ func (a *App) handleCreateMailboxShare(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id = existingID
-		if _, err = tx.ExecContext(r.Context(), `UPDATE mailbox_shares SET scope=?,include_starred=?,allow_attachments=?,expires_at=?,last_accessed_at=NULL,
-			revoked_at=NULL,left_at=NULL,version=version+1,updated_at=? WHERE id=?`, req.Scope, req.IncludeStarred, allowAttachments, *expiresAt, stamp, id); err != nil {
+		// 邮箱换过主人时，旧共享行还留着前一个 owner_user_id；不更新它的话
+		// 新主人重新共享会写出一条「归属旧主人」的死行：自己读不到、对方也读不到，
+		// 唯一约束还不允许再建一条。这里把归属一并改回当前邮箱主人。
+		if _, err = tx.ExecContext(r.Context(), `UPDATE mailbox_shares SET owner_user_id=?,mailbox_id=?,scope=?,include_starred=?,allow_attachments=?,expires_at=?,last_accessed_at=NULL,
+			revoked_at=NULL,left_at=NULL,version=version+1,updated_at=? WHERE id=?`, mb.UserID, mb.ID, req.Scope, req.IncludeStarred, allowAttachments, *expiresAt, stamp, id); err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to restore mailbox share")
 			return
 		}

@@ -935,6 +935,21 @@ func (a *App) requirePermission(permission string) func(http.Handler) http.Handl
 	}
 }
 
+func (a *App) requireAllPermissions(permissions ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user := currentUser(r)
+			for _, permission := range permissions {
+				if !userHasPermission(user, permission) {
+					respondError(w, http.StatusForbidden, "permission required")
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func (a *App) requireAnyPermission(permissions ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

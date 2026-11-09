@@ -140,7 +140,8 @@ func TestDomainCollectionFinalFailureAndOpenAPI(t *testing.T) {
 	if err := a.db.QueryRow("SELECT status,payload,attempts FROM local_delivery_jobs WHERE id=?", job).Scan(&status, &payload, &attempts); err != nil {
 		t.Fatal(err)
 	}
-	if status != "failed" || payload != "" || attempts != 8 {
+	// 终态失败也保留 payload：这是收件人最后一份副本，清掉就真的没了。
+	if status != "failed" || payload == "" || attempts != 8 {
 		t.Fatalf("terminal: %s payload=%d attempts=%d", status, len(payload), attempts)
 	}
 	if err := a.db.QueryRow("SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND subject='final failure'", aa.ID).Scan(&count); err != nil || count != 1 {

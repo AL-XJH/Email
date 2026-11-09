@@ -501,6 +501,13 @@ func (a *App) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if len(ruleForwardRecipients(actions)) > 0 {
+		user := currentUser(r)
+		if !userHasPermission(user, PermissionMailSend) || !userHasPermission(user, PermissionMailAccess) {
+			respondError(w, http.StatusForbidden, "转发规则需要同时拥有发信和邮箱访问权限")
+			return
+		}
+	}
 	if len(ruleForwardRecipients(actions)) > maxRuleForwardRecipients {
 		badRequest(w, fmt.Errorf("at most %d forward recipients are allowed", maxRuleForwardRecipients))
 		return
@@ -543,11 +550,15 @@ func (a *App) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	appliedCount := int64(0)
 	if req.ApplyToExisting && enabled {
-		appliedCount, _ = a.applyRuleToExistingMessages(r.Context(), user.ID, mailboxID, MailRule{
+		var applyErr error
+		appliedCount, applyErr = a.applyRuleToExistingMessages(r.Context(), user.ID, mailboxID, MailRule{
 			ID: id, UserID: user.ID, MailboxID: mailboxID, Name: name, MatchMode: matchMode,
 			Conditions: conditions, Actions: actions, ApplyToExisting: req.ApplyToExisting, StopProcessing: req.StopProcessing,
 			FromContains: fromContains, SubjectContains: subjectContains, Action: action, Enabled: enabled,
 		})
+		if applyErr != nil {
+			a.log.Warn("failed to apply rule to existing messages", "rule", id, "applied", appliedCount, "error", applyErr)
+		}
 	}
 	row := a.db.QueryRowContext(r.Context(), `SELECT id,user_id,mailbox_id,name,match_mode,conditions_json,actions_json,from_contains,subject_contains,action,apply_to_existing,stop_processing,enabled,created_at FROM mail_rules WHERE id=?`, id)
 	item, err := scanRule(row)
@@ -1435,23 +1446,29 @@ func (a *App) applyRuleActions(ctx context.Context, mailboxID, messageID, ruleID
 	for _, action := range normalizedActions {
 		switch action.Type {
 		case "archive":
-			if folderID, err := a.ensureFolder(ctx, mailboxID, "Archive"); err == nil {
-				if err := a.moveMessageMaildir(ctx, messageID, folderID); err != nil {
-					return err
-				}
+			folderID, err := a.ensureFolder(ctx, mailboxID, "Archive")
+			if err != nil {
+				return err
+			}
+			if err := a.moveMessageMaildir(ctx, messageID, folderID); err != nil {
+				return err
 			}
 		case "trash":
-			if folderID, err := a.ensureFolder(ctx, mailboxID, "Trash"); err == nil {
-				if err := a.moveMessageMaildir(ctx, messageID, folderID); err != nil {
-					return err
-				}
+			folderID, err := a.ensureFolder(ctx, mailboxID, "Trash")
+			if err != nil {
+				return err
+			}
+			if err := a.moveMessageMaildir(ctx, messageID, folderID); err != nil {
+				return err
 			}
 		case "move":
 			target := ruleTargetFolder(action.Value)
-			if folderID, err := a.ensureFolder(ctx, mailboxID, target); err == nil {
-				if err := a.moveMessageMaildir(ctx, messageID, folderID); err != nil {
-					return err
-				}
+			folderID, err := a.ensureFolder(ctx, mailboxID, target)
+			if err != nil {
+				return err
+			}
+			if err := a.moveMessageMaildir(ctx, messageID, folderID); err != nil {
+				return err
 			}
 		case "star":
 			starred := true
@@ -1537,6 +1554,14 @@ func ruleTargetFolder(value string) string {
 	case "trash":
 		return "Trash"
 	default:
+		// 规则支持「移动到自定义文件夹」；以前这里一律返回 Archive，
+		// 用户选 Receipts 结果信被塞进 Archive，还报告应用成功。
+		name := strings.TrimSpace(value)
+		if name != "" {
+			if normalized, err := normalizeFolderNameForUser(name); err == nil && !isSystemFolderName(normalized) {
+				return normalized
+			}
+		}
 		return "Archive"
 	}
 }
