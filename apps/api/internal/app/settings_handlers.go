@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -89,6 +90,33 @@ type systemSettingsUpdate struct {
 	ExternalIMAPGmailClientSecret   string   `json:"externalImapGmailClientSecret"`
 	ExternalIMAPOutlookClientID     string   `json:"externalImapOutlookClientId"`
 	ExternalIMAPOutlookClientSecret string   `json:"externalImapOutlookClientSecret"`
+
+	// present records which keys the client actually sent. 缺省值不能当成 false/空：
+	// 一个只带 siteTitle 的 POST 以前会把 twoFactorEnabled、turnstileEnabled 等
+	// 全部写成 false，等于静默关闭安全功能。
+	present map[string]bool
+}
+
+func (u *systemSettingsUpdate) UnmarshalJSON(data []byte) error {
+	type plain systemSettingsUpdate
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*u = systemSettingsUpdate(decoded)
+	u.present = make(map[string]bool, len(raw))
+	for key := range raw {
+		u.present[key] = true
+	}
+	return nil
+}
+
+func (u systemSettingsUpdate) has(key string) bool {
+	return u.present[key]
 }
 
 type PublicSettings struct {
@@ -153,6 +181,100 @@ func (a *App) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	next := *a.config()
+	// 未提交的字段一律沿用当前值；否则部分 POST 会把安全开关/连接参数清空。
+	if !req.has("publicHostname") {
+		req.PublicHostname = next.PublicHostname
+	}
+	if !req.has("publicBaseUrl") {
+		req.PublicBaseURL = next.PublicBaseURL
+	}
+	if !req.has("siteTitle") {
+		req.SiteTitle = next.SiteTitle
+	}
+	if !req.has("smtpHost") {
+		req.SMTPHost = next.SMTPHost
+	}
+	if !req.has("smtpPort") {
+		req.SMTPPort = next.SMTPPort
+	}
+	if !req.has("smtpUsername") {
+		req.SMTPUsername = next.SMTPUsername
+	}
+	if !req.has("smtpRequireTls") {
+		req.SMTPRequireTLS = next.SMTPRequireTLS
+	}
+	if !req.has("maildirRoot") {
+		req.MaildirRoot = next.MaildirRoot
+	}
+	if !req.has("maildirScanSeconds") {
+		req.MaildirScanSeconds = next.MaildirScanSeconds
+	}
+	if !req.has("sessionTtlHours") {
+		req.SessionTTLHours = next.SessionTTLHours
+	}
+	if !req.has("allowInsecureHttp") {
+		req.AllowInsecureHTTP = next.AllowInsecureHTTP
+	}
+	if !req.has("openRegistration") {
+		req.OpenRegistration = next.OpenRegistration
+	}
+	if !req.has("inviteRegistrationEnabled") {
+		req.InviteRegistrationEnabled = next.InviteRegistrationEnabled
+	}
+	if !req.has("twoFactorEnabled") {
+		req.TwoFactorEnabled = next.TwoFactorEnabled
+	}
+	if !req.has("turnstileEnabled") {
+		req.TurnstileEnabled = next.TurnstileEnabled
+	}
+	if !req.has("turnstileSiteKey") {
+		req.TurnstileSiteKey = next.TurnstileSiteKey
+	}
+	if !req.has("linuxDoSSOEnabled") {
+		req.LinuxDoSSOEnabled = next.LinuxDoSSOEnabled
+	}
+	if !req.has("linuxDoRegistrationEnabled") {
+		req.LinuxDoRegistrationEnabled = next.LinuxDoRegistrationEnabled
+	}
+	if !req.has("linuxDoClientId") {
+		req.LinuxDoClientID = next.LinuxDoClientID
+	}
+	if !req.has("linuxDoRegistrationGroupIds") {
+		req.LinuxDoRegistrationGroupIDs = cleanIDList(strings.Split(next.LinuxDoRegistrationGroupIDs, ","))
+	}
+	if !req.has("catchAllEnabled") {
+		req.CatchAllEnabled = next.CatchAllEnabled
+	}
+	if !req.has("mailAutoRefresh") {
+		req.MailAutoRefresh = next.MailAutoRefresh
+	}
+	if !req.has("mailRefreshSeconds") {
+		req.MailRefreshSeconds = next.MailRefreshSeconds
+	}
+	if !req.has("userMailboxApplyEnabled") {
+		req.UserMailboxApplyEnabled = next.UserMailboxApplyEnabled
+	}
+	if !req.has("userMailboxDomainIds") {
+		req.UserMailboxDomainIDs = cleanIDList(strings.Split(next.UserMailboxDomainIDs, ","))
+	}
+	if !req.has("reservedMailboxPrefixes") {
+		req.ReservedMailboxPrefixes = next.ReservedMailboxPrefixes
+	}
+	if !req.has("externalImapEnabled") {
+		req.ExternalIMAPEnabled = next.ExternalIMAPEnabled
+	}
+	if !req.has("externalImapSyncSeconds") {
+		req.ExternalIMAPSyncSeconds = next.ExternalIMAPSyncSeconds
+	}
+	if !req.has("externalImapAllowPrivateHosts") {
+		req.ExternalIMAPAllowPrivateHosts = next.ExternalIMAPAllowPrivateHosts
+	}
+	if !req.has("externalImapGmailClientId") {
+		req.ExternalIMAPGmailClientID = next.ExternalIMAPGmailClientID
+	}
+	if !req.has("externalImapOutlookClientId") {
+		req.ExternalIMAPOutlookClientID = next.ExternalIMAPOutlookClientID
+	}
 	next.PublicHostname = normalizeHostname(req.PublicHostname)
 	if next.PublicHostname == "" {
 		badRequest(w, errors.New("publicHostname is required"))
