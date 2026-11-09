@@ -666,8 +666,9 @@ func (a *App) openSettingSecret(value string) string {
 	}
 	plain, err := a.decryptNotificationSecret(strings.TrimPrefix(value, "enc:v1:"))
 	if err != nil {
-		a.log.Warn("failed to decrypt setting secret", "error", err)
-		return ""
+		// 返回原密文而不是空串：空串会在下一次保存时覆盖掉唯一可恢复的密文。
+		a.log.Error("failed to decrypt setting secret; preserving ciphertext", "error", err)
+		return value
 	}
 	return plain
 }
@@ -680,7 +681,7 @@ func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {
 		"smtpHost":                        cfg.SMTPHost,
 		"smtpPort":                        cfg.SMTPPort,
 		"smtpUsername":                    cfg.SMTPUsername,
-		"smtpPassword":                    cfg.SMTPPassword,
+		"smtpPassword":                    a.sealSettingSecret(cfg.SMTPPassword),
 		"smtpRequireTls":                  strconv.FormatBool(cfg.SMTPRequireTLS),
 		"maildirRoot":                     cfg.MaildirRoot,
 		"maildirScanSeconds":              strconv.Itoa(cfg.MaildirScanSeconds),
@@ -691,12 +692,12 @@ func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {
 		"twoFactorEnabled":                strconv.FormatBool(cfg.TwoFactorEnabled),
 		"turnstileEnabled":                strconv.FormatBool(cfg.TurnstileEnabled),
 		"turnstileSiteKey":                cfg.TurnstileSiteKey,
-		"turnstileSecretKey":              cfg.TurnstileSecretKey,
+		"turnstileSecretKey":              a.sealSettingSecret(cfg.TurnstileSecretKey),
 		"linuxDoSSOEnabled":               strconv.FormatBool(cfg.LinuxDoSSOEnabled),
 		"linuxDoRegistrationEnabled":      strconv.FormatBool(cfg.LinuxDoRegistrationEnabled),
 		"linuxDoRegistrationGroupIds":     strings.Join(cleanIDList(strings.Split(cfg.LinuxDoRegistrationGroupIDs, ",")), ","),
 		"linuxDoClientId":                 cfg.LinuxDoClientID,
-		"linuxDoClientSecret":             cfg.LinuxDoClientSecret,
+		"linuxDoClientSecret":             a.sealSettingSecret(cfg.LinuxDoClientSecret),
 		"catchAllEnabled":                 strconv.FormatBool(cfg.CatchAllEnabled),
 		"mailAutoRefresh":                 strconv.FormatBool(cfg.MailAutoRefresh),
 		"mailRefreshSeconds":              strconv.Itoa(cfg.MailRefreshSeconds),
@@ -704,11 +705,11 @@ func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {
 		"userMailboxDomainIds":            strings.Join(cleanIDList(strings.Split(cfg.UserMailboxDomainIDs, ",")), ","),
 		"reservedMailboxPrefixes":         strings.Join(parseReservedPrefixes(cfg.ReservedMailboxPrefixes), ","),
 		"externalImapEnabled":             strconv.FormatBool(cfg.ExternalIMAPEnabled),
-		"externalImapSecretKey":           cfg.ExternalIMAPSecretKey,
+		"externalImapSecretKey":           a.sealSettingSecret(cfg.ExternalIMAPSecretKey),
 		"externalImapSyncSeconds":         strconv.Itoa(cfg.ExternalIMAPSyncSeconds),
 		"externalImapAllowPrivateHosts":   strconv.FormatBool(cfg.ExternalIMAPAllowPrivateHosts),
 		"externalImapGmailClientId":       cfg.ExternalIMAPGmailClientID,
-		"externalImapGmailClientSecret":   cfg.ExternalIMAPGmailClientSecret,
+		"externalImapGmailClientSecret":   a.sealSettingSecret(cfg.ExternalIMAPGmailClientSecret),
 		"externalImapOutlookClientId":     cfg.ExternalIMAPOutlookClientID,
 		"externalImapOutlookClientSecret": a.sealSettingSecret(cfg.ExternalIMAPOutlookClientSecret),
 	}

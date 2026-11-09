@@ -875,12 +875,12 @@ func (a *App) handleAdminMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	if q != "" {
 		if a.canUseMessageFTS(q) {
-			where = append(where, "(m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?) OR LOWER(mb.address) LIKE LOWER(?) OR LOWER(u.email) LIKE LOWER(?))")
-			like := "%" + q + "%"
+			where = append(where, "(m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?) OR LOWER(mb.address) LIKE LOWER(?) ESCAPE '\\' OR LOWER(u.email) LIKE LOWER(?) ESCAPE '\\')")
+			like := "%" + escapeLike(q) + "%"
 			args = append(args, messageFTSLiteralQuery(q, adminSearchColumns), like, like)
 		} else {
-			where = append(where, "(LOWER(m.subject) LIKE LOWER(?) OR LOWER(m.from_addr) LIKE LOWER(?) OR LOWER(m.from_name) LIKE LOWER(?) OR LOWER(m.to_addrs) LIKE LOWER(?) OR LOWER(m.recipient_addr) LIKE LOWER(?) OR LOWER(m.snippet) LIKE LOWER(?) OR LOWER(m.body_text) LIKE LOWER(?) OR LOWER(mb.address) LIKE LOWER(?) OR LOWER(u.email) LIKE LOWER(?))")
-			like := "%" + q + "%"
+			where = append(where, "(LOWER(m.subject) LIKE LOWER(?) ESCAPE '\\' OR LOWER(m.from_addr) LIKE LOWER(?) ESCAPE '\\' OR LOWER(m.from_name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(m.to_addrs) LIKE LOWER(?) ESCAPE '\\' OR LOWER(m.recipient_addr) LIKE LOWER(?) ESCAPE '\\' OR LOWER(m.snippet) LIKE LOWER(?) ESCAPE '\\' OR LOWER(m.body_text) LIKE LOWER(?) ESCAPE '\\' OR LOWER(mb.address) LIKE LOWER(?) ESCAPE '\\' OR LOWER(u.email) LIKE LOWER(?) ESCAPE '\\')")
+			like := "%" + escapeLike(q) + "%"
 			args = append(args, like, like, like, like, like, like, like, like, like)
 		}
 	}

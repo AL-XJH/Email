@@ -3009,7 +3009,7 @@ export function MailPage() {
         description={pendingConfirm?.description}
         confirmText={pendingConfirm?.confirmText || uiText("确认")}
         destructive
-        pending={del.isPending || bulkPending}
+        pending={del.isPending || bulkPending || deleteFolder.isPending}
         onOpenChange={(open) => {
           if (!open) setPendingConfirm(null)
         }}
@@ -3995,10 +3995,15 @@ function SidebarContextMenu({
   onDelete: (item: MailMenuItem) => void
 }) {
   useUiLanguage()
+  const menuRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     if (!state) return
-    const close = () => onClose()
+    const close = (event?: Event) => {
+      // 菜单自己的文件夹/标签列表滚动时不能关菜单（capture 阶段会收到子元素 scroll）。
+      if (event?.target instanceof Node && menuRef.current?.contains(event.target)) return
+      onClose()
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose()
     }
@@ -4021,8 +4026,9 @@ function SidebarContextMenu({
   const itemClass = "h-auto w-full justify-start rounded px-2 py-1.5 text-left font-normal"
   return (
     <div
-      className="fixed z-[110] w-48 rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-md"
-      style={{ left: position.x, top: position.y }}
+      ref={menuRef}
+      className="fixed z-[110] w-48 overflow-y-auto rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+      style={{ left: position.x, top: position.y, maxHeight: `calc(100vh - ${position.y + 8}px)` }}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
       role="menu"
@@ -4137,10 +4143,15 @@ function MessageContextMenu({
   onAllowSender: (message: MailMessage) => void
 }) {
   useUiLanguage()
+  const menuRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     if (!state) return
-    const close = () => onClose()
+    const close = (event?: Event) => {
+      // 菜单自己的文件夹/标签列表滚动时不能关菜单（capture 阶段会收到子元素 scroll）。
+      if (event?.target instanceof Node && menuRef.current?.contains(event.target)) return
+      onClose()
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose()
     }
@@ -4194,8 +4205,9 @@ function MessageContextMenu({
 
   return (
     <div
-      className="fixed z-[110] w-52 rounded-xl border bg-popover p-1 text-popover-foreground shadow-md"
-      style={{ left: position.x, top: position.y }}
+      ref={menuRef}
+      className="fixed z-[110] w-52 overflow-y-auto rounded-xl border bg-popover p-1 text-popover-foreground shadow-md"
+      style={{ left: position.x, top: position.y, maxHeight: `calc(100vh - ${position.y + 8}px)` }}
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => event.stopPropagation()}

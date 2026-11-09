@@ -309,6 +309,14 @@ func (a *App) telegramConfiguredForUser(ctx context.Context, userID string) (boo
 }
 
 func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID, messageID, ruleID string) error {
+	// 规则保存后权限可能被收回：每次发送前重新校验，不能只看规则还在不在。
+	user, err := a.userByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user.Disabled || !userHasPermission(user, PermissionMailRules) || !userHasPermission(user, PermissionMailAccess) || !userHasPermission(user, PermissionMailRead) {
+		return nil
+	}
 	configured, err := a.telegramConfiguredForUser(ctx, userID)
 	if err != nil {
 		return err
@@ -409,6 +417,17 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 	if len([]rune(body)) > available {
 		body, _ = cutPlainText(body, available-len([]rune(hint))-2)
 		body += "\n\n" + hint
+	}
+	// 预算按纯文本算，但 & < > 转义后会膨胀；按转义后的实际长度再收。
+	for i := 0; i < 8; i++ {
+		if len([]rune(telegramChunkHTML(body, links))) <= available {
+			break
+		}
+		runes := []rune(body)
+		if len(runes) <= 40 {
+			break
+		}
+		body, _ = cutPlainText(body, len(runes)*4/5)
 	}
 	return []string{header + "\n\n" + telegramChunkHTML(body, links)}
 }
@@ -523,8 +542,12 @@ func (a *App) processDueTelegramNotifications(ctx context.Context) error {
 			continue
 		}
 		now := a.now().UTC().Format(time.RFC3339Nano)
-		res, _ := a.db.ExecContext(ctx, `UPDATE telegram_notification_outbox SET last_error='',updated_at=?,delivered_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND delivered_at IS NULL AND lease_token=?`, now, now, value.id, value.leaseToken)
-		if changed, _ := res.RowsAffected(); changed > 0 {
+		res, err := a.db.ExecContext(ctx, `UPDATE telegram_notification_outbox SET last_error='',updated_at=?,delivered_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND delivered_at IS NULL AND lease_token=?`, now, now, value.id, value.leaseToken)
+		if err != nil || res == nil {
+			a.log.Warn("failed to mark Telegram notification delivered", "error", err, "outbox", value.id)
+			continue
+		}
+		if changed, err := res.RowsAffected(); err == nil && changed > 0 {
 			_, _ = a.db.ExecContext(ctx, `UPDATE telegram_notification_settings SET last_delivered_at=?,last_error='',updated_at=? WHERE user_id=?`, now, now, value.userID)
 		}
 	}
@@ -566,8 +589,12 @@ func (a *App) failTelegramNotification(ctx context.Context, id, userID string, a
 		}
 	}
 	message := truncateWebhookError(sendErr.Error())
-	res, _ := a.db.ExecContext(ctx, `UPDATE telegram_notification_outbox SET attempt_count=?,next_attempt_at=?,last_error=?,updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND delivered_at IS NULL AND lease_token=?`, nextAttempt, now.Add(delay).Format(time.RFC3339Nano), message, now.Format(time.RFC3339Nano), id, leaseToken)
-	if changed, _ := res.RowsAffected(); changed > 0 {
+	res, err := a.db.ExecContext(ctx, `UPDATE telegram_notification_outbox SET attempt_count=?,next_attempt_at=?,last_error=?,updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND delivered_at IS NULL AND lease_token=?`, nextAttempt, now.Add(delay).Format(time.RFC3339Nano), message, now.Format(time.RFC3339Nano), id, leaseToken)
+	if err != nil || res == nil {
+		a.log.Warn("failed to record Telegram notification failure", "error", err, "outbox", id)
+		return
+	}
+	if changed, err := res.RowsAffected(); err == nil && changed > 0 {
 		_, _ = a.db.ExecContext(ctx, `UPDATE telegram_notification_settings SET last_error=?,updated_at=? WHERE user_id=?`, message, now.Format(time.RFC3339Nano), userID)
 	}
 }

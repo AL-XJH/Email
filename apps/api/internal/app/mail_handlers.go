@@ -560,30 +560,30 @@ func (a *App) respondMailMessageListInternal(w http.ResponseWriter, r *http.Requ
 	if q != "" {
 		if a.canUseMessageFTS(q) {
 			where += ` AND (m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?) OR EXISTS (SELECT 1 FROM attachments sa WHERE sa.message_id=m.id AND LOWER(sa.filename) LIKE LOWER(?)))`
-			args = append(args, messageFTSLiteralQuery(q, webmailSearchColumns), "%"+q+"%")
+			args = append(args, messageFTSLiteralQuery(q, webmailSearchColumns), "%"+escapeLike(q)+"%")
 		} else {
-			where += ` AND (LOWER(m.subject) LIKE LOWER(?) OR LOWER(m.from_addr) LIKE LOWER(?) OR LOWER(m.from_name) LIKE LOWER(?) OR LOWER(m.to_addrs) LIKE LOWER(?) OR LOWER(m.cc_addrs) LIKE LOWER(?) OR LOWER(m.bcc_addrs) LIKE LOWER(?) OR LOWER(m.snippet) LIKE LOWER(?) OR LOWER(m.body_text) LIKE LOWER(?) OR EXISTS (SELECT 1 FROM attachments sa WHERE sa.message_id=m.id AND LOWER(sa.filename) LIKE LOWER(?)))`
-			like := "%" + q + "%"
+			where += ` AND (LOWER(m.subject) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.from_addr) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.from_name) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.to_addrs) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.cc_addrs) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.bcc_addrs) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.snippet) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.body_text) LIKE LOWER(?) ESCAPE '\' OR EXISTS (SELECT 1 FROM attachments sa WHERE sa.message_id=m.id AND LOWER(sa.filename) LIKE LOWER(?) ESCAPE '\'))`
+			like := "%" + escapeLike(q) + "%"
 			args = append(args, like, like, like, like, like, like, like, like, like)
 		}
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("from")); value != "" {
-		where += ` AND (LOWER(m.from_addr) LIKE LOWER(?) OR LOWER(m.from_name) LIKE LOWER(?))`
-		like := "%" + value + "%"
+		where += ` AND (LOWER(m.from_addr) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.from_name) LIKE LOWER(?) ESCAPE '\')`
+		like := "%" + escapeLike(value) + "%"
 		args = append(args, like, like)
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("to")); value != "" {
-		where += ` AND (LOWER(m.to_addrs) LIKE LOWER(?) OR LOWER(m.cc_addrs) LIKE LOWER(?) OR LOWER(m.bcc_addrs) LIKE LOWER(?))`
-		like := "%" + value + "%"
+		where += ` AND (LOWER(m.to_addrs) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.cc_addrs) LIKE LOWER(?) ESCAPE '\' OR LOWER(m.bcc_addrs) LIKE LOWER(?) ESCAPE '\')`
+		like := "%" + escapeLike(value) + "%"
 		args = append(args, like, like, like)
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("subject")); value != "" {
-		where += ` AND LOWER(m.subject) LIKE LOWER(?)`
-		args = append(args, "%"+value+"%")
+		where += ` AND LOWER(m.subject) LIKE LOWER(?) ESCAPE '\'`
+		args = append(args, "%"+escapeLike(value)+"%")
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("attachment")); value != "" {
-		where += ` AND EXISTS (SELECT 1 FROM attachments sa WHERE sa.message_id=m.id AND LOWER(sa.filename) LIKE LOWER(?))`
-		args = append(args, "%"+value+"%")
+		where += ` AND EXISTS (SELECT 1 FROM attachments sa WHERE sa.message_id=m.id AND LOWER(sa.filename) LIKE LOWER(?) ESCAPE '\')`
+		args = append(args, "%"+escapeLike(value)+"%")
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("after")); value != "" {
 		if _, err := time.Parse("2006-01-02", value); err != nil {
@@ -1576,8 +1576,8 @@ func (a *App) handleSendQueue(w http.ResponseWriter, r *http.Request) {
 		args = append(args, messageID, messageID, messageID)
 	}
 	if recipient := normalizeEmail(r.URL.Query().Get("recipient")); recipient != "" {
-		where += ` AND sq.recipients_json LIKE ?`
-		args = append(args, "%"+recipient+"%")
+		where += ` AND sq.recipients_json LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(recipient)+"%")
 	}
 	if from := strings.TrimSpace(r.URL.Query().Get("from")); from != "" {
 		t, err := parseTimeQuery(from)
@@ -2120,7 +2120,7 @@ func (a *App) processScheduledSend(ctx context.Context, id, mailboxID, draftID, 
 }
 
 func (a *App) markScheduledSendFailed(ctx context.Context, id, message string) {
-	if _, err := a.db.ExecContext(ctx, `UPDATE scheduled_sends SET status='failed',error=?,updated_at=? WHERE id=?`, message, a.now().UTC().Format(time.RFC3339Nano), id); err != nil {
+	if _, err := a.db.ExecContext(ctx, `UPDATE scheduled_sends SET status='failed',error=?,payload_json='',updated_at=? WHERE id=?`, message, a.now().UTC().Format(time.RFC3339Nano), id); err != nil {
 		a.log.Warn("failed to mark scheduled send failed", "id", id, "error", err)
 	}
 }

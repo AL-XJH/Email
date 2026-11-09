@@ -139,8 +139,9 @@ func (a *App) writeRawMessageToMaildirFolder(ctx context.Context, messageID, fol
 		return err
 	}
 	if err := applyMaildirOwnership(tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
+		// chown 在 NFS root-squash / userns 映射下经常失败；这里不能因此
+		// 让建草稿和发信整体 500（tmp 删了、数据库行也回滚，用户什么都做不了）。
+		a.log.Warn("failed to chown maildir tmp file", "path", tmpPath, "error", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
@@ -212,6 +213,7 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 		// CONDSTORE 客户端会看到一次并不存在的变更。
 		return nil
 	}
+	sourceFolderID := state.FolderID
 	state.FolderID = targetFolderID
 	if state.RawPath == "" {
 		return a.writeMessageToNewMaildirFolder(ctx, messageID, targetFolderID)
@@ -250,18 +252,29 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 		state.IsRead,
 		state.IsStarred,
 	)
+	moved := false
 	if filepath.Clean(targetPath) != filepath.Clean(state.RawPath) {
 		if err := os.Rename(state.RawPath, targetPath); err != nil {
 			return err
 		}
+		moved = true
+		// 文件已经 rename 到新文件夹；后面任何一步失败都必须搬回去，
+		// 否则库里的 raw_path 仍指旧路径，cleanup 会把整封邮件连附件删掉。
+		defer func() {
+			if moved {
+				if renameErr := os.Rename(targetPath, state.RawPath); renameErr != nil {
+					a.log.Error("failed to roll back maildir move", "from", targetPath, "to", state.RawPath, "error", renameErr)
+				}
+			}
+		}()
 		if err := applyMaildirOwnership(targetPath); err != nil {
 			// rename 已经完成，这里再返回错误只会让库里的 raw_path 指向旧路径。
 			// chown 失败在 NFS root-squash / userns 映射下是常态，记日志继续。
 			a.log.Warn("failed to chown moved maildir file", "path", targetPath, "error", err)
 		}
 	}
-	if state.FolderID != "" && state.FolderID != targetFolderID {
-		if _, err := a.bumpFolderModSeq(ctx, state.FolderID); err != nil {
+	if sourceFolderID != "" && sourceFolderID != targetFolderID {
+		if _, err := a.bumpFolderModSeq(ctx, sourceFolderID); err != nil {
 			return err
 		}
 	}
@@ -270,7 +283,11 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 		return err
 	}
 	_, err = a.db.ExecContext(ctx, `UPDATE messages SET folder_id=?,raw_path=?,imap_uid=?,imap_modseq=?,updated_at=? WHERE id=?`, targetFolderID, targetPath, meta.UID, meta.ModSeq, a.now().UTC().Format(time.RFC3339Nano), messageID)
-	return err
+	if err != nil {
+		return err
+	}
+	moved = false
+	return nil
 }
 
 func (a *App) writeMessageToNewMaildirFolder(ctx context.Context, messageID, folderID string) error {

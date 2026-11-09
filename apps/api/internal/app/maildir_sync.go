@@ -105,7 +105,8 @@ func (a *App) syncMaildirOnceTracked(ctx context.Context, interval time.Duration
 	counts, err := a.syncMaildirOnceDetailed(ctx)
 	finishedAt := a.now().UTC()
 	var nextRunAt *time.Time
-	if interval > 0 && err == nil {
+	if interval > 0 {
+		// 本轮失败也要给出下一次时间；否则监控看到 nextRunAt 为空会误判 worker 已死。
 		next := finishedAt.Add(interval)
 		nextRunAt = &next
 	}

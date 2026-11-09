@@ -548,7 +548,16 @@ export function ComposeDialog({
     }
     if (allowed.length > 0) {
       setAttachmentsTouched(true)
-      setFiles((current) => [...current, ...allowed])
+      setFiles((current) => {
+        const room = Math.max(0, 20 - current.length)
+        if (allowed.length > room) {
+          toast({
+            title: "附件数量已达上限",
+            description: "每封邮件最多 20 个附件，多出的文件未添加。",
+          })
+        }
+        return [...current, ...allowed.slice(0, room)]
+      })
     }
   }
 

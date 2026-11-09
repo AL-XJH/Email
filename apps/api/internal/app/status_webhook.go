@@ -161,7 +161,7 @@ func (a *App) deliverStatusWebhook(ctx context.Context, eventID string, payload 
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
+		if resp.StatusCode >= 300 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
 			return fmt.Errorf("%w: HTTP %d", errStatusWebhookPermanent, resp.StatusCode)
 		}
 		return fmt.Errorf("status webhook returned %d", resp.StatusCode)

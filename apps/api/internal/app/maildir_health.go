@@ -109,6 +109,16 @@ func (h *maildirSyncHealthTracker) markWorkerStopped() {
 	defer h.mu.Unlock()
 	h.workerStarted = false
 	h.nextRunAt = nil
+	// worker 在 run 中途退出（panic 被 recover）时，running/current 不能在
+	// /health 里永远显示「正在跑」。
+	if h.running {
+		h.running = false
+		h.current = nil
+		h.recentErrors = append(h.recentErrors, "worker exited during a sync run")
+		if len(h.recentErrors) > maxMaildirRecentErrors {
+			h.recentErrors = h.recentErrors[len(h.recentErrors)-maxMaildirRecentErrors:]
+		}
+	}
 }
 
 func (h *maildirSyncHealthTracker) markRunStarted(startedAt time.Time) {

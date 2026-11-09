@@ -64,10 +64,20 @@ export const CompactMessageRow = React.memo(function CompactMessageRow({
   const senderName = senderDisplayName(message)
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${senderName} ${message.subject}`.trim()}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onClick()
+        }
+      }}
       onContextMenu={onContextMenu}
       className={cn(
-        "cursor-pointer border-b px-3 py-3 text-sm transition-colors hover:bg-accent/50 sm:grid sm:items-center sm:gap-2 sm:px-4 sm:py-2",
+        "cursor-pointer border-b px-3 py-3 text-sm transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid sm:items-center sm:gap-2 sm:px-4 sm:py-2",
         canOrganize
           ? "sm:grid-cols-[32px_28px_minmax(140px,220px)_minmax(0,1fr)_104px_36px]"
           : "sm:grid-cols-[28px_minmax(140px,220px)_minmax(0,1fr)_104px]",
@@ -223,6 +233,8 @@ export const MessageRow = React.memo(function MessageRow({
       aria-label={`${senderName} ${message.subject}`.trim()}
       onClick={onClick}
       onKeyDown={(event) => {
+        // 事件从星标/验证码按钮冒泡上来时不能抢 Enter/Space，否则按钮点了没反应。
+        if (event.target !== event.currentTarget) return
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault()
           onClick()

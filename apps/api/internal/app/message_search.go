@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	webmailSearchColumns = "subject from_addr from_name snippet body_text"
+	webmailSearchColumns = "subject from_addr from_name to_addrs recipient_addr snippet body_text"
 	openAPISearchColumns = "subject from_addr from_name to_addrs snippet body_text"
 	adminSearchColumns   = "subject from_addr from_name to_addrs recipient_addr snippet body_text"
 )

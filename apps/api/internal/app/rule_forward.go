@@ -435,7 +435,7 @@ func (a *App) enqueueRuleForward(ctx context.Context, mailboxID, messageID, rule
 	}
 	// 转发等于用这个邮箱再发一封出去：没有发信权限 / 邮箱访问权限时不做，
 	// 否则「只有规则权限」的账号就能把收到的信全部转发出去。
-	if !userHasPermission(user, PermissionMailSend) || !userHasPermission(user, PermissionMailAccess) {
+	if !userHasPermission(user, PermissionMailSend) || !userHasPermission(user, PermissionMailAccess) || !userHasPermission(user, PermissionMailRead) {
 		return nil
 	}
 	if verified, err := a.ruleForwardAddressesVerified(ctx, user.ID, recipients); err != nil || !verified {

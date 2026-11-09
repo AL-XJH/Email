@@ -491,6 +491,10 @@ func (a *App) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ruleHasAction(actions, "telegram") {
+		if !userHasPermission(user, PermissionMailAccess) || !userHasPermission(user, PermissionMailRead) {
+			respondError(w, http.StatusForbidden, "Telegram 通知规则需要邮箱访问和读取邮件权限")
+			return
+		}
 		configured, err := a.telegramConfiguredForUser(r.Context(), user.ID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to check Telegram settings")
@@ -503,8 +507,8 @@ func (a *App) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(ruleForwardRecipients(actions)) > 0 {
 		user := currentUser(r)
-		if !userHasPermission(user, PermissionMailSend) || !userHasPermission(user, PermissionMailAccess) {
-			respondError(w, http.StatusForbidden, "转发规则需要同时拥有发信和邮箱访问权限")
+		if !userHasPermission(user, PermissionMailSend) || !userHasPermission(user, PermissionMailAccess) || !userHasPermission(user, PermissionMailRead) {
+			respondError(w, http.StatusForbidden, "转发规则需要同时拥有发信、邮箱访问和读取邮件权限")
 			return
 		}
 	}
@@ -1706,13 +1710,20 @@ func (a *App) ruleAttachmentNamesByMessages(ctx context.Context, ids []string) (
 		if err := rows.Scan(&messageID, &filename, &contentType); err != nil {
 			return nil, err
 		}
-		if filename == "" {
-			filename = contentType
+		parts := []string{}
+		if filename != "" {
+			parts = append(parts, filename)
+		}
+		if contentType != "" {
+			parts = append(parts, contentType)
+		}
+		if len(parts) == 0 {
+			continue
 		}
 		if existing := result[messageID]; existing != "" {
-			result[messageID] = existing + " " + filename
+			result[messageID] = existing + " " + strings.Join(parts, " ")
 		} else {
-			result[messageID] = filename
+			result[messageID] = strings.Join(parts, " ")
 		}
 	}
 	if err := rows.Err(); err != nil {

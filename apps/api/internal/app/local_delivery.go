@@ -57,8 +57,17 @@ func (a *App) localRecipientTargets(ctx context.Context, recipients []string) (m
 		}
 		seen[address] = true
 		base := baseRecipient(address)
-		var id string
-		err := a.db.QueryRowContext(ctx, "SELECT m.id FROM mailboxes m JOIN domains d ON d.id=m.domain_id JOIN users u ON u.id=m.user_id WHERE m.address=? AND m.status='active' AND d.status='active' AND u.disabled=0", base).Scan(&id)
+		lookupMailbox := func(addr string) (string, error) {
+			var id string
+			err := a.db.QueryRowContext(ctx, "SELECT m.id FROM mailboxes m JOIN domains d ON d.id=m.domain_id JOIN users u ON u.id=m.user_id WHERE m.address=? AND m.status='active' AND d.status='active' AND u.disabled=0", addr).Scan(&id)
+			return id, err
+		}
+		// 先按完整地址找：user+tag@domain 本身可以是合法邮箱，
+		// 直接剥 +tag 会把信投到 user@domain 或 catch-all。
+		id, err := lookupMailbox(address)
+		if errors.Is(err, sql.ErrNoRows) && base != address {
+			id, err = lookupMailbox(base)
+		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return false, err
 		}
@@ -178,6 +187,7 @@ func (a *App) deliverLocalRecipients(ctx context.Context, sourceID string, recip
 	for _, id := range jobs {
 		a.processLocalDelivery(ctx, id)
 	}
+	var copyErr error
 	for _, address := range unknown {
 		msg := base
 		msg.MailboxID = ""
@@ -185,10 +195,14 @@ func (a *App) deliverLocalRecipients(ctx context.Context, sourceID string, recip
 		msg.RecipientAddr = address
 		msg.MessageUID = newID("uid")
 		if _, err := a.insertMessage(ctx, msg, inputs); err != nil {
-			return err
+			// 一个 catch-all 地址失败不能中断其余地址，否则后面的副本直接消失。
+			a.log.Warn("failed to store catch-all local copy", "address", address, "error", err)
+			if copyErr == nil {
+				copyErr = err
+			}
 		}
 	}
-	return nil
+	return copyErr
 }
 
 func (a *App) localDeliveryWorker(ctx context.Context) {
