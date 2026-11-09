@@ -856,10 +856,15 @@ func (a *App) deleteMessagesInFolder(ctx context.Context, mailboxID, folder stri
 	if err := rows.Close(); err != nil {
 		return 0, err
 	}
+	deleted := int64(0)
 	for _, id := range ids {
-		a.deleteMessage(ctx, id)
+		if err := a.deleteMessage(ctx, id); err != nil {
+			a.log.Warn("failed to delete message while emptying folder", "message", id, "error", err)
+			continue
+		}
+		deleted++
 	}
-	return int64(len(ids)), nil
+	return deleted, nil
 }
 
 func (a *App) archiveReadInbox(ctx context.Context, mailboxID string) (int64, error) {

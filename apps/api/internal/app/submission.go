@@ -202,6 +202,14 @@ func (s *submissionSession) Rcpt(to string, _ *smtpserver.RcptOptions) error {
 	if len(s.recipients) >= maxRecipientsPerMessage {
 		return smtpError(452, smtpserver.EnhancedCode{4, 5, 3}, fmt.Sprintf("too many recipients: max %d", maxRecipientsPerMessage))
 	}
+	if strings.TrimSpace(s.app.config().SMTPHost) == "" {
+		ctx, cancel := submissionContext()
+		defer cancel()
+		if !s.app.isLocalDomainAddress(ctx, to) {
+			// 没配中继时不能假装接受外域收件人：以前会回 250，然后静默丢掉。
+			return smtpError(550, smtpserver.EnhancedCode{5, 7, 1}, "relay not configured for this domain")
+		}
+	}
 	s.recipients = append(s.recipients, to)
 	return nil
 }
@@ -276,18 +284,20 @@ func (a *App) authenticateSubmission(ctx context.Context, username, password str
 }
 
 func (a *App) submitSMTPMessage(ctx context.Context, user *User, mb *Mailbox, mailFrom string, recipients []string, r io.Reader) error {
-	if err := a.recordSMTPRate(ctx, user, mb, len(recipients)); err != nil {
-		if errors.Is(err, errSMTPRateLimited) {
-			return smtpError(452, smtpserver.EnhancedCode{4, 7, 0}, err.Error())
-		}
-		return err
-	}
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return err
 	}
-	prepared, msg, attachments, err := a.prepareSubmittedMessage(ctx, raw, mb, mailFrom, recipients)
+	prepared, msg, attachments, err := a.prepareSubmittedMessage(ctx, user, raw, mb, mailFrom, recipients)
 	if err != nil {
+		return err
+	}
+	// 配额只在内容真的可发送之后才扣：以前先扣再解析，From 不匹配/超限的
+	// 反复重试会把一天额度烧光，正常发信全被 452。
+	if err := a.recordSMTPRate(ctx, user, mb, len(recipients)); err != nil {
+		if errors.Is(err, errSMTPRateLimited) {
+			return smtpError(452, smtpserver.EnhancedCode{4, 7, 0}, err.Error())
+		}
 		return err
 	}
 	msg.MailboxID = mb.ID
@@ -332,7 +342,7 @@ func (a *App) submitSMTPMessage(ctx context.Context, user *User, mb *Mailbox, ma
 	return nil
 }
 
-func (a *App) prepareSubmittedMessage(ctx context.Context, raw []byte, mb *Mailbox, mailFrom string, recipients []string) ([]byte, storedMessage, []AttachmentInput, error) {
+func (a *App) prepareSubmittedMessage(ctx context.Context, user *User, raw []byte, mb *Mailbox, mailFrom string, recipients []string) ([]byte, storedMessage, []AttachmentInput, error) {
 	header, body, err := readMessageHeader(raw)
 	if err != nil {
 		return nil, storedMessage{}, nil, smtpError(554, smtpserver.EnhancedCode{5, 6, 0}, "invalid message")
@@ -366,6 +376,10 @@ func (a *App) prepareSubmittedMessage(ctx context.Context, raw []byte, mb *Mailb
 	}
 	if msg.MessageID == "" {
 		msg.MessageID = messageID
+	}
+	// SMTP 提交以前只受整封 35MB 限制，权限组的单附件/总附件额度完全绕过。
+	if err := validateAttachmentLimit(attachments, userLimits(user)); err != nil {
+		return nil, storedMessage{}, nil, smtpError(552, smtpserver.EnhancedCode{5, 3, 4}, "attachment limit exceeded")
 	}
 	msg.InReplyTo = strings.TrimSpace(header.Get("In-Reply-To"))
 	msg.References = strings.TrimSpace(header.Get("References"))

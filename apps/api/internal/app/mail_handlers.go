@@ -1186,6 +1186,26 @@ func (a *App) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
 		login = normalizeEmail(req.Username)
 	}
 	if login != "" {
+		clientIP := strings.TrimSpace(req.IP)
+		if clientIP == "" {
+			clientIP = strings.TrimSpace(req.Remote)
+		}
+		// Dovecot 的每分鐘計數會隨時間重置，密碼猜測可以無限持續；
+		// 接到 webmail/SMTP 同一套 5 次/15 分鐘鎖定上。
+		if _, err := a.checkLoginRateLimit(r.Context(), login, clientIP); err != nil {
+			respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
+			return
+		}
+		if req.Success != nil && !*req.Success {
+			_, _ = a.recordLoginFailure(r.Context(), login, clientIP)
+			respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
+			return
+		}
+		if req.Success != nil && *req.Success {
+			_ = a.clearLoginAccountFailures(r.Context(), login)
+		}
+	}
+	if login != "" {
 		if mb, err := a.mailboxByAddress(r.Context(), login); err == nil {
 			mailbox = mb
 			user, _ = a.userByID(r.Context(), mb.UserID)
@@ -2913,15 +2933,20 @@ func (a *App) deleteMessageFiles(ctx context.Context, messageID string) {
 	}
 }
 
-func (a *App) deleteMessage(ctx context.Context, messageID string) {
+func (a *App) deleteMessage(ctx context.Context, messageID string) error {
 	var folderID sql.NullString
 	_ = a.db.QueryRowContext(ctx, `SELECT folder_id FROM messages WHERE id=?`, messageID).Scan(&folderID)
-	a.deleteMessageMaildirFile(ctx, messageID)
+	if err := a.deleteMessageMaildirFile(ctx, messageID); err != nil {
+		return err
+	}
 	a.deleteMessageFiles(ctx, messageID)
-	_, _ = a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, messageID)
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, messageID); err != nil {
+		return err
+	}
 	if folderID.Valid && folderID.String != "" {
 		_, _ = a.bumpFolderModSeq(ctx, folderID.String)
 	}
+	return nil
 }
 
 type messageSummaryScanner interface{ Scan(dest ...any) error }

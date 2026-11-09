@@ -431,7 +431,9 @@ func (a *App) purgeUserMailData(ctx context.Context, userID string) error {
 		}
 		msgRows.Close()
 		for _, messageID := range messageIDs {
-			a.deleteMessage(ctx, messageID)
+			if err := a.deleteMessage(ctx, messageID); err != nil {
+				return err
+			}
 		}
 		// 未登记进数据库的 maildir 文件（catch-all、上次同步中断）也要清掉。
 		base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), mb.domain, mb.localPart, "Maildir")

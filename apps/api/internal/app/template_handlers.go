@@ -201,16 +201,20 @@ func renderMailTemplate(tpl MailTemplate, data templateRenderData) MIMEMessage {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
-	apply := func(input string) string {
+	apply := func(input string, escape bool) string {
 		out := input
 		for _, key := range keys {
-			out = strings.ReplaceAll(out, "{{"+key+"}}", values[key])
+			value := values[key]
+			if escape {
+				value = htmlEscape(value)
+			}
+			out = strings.ReplaceAll(out, "{{"+key+"}}", value)
 		}
 		return out
 	}
 	return MIMEMessage{
-		Subject: apply(tpl.Subject),
-		Text:    apply(tpl.BodyText),
-		HTML:    apply(tpl.BodyHTML),
+		Subject: apply(tpl.Subject, false),
+		Text:    apply(tpl.BodyText, false),
+		HTML:    apply(tpl.BodyHTML, true),
 	}
 }

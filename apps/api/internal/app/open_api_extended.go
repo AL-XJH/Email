@@ -182,7 +182,9 @@ func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebh
 			return false, err
 		}
 		if err := a.enqueueStatusWebhook(r.Context(), tx, "delivery:"+event.Provider+":"+event.ID, "delivery."+event.Status, mailboxID, item); err != nil {
-			return false, err
+			// 状态 webhook 是旁路通知：它写不进去不能让整批投递回执回滚，
+			// 否则 provider 重试同一批、同一条事件永远卡住所有回执。
+			a.log.Warn("failed to enqueue status webhook for delivery event", "event", event.ID, "error", err)
 		}
 	}
 	return n > 0, nil
@@ -214,7 +216,7 @@ func (a *App) handleOpenAPIListSends(w http.ResponseWriter, r *http.Request) {
 		where += " AND sq.status=?"
 		args = append(args, status)
 	}
-	cursorCreatedAt, cursorID, _, err := parseSendQueueCursor(r.URL.Query().Get("cursor"))
+	cursorCreatedAt, cursorID, cursorOffset, err := parseSendQueueCursor(r.URL.Query().Get("cursor"))
 	if err != nil {
 		badRequest(w, err)
 		return
@@ -224,9 +226,15 @@ func (a *App) handleOpenAPIListSends(w http.ResponseWriter, r *http.Request) {
 		args = append(args, cursorCreatedAt, cursorCreatedAt, cursorID)
 	}
 	args = append(args, limit+1)
+	limitClause := " LIMIT ?"
+	if cursorOffset > 0 {
+		// 旧客户端传数字 cursor 表示 offset；以前这个值被丢掉，永远返回第一页。
+		limitClause += " OFFSET ?"
+		args = append(args, cursorOffset)
+	}
 	rows, err := a.db.QueryContext(r.Context(), `SELECT sq.id,sq.mailbox_id,sq.sent_message_id,sq.message_id,COALESCE(m.subject,''),sq.source,sq.mail_from,sq.header_from,sq.recipients_json,sq.status,sq.attempt_count,sq.max_attempts,sq.next_attempt_at,sq.last_error,sq.created_at,sq.updated_at,sq.delivered_at
 		FROM send_queue sq JOIN mailboxes mb ON mb.id=sq.mailbox_id LEFT JOIN messages m ON m.id=sq.sent_message_id
-		WHERE `+where+` ORDER BY sq.created_at DESC,sq.id DESC LIMIT ?`, args...)
+		WHERE `+where+` ORDER BY sq.created_at DESC,sq.id DESC`+limitClause, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to list sends")
 		return

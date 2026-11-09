@@ -1040,7 +1040,14 @@ export function ProfilePage() {
             setDefaultSignature.isPending ||
             deleteSignature.isPending
           }
-          onCreate={(form) => createSignature.mutate(form)}
+          onCreate={async (form) => {
+            try {
+              await createSignature.mutateAsync(form)
+              return true
+            } catch {
+              return false
+            }
+          }}
           onUpdate={(id, form) => updateSignature.mutate({ id, form })}
           onSetDefault={(id) => setDefaultSignature.mutate(id)}
           onDelete={(id) => deleteSignature.mutate(id)}
@@ -1052,7 +1059,14 @@ export function ProfilePage() {
           items={contacts.data?.items || []}
           loading={contacts.isLoading}
           pending={createContact.isPending}
-          onCreate={(form) => createContact.mutate(form)}
+          onCreate={async (form) => {
+            try {
+              await createContact.mutateAsync(form)
+              return true
+            } catch {
+              return false
+            }
+          }}
           onDelete={(id) => deleteContact.mutate(id)}
           onCopy={copy}
         />
@@ -2534,6 +2548,7 @@ function ClientConfigRow({
 }
 
 const apiTokenScopeOptions = [
+  ["*", "全部权限（谨慎）"],
   ["messages:send", "发送邮件"],
   ["messages:read", "读取邮件与投递状态"],
   ["messages:manage", "重试或取消发送"],
@@ -2546,6 +2561,15 @@ const apiTokenScopeOptions = [
   ["aliases:read", "查看别名"],
   ["aliases:write", "管理别名"],
 ] as const
+
+function toggleApiTokenScope(current: string[], value: string, checked: boolean) {
+  if (checked) {
+    if (value === "*") return ["*"]
+    const withoutWildcard = current.filter((scope) => scope !== "*")
+    return withoutWildcard.includes(value) ? withoutWildcard : [...withoutWildcard, value]
+  }
+  return current.filter((scope) => scope !== value)
+}
 
 function ApiTokensSection({
   items,
@@ -2656,11 +2680,7 @@ function ApiTokensSection({
                     <Checkbox
                       checked={scopes.includes(value)}
                       onCheckedChange={(checked) =>
-                        setScopes((current) =>
-                          checked === true
-                            ? [...current, value]
-                            : current.filter((scope) => scope !== value)
-                        )
+                        setScopes((current) => toggleApiTokenScope(current, value, checked === true))
                       }
                     />
                     <span>{uiText(label)}</span>
@@ -2726,11 +2746,7 @@ function ApiTokensSection({
                     disabled={pending}
                     onClick={() => {
                       setEditingToken(item)
-                      setEditingScopes(
-                        item.scopes?.includes("*")
-                          ? ["messages:send", "messages:read"]
-                          : item.scopes || []
-                      )
+                      setEditingScopes(item.scopes?.includes("*") ? ["*"] : item.scopes || [])
                     }}
                   >
                     {uiText("编辑权限")}
@@ -2795,9 +2811,7 @@ function ApiTokensSection({
                   checked={editingScopes.includes(value)}
                   onCheckedChange={(checked) =>
                     setEditingScopes((current) =>
-                      checked === true
-                        ? [...current, value]
-                        : current.filter((scope) => scope !== value)
+                      toggleApiTokenScope(current, value, checked === true)
                     )
                   }
                 />
@@ -2853,7 +2867,7 @@ function SignaturesSection({
   mailboxes: Mailbox[]
   loading: boolean
   pending: boolean
-  onCreate: (form: FormData) => void
+  onCreate: (form: FormData) => Promise<boolean>
   onUpdate: (id: string, form: FormData) => void
   onSetDefault: (id: string) => void
   onDelete: (id: string) => void
@@ -2892,11 +2906,13 @@ function SignaturesSection({
             className="space-y-4 rounded-lg border p-4"
             onSubmit={(e) => {
               e.preventDefault()
-              const form = new FormData(e.currentTarget)
+              const formElement = e.currentTarget
+              const form = new FormData(formElement)
               form.set("mailboxId", mailboxId === "all" ? "" : mailboxId)
               form.set("isDefault", isDefault ? "on" : "")
-              onCreate(form)
-              resetCreateForm(e.currentTarget)
+              void onCreate(form).then((ok) => {
+                if (ok) resetCreateForm(formElement)
+              })
             }}
           >
             <div className="grid gap-4 md:grid-cols-2">
@@ -3092,7 +3108,7 @@ function ContactsSection({
 }: {
   items: { id: string; name: string; email: string; note: string }[]
   loading: boolean
-  onCreate: (form: FormData) => void
+  onCreate: (form: FormData) => Promise<boolean>
   onDelete: (id: string) => void
   onCopy: (text: string) => void
   pending: boolean
@@ -3111,8 +3127,10 @@ function ContactsSection({
             className="space-y-4"
             onSubmit={(e) => {
               e.preventDefault()
-              onCreate(new FormData(e.currentTarget))
-              e.currentTarget.reset()
+              const formElement = e.currentTarget
+              void onCreate(new FormData(formElement)).then((ok) => {
+                if (ok) formElement.reset()
+              })
             }}
           >
             <Field label={uiText("姓名")}>

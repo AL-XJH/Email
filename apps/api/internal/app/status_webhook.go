@@ -65,6 +65,8 @@ func (a *App) statusWebhookWorker(ctx context.Context) {
 	}
 }
 
+var errStatusWebhookPermanent = errors.New("permanent status webhook failure")
+
 func (a *App) processDueStatusWebhooks(ctx context.Context) error {
 	if strings.TrimSpace(a.config().StatusWebhookURL) == "" {
 		return nil
@@ -99,6 +101,10 @@ func (a *App) processDueStatusWebhooks(ctx context.Context) error {
 		}
 		if err := a.deliverStatusWebhook(ctx, value.id, []byte(value.payload)); err != nil {
 			now := a.now().UTC()
+			if errors.Is(err, errStatusWebhookPermanent) {
+				_, _ = a.db.ExecContext(ctx, `UPDATE status_webhook_outbox SET last_error=?,updated_at=?,delivered_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND delivered_at IS NULL AND lease_token=?`, truncateWebhookError(err.Error()), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), value.id, value.leaseToken)
+				continue
+			}
 			next := now.Add(sendRetryDelay(value.attempt))
 			_, _ = a.db.ExecContext(ctx, `UPDATE status_webhook_outbox SET next_attempt_at=?,last_error=?,updated_at=?,lease_owner='',lease_token='',lease_until=NULL WHERE id=? AND delivered_at IS NULL AND lease_token=?`, next.Format(time.RFC3339Nano), truncateWebhookError(err.Error()), now.Format(time.RFC3339Nano), value.id, value.leaseToken)
 			continue
@@ -155,6 +161,9 @@ func (a *App) deliverStatusWebhook(ctx context.Context, eventID string, payload 
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
+			return fmt.Errorf("%w: HTTP %d", errStatusWebhookPermanent, resp.StatusCode)
+		}
 		return fmt.Errorf("status webhook returned %d", resp.StatusCode)
 	}
 	return nil
