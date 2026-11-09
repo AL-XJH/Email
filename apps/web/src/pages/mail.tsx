@@ -433,13 +433,16 @@ export function MailPage() {
     refetchInterval: mailView === "scheduled" ? 30000 : false,
   })
   const canViewSendQueue = canReadMail && selectedMailboxOwned
+  // 这两个是逐字符输入的过滤框，不防抖的话每敲一个字母就打一次发信队列接口。
+  const sendQueueMessageIdFilter = useDebouncedValue(sendQueueMessageId, 300)
+  const sendQueueRecipientFilter = useDebouncedValue(sendQueueRecipient, 300)
   const sendQueue = useQuery({
     queryKey: [
       "send-queue",
       activeMailboxId,
       sendQueueStatus,
-      sendQueueMessageId,
-      sendQueueRecipient,
+      sendQueueMessageIdFilter,
+      sendQueueRecipientFilter,
       sendQueueFrom,
       sendQueueTo,
     ],
@@ -447,8 +450,8 @@ export function MailPage() {
       api.sendQueue({
         mailboxId: activeMailboxId,
         status: sendQueueStatus,
-        messageId: sendQueueMessageId.trim(),
-        recipient: sendQueueRecipient.trim(),
+        messageId: sendQueueMessageIdFilter.trim(),
+        recipient: sendQueueRecipientFilter.trim(),
         from: datetimeLocalToISO(sendQueueFrom),
         to: datetimeLocalToISO(sendQueueTo),
       }),
@@ -1423,10 +1426,11 @@ export function MailPage() {
         mailView === "external"
           ? await externalMessages.fetchNextPage()
           : await messages.fetchNextPage()
-      // 翻页途中切了文件夹/搜索词的话，这份结果已经不属于当前列表了。
-      const totalPages =
-        mailView === "external" ? externalMessages.data?.pages.length : messages.data?.pages.length
-      if ((totalPages || 0) > nextIndex && result.data?.pages[nextIndex]) {
+      // 必须用 result 里最新的 pages，不能用这次渲染闭包里的 messages/externalMessages：
+      // 那是 await 之前的快照，页数永远差一页，导致第一次点「下一页」只拉数据不翻页，
+      // 需要再点一次才生效。
+      const totalPages = result.data?.pages.length || 0
+      if (totalPages > nextIndex && result.data?.pages[nextIndex]) {
         setMessagePageIndex(nextIndex)
         setCompactSelectedIds([])
       }

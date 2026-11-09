@@ -1095,12 +1095,16 @@ type ruleMessage struct {
 
 func (a *App) ruleMessageByID(ctx context.Context, messageID string) (ruleMessage, bool) {
 	var msg ruleMessage
-	var toAddrs, ccAddrs, receivedAt string
-	err := a.db.QueryRowContext(ctx, `SELECT id,COALESCE(mailbox_id,''),trim(from_addr || ' ' || COALESCE(from_name,'')),to_addrs,cc_addrs,subject,snippet,body_text,size_bytes,received_at FROM messages WHERE id=?`, messageID).
-		Scan(&msg.ID, &msg.MailboxID, &msg.From, &toAddrs, &ccAddrs, &msg.Subject, &msg.Snippet, &msg.BodyText, &msg.SizeBytes, &receivedAt)
+	var fromName, toAddrs, ccAddrs, receivedAt string
+	// 不要用 `from_addr || ' ' || from_name` 拼：Postgres/SQLite 里是拼接，
+	// MySQL 默认把 `||` 当逻辑或，结果恒为 "0"/"1"，所有按发件人匹配的
+	// 收信规则在 MySQL 部署上会全部失效。拆两列、在 Go 里拼。
+	err := a.db.QueryRowContext(ctx, `SELECT id,COALESCE(mailbox_id,''),COALESCE(from_addr,''),COALESCE(from_name,''),to_addrs,cc_addrs,subject,snippet,body_text,size_bytes,received_at FROM messages WHERE id=?`, messageID).
+		Scan(&msg.ID, &msg.MailboxID, &msg.From, &fromName, &toAddrs, &ccAddrs, &msg.Subject, &msg.Snippet, &msg.BodyText, &msg.SizeBytes, &receivedAt)
 	if err != nil {
 		return ruleMessage{}, false
 	}
+	msg.From = strings.TrimSpace(msg.From + " " + fromName)
 	msg.To = ruleAddressText(toAddrs)
 	msg.CC = ruleAddressText(ccAddrs)
 	msg.ReceivedAt = parseTime(receivedAt)

@@ -18,8 +18,11 @@ export type ScheduleDraft = {
 
 export function defaultScheduledSendValue() {
   const date = new Date(Date.now() + 30 * 60 * 1000)
-  const minute = date.getMinutes()
-  date.setMinutes(minute + (5 - (minute % 5 || 5)))
+  // 秒归零再向上取整到 5 分钟，否则弹窗里显示的默认值会带秒级偏差，
+  // 且用户不动它直接提交时，服务端读到的时间可能刚好早于当前时间。
+  date.setSeconds(0, 0)
+  const add = (5 - (date.getMinutes() % 5)) % 5
+  date.setMinutes(date.getMinutes() + add)
   return toDateTimeLocalValue(date)
 }
 
@@ -50,7 +53,10 @@ function nextMondayAtNine() {
 
 export function defaultScheduleStartValue() {
   const date = new Date()
-  date.setMinutes(date.getMinutes() + (60 - (date.getMinutes() % 60 || 60)))
+  date.setSeconds(0, 0)
+  // 下一个整点。原来的 `% 60 || 60` 在整点那一分钟会算出 0，
+  // 默认开始时间就等于「现在」，日程一创建就已经是过去时间。
+  date.setMinutes(date.getMinutes() + (60 - (date.getMinutes() % 60)))
   return toDateTimeLocalValue(date)
 }
 

@@ -764,7 +764,13 @@ func TestMailboxSharingCustomScopeIsReadOnlyAndRevocable(t *testing.T) {
 		t.Fatalf("updated custom share should hide inbox detail again, code=%d", code)
 	}
 
-	attachmentPath := filepath.Join(t.TempDir(), "shared.txt")
+	// 附件只可能落在 <DataDir>/attachments 下；下载接口会校验路径必须在该根内，
+	// 所以测试也要按真实布局造文件，而不是丢到任意临时目录。
+	attachmentDir := filepath.Join(a.config().DataDir, "attachments", archivedMessage.ID)
+	if err := os.MkdirAll(attachmentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	attachmentPath := filepath.Join(attachmentDir, "shared.txt")
 	if err := os.WriteFile(attachmentPath, []byte("shared attachment"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -3482,6 +3488,61 @@ func TestSubmissionSendsRelayAndStoresSentCopy(t *testing.T) {
 	}
 	if deliveredAudits != 1 {
 		t.Fatalf("delivered audit count=%d, want 1", deliveredAudits)
+	}
+}
+
+// 超过 bufio 缓冲区（4096 字节）的提交必须原样保留正文。
+// 之前用 raw[len(raw)-br.Buffered():] 切正文，64KB 的信只会剩末尾约 4KB，
+// 收件人收到的是残缺内容，或解析失败返 554。
+func TestSubmissionKeepsLargeBodyIntact(t *testing.T) {
+	a := newTestApp(t)
+	host, port, received := startCapturingSMTP(t, 1)
+	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
+	a.updateConfig(func(cfg *Config) { cfg.SMTPPort = port })
+	const marker = "END-OF-BODY-MARKER"
+	body := strings.Repeat("0123456789abcdef", 4096) + "\r\n" + marker
+	raw := strings.Join([]string{
+		"From: Admin <admin@lanqin.local>",
+		"To: person@example.com",
+		"Subject: large submission",
+		"Message-ID: <large-submission@example.test>",
+		"Date: Tue, 24 Jun 2025 10:00:00 +0000",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		body,
+	}, "\r\n")
+	if len(raw) < 64*1024 {
+		t.Fatalf("payload too small: %d bytes", len(raw))
+	}
+	user, mb, err := a.authenticateSubmission(context.Background(), "admin@lanqin.local", "ChangeMe123!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.submitSMTPMessage(context.Background(), user, mb, mb.Address, []string{"person@example.com"}, strings.NewReader(raw)); err != nil {
+		t.Fatalf("submit smtp message: %v", err)
+	}
+	if err := a.processDueSendQueue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case relayed := <-received:
+		if !strings.Contains(relayed, marker) {
+			t.Fatalf("relayed body lost its tail: %d bytes", len(relayed))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("relay message not received")
+	}
+	sentFolderID, err := a.ensureFolder(context.Background(), mb.ID, "Sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bodyText string
+	if err := a.db.QueryRow(`SELECT body_text FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=?`, mb.ID, sentFolderID, "<large-submission@example.test>").Scan(&bodyText); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodyText) < len(body)-32 || !strings.Contains(bodyText, marker) {
+		t.Fatalf("stored sent body truncated: %d bytes (want about %d)", len(bodyText), len(body))
 	}
 }
 

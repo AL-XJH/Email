@@ -121,6 +121,15 @@ type submissionSession struct {
 	recipients []string
 }
 
+// SMTP 会话本身没有 context，但每个命令背后都是数据库查询和网络往返。
+// 给每条命令一个上限，避免一个卡住的查询把会话（和它的 goroutine）永久占住；
+// 客户端断开时 go-smtp 会关掉连接，命令超时后这里也会自己收尾。
+const submissionCommandTimeout = 90 * time.Second
+
+func submissionContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), submissionCommandTimeout)
+}
+
 func (s *submissionSession) AuthMechanisms() []string {
 	return []string{sasl.Plain}
 }
@@ -130,7 +139,9 @@ func (s *submissionSession) Auth(mech string) (sasl.Server, error) {
 		return nil, smtpserver.ErrAuthUnknownMechanism
 	}
 	return sasl.NewPlainServer(func(identity, username, password string) error {
-		user, mailbox, err := s.app.authenticateSubmission(context.Background(), username, password)
+		ctx, cancel := submissionContext()
+		defer cancel()
+		user, mailbox, err := s.app.authenticateSubmission(ctx, username, password)
 		if err != nil {
 			return smtpserver.ErrAuthFailed
 		}
@@ -144,7 +155,9 @@ func (s *submissionSession) Mail(from string, _ *smtpserver.MailOptions) error {
 		return smtpserver.ErrAuthRequired
 	}
 	from = normalizeEmail(from)
-	authorized, _, err := s.app.authorizedSender(context.Background(), s.mailbox, from)
+	ctx, cancel := submissionContext()
+	defer cancel()
+	authorized, _, err := s.app.authorizedSender(ctx, s.mailbox, from)
 	if err != nil || from == "" || from != authorized {
 		return smtpError(553, smtpserver.EnhancedCode{5, 7, 1}, "sender must match authenticated mailbox")
 	}
@@ -177,7 +190,9 @@ func (s *submissionSession) Data(r io.Reader) error {
 	if s.mailFrom == "" || len(s.recipients) == 0 {
 		return smtpError(503, smtpserver.EnhancedCode{5, 5, 1}, "missing sender or recipients")
 	}
-	if err := s.app.submitSMTPMessage(context.Background(), s.user, s.mailbox, s.mailFrom, s.recipients, r); err != nil {
+	ctx, cancel := submissionContext()
+	defer cancel()
+	if err := s.app.submitSMTPMessage(ctx, s.user, s.mailbox, s.mailFrom, s.recipients, r); err != nil {
 		var smtpErr *smtpserver.SMTPError
 		if errors.As(err, &smtpErr) {
 			return smtpErr
@@ -438,13 +453,18 @@ func (a *App) deleteSentDedupeKey(ctx context.Context, mailboxID, folderID, mess
 func readMessageHeader(raw []byte) (textproto.MIMEHeader, []byte, error) {
 	// 用 bufio 精确记录头结束位置，正文直接切片复用 raw 的底层数组，
 	// 避免再把整封正文复制一份（大附件时这一份就是几十 MB）。
-	br := bufio.NewReader(bytes.NewReader(raw))
-	tp := textproto.NewReader(br)
-	header, err := tp.ReadMIMEHeader()
+	//
+	// 偏移必须同时减掉「reader 里还没读的」和「bufio 缓冲里还没交出去的」：
+	// 只看 br.Buffered() 的话，凡是超过一个 bufio 缓冲区（4096 字节）的邮件，
+	// 切出来的正文会变成末尾那一小段，整封信的内容就没了。
+	rd := bytes.NewReader(raw)
+	br := bufio.NewReader(rd)
+	header, err := textproto.NewReader(br).ReadMIMEHeader()
 	if err != nil {
 		return nil, nil, err
 	}
-	body := raw[len(raw)-br.Buffered():]
+	consumed := len(raw) - rd.Len() - br.Buffered()
+	body := raw[consumed:]
 	return header, body, nil
 }
 

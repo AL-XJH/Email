@@ -156,7 +156,11 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 		counts.DirectoriesChecked++
 		signature, err := statMaildirDirectory(target.Directory)
 		if err != nil {
-			return counts, err
+			// 单个目录 stat 失败（用户被删、权限、NFS 抖动）不应该让整轮同步失败：
+			// 以前这里直接 return，一个坏目录会让所有邮箱此后每 5 秒都同步不了。
+			a.log.Warn("maildir directory stat failed", "dir", target.Directory, "error", err)
+			delete(a.maildirDirs, target.Directory)
+			continue
 		}
 		previous, known := a.maildirDirs[target.Directory]
 		if !fullScan && known && previous == signature {
@@ -845,7 +849,20 @@ func maildirFlagsFromPath(path, folderName string) (bool, bool) {
 	if hasFlags {
 		return strings.ContainsRune(flags, 'S'), strings.ContainsRune(flags, 'F')
 	}
-	return !strings.EqualFold(folderName, "Inbox"), false
+	// 没有 `:2,` 信息段 = Maildir 的 new/ 状态，按规范是「未读」。
+	// 以前这里用「不在 Inbox 就算已读」兜底，结果任何未读邮件一被规则/手动
+	// 移进 Archive、Trash 或自建文件夹，下一轮同步（5 秒内）就被改回已读。
+	// 只有 Sent/Drafts 例外：客户端归档的已发件不该在列表里显示成未读。
+	return isArchivedOutboundFolder(folderName), false
+}
+
+// isArchivedOutboundFolder 判断是否是「放进去就该算已读」的出站文件夹。
+func isArchivedOutboundFolder(folderName string) bool {
+	switch strings.ToLower(strings.TrimSpace(folderName)) {
+	case "sent", "drafts", ".sent", ".drafts":
+		return true
+	}
+	return false
 }
 
 func (a *App) attachUnregisteredMaildirRawPathToExisting(ctx context.Context, rawPath, messageID, recipient string) {
@@ -899,7 +916,13 @@ func (a *App) parseMaildirMessage(raw []byte, fallbackTo string) (storedMessage,
 	}
 	receivedAt := a.now().UTC()
 	if !sentAt.IsZero() {
+		// Date 头完全由发件人控制。直接拿它当收件时间，等于让外部决定列表排序：
+		// 写一个 2099 年的日期就能把自己永久钉在收件箱顶部。过去的时间保留
+		// （邮件确实可能是几小时前发出的），未来的钳到当前时刻。
 		receivedAt = sentAt
+		if receivedAt.After(a.now().UTC()) {
+			receivedAt = a.now().UTC()
+		}
 	}
 	return storedMessage{
 		MessageUID:     newID("uid"),

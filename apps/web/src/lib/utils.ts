@@ -6,10 +6,36 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+
+// Intl.DateTimeFormat 的构造本身就不便宜（要加载 locale 数据）。列表里每行
+// 每次渲染都 new 一个，50 行翻页/勾选时就是几千次构造。按语言+配置缓存。
+const dateFormatters = new Map<string, Intl.DateTimeFormat>()
+const numberFormatters = new Map<string, Intl.NumberFormat>()
+
+function dateFormatter(language: Language, options: Intl.DateTimeFormatOptions) {
+  const key = `${language}|${JSON.stringify(options)}`
+  let formatter = dateFormatters.get(key)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(language, options)
+    dateFormatters.set(key, formatter)
+  }
+  return formatter
+}
+
+function numberFormatter(language: Language, options: Intl.NumberFormatOptions) {
+  const key = `${language}|${JSON.stringify(options)}`
+  let formatter = numberFormatters.get(key)
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(language, options)
+    numberFormatters.set(key, formatter)
+  }
+  return formatter
+}
+
 export function formatDate(value: string, language: Language = getInitialLanguage()) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ""
-  return new Intl.DateTimeFormat(language, {
+  return dateFormatter(language, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -22,7 +48,7 @@ export function formatListDate(value: string, language: Language = getInitialLan
   if (Number.isNaN(date.getTime())) return ""
   const now = new Date()
   if (date.toDateString() === now.toDateString()) {
-    return new Intl.DateTimeFormat(language, {
+    return dateFormatter(language, {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -34,9 +60,9 @@ export function formatListDate(value: string, language: Language = getInitialLan
     return language.toLowerCase().startsWith("zh") ? "昨天" : "Yesterday"
   }
   if (date.getFullYear() === now.getFullYear()) {
-    return new Intl.DateTimeFormat(language, { month: "2-digit", day: "2-digit" }).format(date)
+    return dateFormatter(language, { month: "2-digit", day: "2-digit" }).format(date)
   }
-  return new Intl.DateTimeFormat(language, {
+  return dateFormatter(language, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -46,7 +72,7 @@ export function formatListDate(value: string, language: Language = getInitialLan
 export function formatDateTime(value: string, language: Language = getInitialLanguage()) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ""
-  return new Intl.DateTimeFormat(language, {
+  return dateFormatter(language, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -64,7 +90,11 @@ export function formatBytes(bytes: number) {
     size /= 1024
     idx++
   }
-  return `${new Intl.NumberFormat(getInitialLanguage(), { minimumFractionDigits: idx === 0 ? 0 : 1, maximumFractionDigits: idx === 0 ? 0 : 1 }).format(size)} ${units[idx]}`
+  const formatter = numberFormatter(getInitialLanguage(), {
+    minimumFractionDigits: idx === 0 ? 0 : 1,
+    maximumFractionDigits: idx === 0 ? 0 : 1,
+  })
+  return `${formatter.format(size)} ${units[idx]}`
 }
 
 /**

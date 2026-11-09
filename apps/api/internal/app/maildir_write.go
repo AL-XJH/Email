@@ -517,6 +517,16 @@ func (a *App) pathIsUnderMaildirRoot(path string) (bool, error) {
 	if root == "" || strings.TrimSpace(path) == "" {
 		return false, nil
 	}
+	return pathIsUnderRoot(root, path)
+}
+
+// pathIsUnderRoot 判断 path 是否真的落在 root 里面（不允许等于 root 本身，也不允许 ..）。
+// 所有「把数据库里的路径拿去打开文件」的地方都要先过这一道：
+// 数据库里的值一旦被写脏，直接 os.Open 就是任意文件读取。
+func pathIsUnderRoot(root, path string) (bool, error) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return false, nil
+	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return false, err

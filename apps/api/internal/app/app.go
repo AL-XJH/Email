@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,6 +168,14 @@ func (a *App) startWorker(fn func()) {
 		a.health.workersRunning.Add(1)
 		close(started)
 		defer a.health.workersRunning.Add(-1)
+		// 后台循环里任何一次 panic 都会直接带走整个进程（SMTP/IMAP/网页全断），
+		// 而循环体里的空指针/切片越界并不罕见。这里兜住，至少让其它 worker
+		// 和服务继续活着，并把堆栈打进日志。
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				a.log.Error("background worker panicked", "panic", recovered, "stack", string(debug.Stack()))
+			}
+		}()
 		fn()
 	}()
 	<-started
@@ -179,7 +188,18 @@ func (a *App) Close() error {
 	if a.workerCancel != nil {
 		a.workerCancel()
 	}
-	a.workerWG.Wait()
+	// 有上限地等：worker 里可能正卡在对端不回包的 SMTP/IMAP 读写上，
+	// 无限等会让整个进程停不下来（docker stop 最后只能 SIGKILL）。
+	done := make(chan struct{})
+	go func() {
+		a.workerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		a.log.Warn("timed out waiting for background workers to stop", "timeout", "15s")
+	}
 	return a.db.Close()
 }
 
@@ -1546,7 +1566,16 @@ func (a *App) migrateMessagesForUnregistered(ctx context.Context) error {
 	if _, err := a.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
 		return err
 	}
-	defer a.db.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+	// PRAGMA foreign_keys 是按连接生效的开关，重建表期间必须关掉。
+	// 恢复这一步不能只写个 defer 把错误丢掉：一旦它没执行成功，
+	// 这个进程剩下的生命周期里所有外键都不再生效，脏数据会一路写进去。
+	defer func() {
+		if _, err := a.db.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); err != nil {
+			if a.log != nil {
+				a.log.Error("failed to re-enable foreign keys after migration", "error", err)
+			}
+		}
+	}()
 
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1706,7 +1735,14 @@ func (a *App) seed(ctx context.Context) error {
 			return err
 		}
 		adminPassword = base64.RawURLEncoding.EncodeToString(buf)
-		a.log.Warn("LANQIN_ADMIN_PASSWORD not set; generated random password", "password", adminPassword)
+		// 不把口令写进日志：日志会进 docker logs / 日志收集，等于把超级管理员
+		// 密码明文散出去。改成写一个仅 root 可读的文件，启动日志只说位置。
+		pwPath := filepath.Join(a.config().DataDir, "initial-admin-password.txt")
+		if err := os.WriteFile(pwPath, []byte(adminPassword+"\n"), 0o600); err != nil {
+			a.log.Warn("LANQIN_ADMIN_PASSWORD not set; generated random password but failed to persist it", "path", pwPath, "error", err)
+		} else {
+			a.log.Warn("LANQIN_ADMIN_PASSWORD not set; generated random password", "path", pwPath)
+		}
 	}
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -1766,7 +1802,10 @@ func (a *App) ensureConfiguredAdminSuperAdmin(ctx context.Context) error {
 
 func (a *App) createDomainTx(ctx context.Context, tx *sql.Tx, name string) (string, error) {
 	name = normalizeDomain(name)
-	if name == "" || !strings.Contains(name, ".") {
+	// 只检查「有没有点」是不够的：`../x`、`a/b.c` 都能过，随后
+	// filepath.Join(MaildirRoot, domain, localPart, "Maildir") 会把邮件目录
+	// 写到预期根之外，甚至别名到别的邮箱目录。
+	if name == "" || !domainRe.MatchString(name) || !strings.Contains(name, ".") {
 		return "", errors.New("invalid domain")
 	}
 	selector := "lanqin"

@@ -321,8 +321,26 @@ func (a *App) handleOpenAPIUpdateMailbox(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	res, err := a.db.ExecContext(r.Context(), `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,updated_at=? WHERE id=?`,
-		userID, displayName, quotaMB, status, a.now().UTC().Format(time.RFC3339Nano), id)
+	stamp := a.now().UTC().Format(time.RFC3339Nano)
+	ownerChanged := userID != existingMailbox.UserID
+	if ownerChanged && !a.mailboxReassignAllowed(r, existingMailbox.UserID, userID) {
+		respondError(w, http.StatusForbidden, "cannot reassign this mailbox")
+		return
+	}
+	query := `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,updated_at=? WHERE id=?`
+	args := []any{userID, displayName, quotaMB, status, stamp, id}
+	if ownerChanged {
+		// 换主必须同时换掉邮箱口令：password_hash 是 SMTP/IMAP 认证用的，
+		// 不换的话前主人还能拿旧密码继续收发这个地址的信。
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(randomToken()), bcrypt.DefaultCost)
+		if hashErr != nil {
+			respondError(w, http.StatusInternalServerError, "failed to update mailbox")
+			return
+		}
+		query = `UPDATE mailboxes SET user_id=?,display_name=?,quota_mb=?,status=?,password_hash=?,updated_at=? WHERE id=?`
+		args = []any{userID, displayName, quotaMB, status, string(hash), stamp, id}
+	}
+	res, err := a.db.ExecContext(r.Context(), query, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update mailbox")
 		return
@@ -330,6 +348,9 @@ func (a *App) handleOpenAPIUpdateMailbox(w http.ResponseWriter, r *http.Request)
 	if affected, _ := res.RowsAffected(); affected == 0 {
 		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
+	}
+	if ownerChanged {
+		a.detachMailboxOwnerArtifacts(r.Context(), id, stamp)
 	}
 	mailbox, err := a.mailboxByID(r.Context(), id)
 	if err != nil {
@@ -405,6 +426,10 @@ func (a *App) handleOpenAPIResetMailboxPassword(w http.ResponseWriter, r *http.R
 	var userID string
 	if err := a.db.QueryRowContext(r.Context(), `SELECT user_id FROM mailboxes WHERE id=?`, chi.URLParam(r, "id")).Scan(&userID); err != nil {
 		respondError(w, http.StatusNotFound, "mailbox not found")
+		return
+	}
+	// 这条路径同样不能成为「普通管理员改掉超级管理员口令」的后门。
+	if !a.adminTargetGuard(w, r, userID) {
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)

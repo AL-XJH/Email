@@ -64,6 +64,28 @@ import type {
   PermissionLimits,
   APIToken,
 } from "./api-types"
+
+let unauthorizedHandler: (() => void) | null = null
+let lastUnauthorizedAt = 0
+
+// 401 的处理放到 main.tsx 注册：api.ts 不能反向 import QueryClient，
+// 否则 main → api → main 成环。快照清理仍在这里做，内存缓存由回调清。
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
+function handleUnauthorized() {
+  const now = Date.now()
+  if (now - lastUnauthorizedAt < 2000) return
+  lastUnauthorizedAt = now
+  try {
+    window.localStorage.removeItem(QUERY_CACHE_KEY)
+  } catch {
+    /* ignore */
+  }
+  unauthorizedHandler?.()
+}
+
 export * from "./api-types"
 
 const REQUEST_TIMEOUT_MS = 15_000
@@ -94,11 +116,7 @@ async function request<T>(
     if (!res.ok) {
       // 会话没了：把本地缓存快照也清掉，别让下次打开先画出上一个会话的邮件。
       if (res.status === 401) {
-        try {
-          window.localStorage.removeItem(QUERY_CACHE_KEY)
-        } catch {
-          /* ignore */
-        }
+        handleUnauthorized()
       }
       let message = `${res.status} ${res.statusText}`
       try {

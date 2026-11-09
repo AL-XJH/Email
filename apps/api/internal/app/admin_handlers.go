@@ -284,15 +284,8 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if target, err := a.userByID(r.Context(), id); err != nil {
-		respondError(w, http.StatusNotFound, "user not found")
+	if !a.adminTargetGuard(w, r, id) {
 		return
-	} else if target.Role == "admin" {
-		current := currentUser(r)
-		if current == nil || current.Role != "admin" {
-			respondError(w, http.StatusForbidden, "only administrators can reset administrator passwords")
-			return
-		}
 	}
 	var req struct {
 		Password string `json:"password"`
@@ -648,6 +641,10 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, 404, "mailbox not found")
 		return
 	}
+	if userID != existingMailbox.UserID && !a.mailboxReassignAllowed(r, existingMailbox.UserID, userID) {
+		respondError(w, http.StatusForbidden, "cannot reassign this mailbox")
+		return
+	}
 	if status != "active" || userID != existingMailbox.UserID {
 		if err := a.collectionTargetInUse(r.Context(), "mailbox", id); err != nil {
 			respondCollectionGuardError(w, err)
@@ -679,15 +676,7 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if userID != existingMailbox.UserID {
-		// 主人换了，围绕旧主人建立的东西也要一起收回：
-		// 外部 IMAP 账号里存的是旧主人的第三方邮箱凭据，留着等于把别人的邮箱
-		// 接到新主人名下；共享授权是旧主人签发的，同样失效。
-		if _, err := a.db.ExecContext(r.Context(), `DELETE FROM external_imap_accounts WHERE mailbox_id=?`, id); err != nil {
-			a.log.Warn("failed to detach external imap accounts after mailbox ownership change", "mailbox", id, "error", err)
-		}
-		if _, err := a.db.ExecContext(r.Context(), `UPDATE mailbox_shares SET revoked_at=?,updated_at=? WHERE mailbox_id=? AND revoked_at IS NULL`, stamp, stamp, id); err != nil {
-			a.log.Warn("failed to revoke mailbox shares after ownership change", "mailbox", id, "error", err)
-		}
+		a.detachMailboxOwnerArtifacts(r.Context(), id, stamp)
 	}
 	m, err := a.mailboxByID(r.Context(), id)
 	if err != nil {
@@ -1230,4 +1219,63 @@ func (a *App) ensureFolder(ctx context.Context, mailboxID, folder string) (strin
 		}
 	}
 	return id, err
+}
+
+// 邮箱换主人时，围绕旧主人建立的东西必须一起收回：
+//   - external_imap_accounts 里是旧主人的第三方邮箱凭据，留着等于把别人的邮箱
+//     接到新主人名下；
+//   - mailbox_shares 是旧主人签发的授权，易主后不应继续生效。
+//
+// 管理端与 OpenAPI 两条改归属的路径都要调用它，少一处就是一个权限残留。
+func (a *App) detachMailboxOwnerArtifacts(ctx context.Context, mailboxID, stamp string) {
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_accounts WHERE mailbox_id=?`, mailboxID); err != nil {
+		a.log.Warn("failed to detach external imap accounts after mailbox ownership change", "mailbox", mailboxID, "error", err)
+	}
+	if _, err := a.db.ExecContext(ctx, `UPDATE mailbox_shares SET revoked_at=?,updated_at=? WHERE mailbox_id=? AND revoked_at IS NULL`, stamp, stamp, mailboxID); err != nil {
+		a.log.Warn("failed to revoke mailbox shares after ownership change", "mailbox", mailboxID, "error", err)
+	}
+}
+
+// adminTargetGuard 拦住「有管理员权限但不是超级管理员」的人去操作管理员账号。
+// 能重置管理员口令 / 清掉管理员两步验证，等于直接接管对方账号。
+func (a *App) adminTargetGuard(w http.ResponseWriter, r *http.Request, targetUserID string) bool {
+	target, err := a.userByID(r.Context(), targetUserID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "user not found")
+		return false
+	}
+	if target.Role != "admin" {
+		return true
+	}
+	current := currentUser(r)
+	if current == nil || current.Role != "admin" {
+		respondError(w, http.StatusForbidden, "only administrators can manage administrator accounts")
+		return false
+	}
+	return true
+}
+
+// mailboxReassignAllowed 拦住「委派管理员把别人的邮箱改到自己名下」这条路。
+// 拿到 admin.mailboxes.update 并不等于有读信权限（admin.messages.read 是另一条），
+// 但把邮箱归属改成自己之后，就能用普通邮件接口把内容全部读走。
+func (a *App) mailboxReassignAllowed(r *http.Request, existingOwnerID, newOwnerID string) bool {
+	if existingOwnerID == newOwnerID {
+		return true
+	}
+	current := currentUser(r)
+	if current == nil {
+		return false
+	}
+	if current.Role == "admin" {
+		return true
+	}
+	if newOwnerID == current.ID {
+		return false
+	}
+	// 目标邮箱属于管理员时，只有管理员能改它的归属。
+	var ownerRole string
+	if err := a.db.QueryRowContext(r.Context(), `SELECT role FROM users WHERE id=?`, existingOwnerID).Scan(&ownerRole); err != nil {
+		return false
+	}
+	return ownerRole != "admin"
 }

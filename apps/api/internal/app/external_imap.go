@@ -326,7 +326,12 @@ func (a *App) handleUpdateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 
 func (a *App) handleDeleteExternalIMAPAccount(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
-	res, err := a.db.ExecContext(r.Context(), `DELETE FROM external_imap_accounts WHERE id=? AND user_id=?`, chi.URLParam(r, "id"), user.ID)
+	accountID := chi.URLParam(r, "id")
+	// 先清掉这个账号导入到本地的邮件和「External …」文件夹。
+	// 只删账号行的话，external_imap_messages 级联删除后这些邮件就失去了
+	// 「属于外部账号」的标记，整批历史外部邮件会突然出现在主邮箱列表里。
+	a.deleteExternalIMAPLocalData(r.Context(), accountID, user.ID)
+	res, err := a.db.ExecContext(r.Context(), `DELETE FROM external_imap_accounts WHERE id=? AND user_id=?`, accountID, user.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete external account")
 		return
@@ -1522,6 +1527,11 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 }
 
 func (a *App) finishExternalIMAPRun(ctx context.Context, run ExternalIMAPSyncRun, status string, err error) (ExternalIMAPSyncRun, error) {
+	// 收尾写库不能用会被取消的 ctx：关机/超时把同步打断后，这些 UPDATE 会
+	// 全部失败，同步记录永远停在 running，账号的 last_status 也不再更新。
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	ctx = finishCtx
 	run.Status = status
 	if err != nil {
 		run.Error = trimExternalIMAPError(err.Error())
@@ -2321,4 +2331,49 @@ func imapAddresses(addrs []imap.Address) []string {
 		}
 	}
 	return out
+}
+
+// deleteExternalIMAPLocalData 删除某外部账号在本地的全部痕迹：
+// 导入的邮件（含 maildir 文件与附件）、对应的本地文件夹、文件夹同步状态。
+func (a *App) deleteExternalIMAPLocalData(ctx context.Context, accountID, userID string) {
+	rows, err := a.db.QueryContext(ctx, `SELECT em.local_message_id FROM external_imap_messages em
+		JOIN external_imap_accounts ea ON ea.id=em.account_id
+		WHERE em.account_id=? AND ea.user_id=? AND em.local_message_id<>''`, accountID, userID)
+	if err != nil {
+		a.log.Warn("failed to list external imap local messages", "account", accountID, "error", err)
+		return
+	}
+	messageIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil && id != "" {
+			messageIDs = append(messageIDs, id)
+		}
+	}
+	rows.Close()
+	for _, id := range messageIDs {
+		a.deleteMessage(ctx, id)
+	}
+
+	folderRows, err := a.db.QueryContext(ctx, `SELECT fs.local_folder_id FROM external_imap_folder_states fs
+		JOIN external_imap_accounts ea ON ea.id=fs.account_id
+		WHERE fs.account_id=? AND ea.user_id=? AND fs.local_folder_id<>''`, accountID, userID)
+	if err != nil {
+		a.log.Warn("failed to list external imap local folders", "account", accountID, "error", err)
+		return
+	}
+	folderIDs := []string{}
+	for folderRows.Next() {
+		var id string
+		if err := folderRows.Scan(&id); err == nil && id != "" {
+			folderIDs = append(folderIDs, id)
+		}
+	}
+	folderRows.Close()
+	for _, id := range folderIDs {
+		// 只删空文件夹：里面如果还有用户自己拖进去的邮件，保留更安全。
+		if _, err := a.db.ExecContext(ctx, `DELETE FROM folders WHERE id=? AND NOT EXISTS (SELECT 1 FROM messages WHERE folder_id=?)`, id, id); err != nil {
+			a.log.Warn("failed to delete external imap local folder", "folder", id, "error", err)
+		}
+	}
 }

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -448,8 +449,17 @@ func (a *App) handleMailThreads(w http.ResponseWriter, r *http.Request) {
 	mb := access.Mailbox
 	// 只共享了部分文件夹/标签时，线程列表也必须按同一范围过滤。
 	shareClause, shareArgs := a.mailShareVisibilitySQL(access, "m")
+	// 之前这条查询没有 LIMIT：整个邮箱的所有会话一次全取出，每行还带两个
+	// 相关子查询（计数 + 取会话最新一封），几万封就是一个必超时的接口。
+	limit := 200
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = min(parsed, 500)
+		}
+	}
 	threadArgs := append([]any{mb.ID}, shareArgs...)
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id) ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC`, threadArgs...)
+	threadArgs = append(threadArgs, limit)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id) ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC LIMIT ?`, threadArgs...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load threads")
 		return
@@ -1835,8 +1845,15 @@ func (a *App) handleCancelScheduledSend(w http.ResponseWriter, r *http.Request) 
 		badRequest(w, errors.New("scheduled send is not pending"))
 		return
 	}
-	if _, err := a.db.ExecContext(r.Context(), `UPDATE scheduled_sends SET status='cancelled',updated_at=? WHERE id=? AND user_id=?`, a.now().UTC().Format(time.RFC3339Nano), id, user.ID); err != nil {
+	// 带上状态条件：SELECT 之后、UPDATE 之前，发送循环可能已经把它推进到
+	// sending/sent，无条件覆盖会把已发出的信改成「已取消」。
+	res, err := a.db.ExecContext(r.Context(), `UPDATE scheduled_sends SET status='cancelled',updated_at=? WHERE id=? AND user_id=? AND status IN ('pending','failed')`, a.now().UTC().Format(time.RFC3339Nano), id, user.ID)
+	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to cancel scheduled send")
+		return
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		respondError(w, http.StatusConflict, "scheduled send is already being sent")
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1886,7 +1903,29 @@ func (a *App) cleanupStaleEvents(ctx context.Context) {
 	}
 }
 
+// staleScheduledSendGrace 是「sending」允许停留的时长。发送本身有几秒到几十秒
+// 的 SMTP 往返，超过这个时长还没落 sent/failed，说明进程在发送途中被杀了。
+const staleScheduledSendGrace = 10 * time.Minute
+
+// recoverStaleScheduledSends 把崩溃时卡在 sending 的定时信收尾。
+// 它们既不会重发（发送循环只看 pending），用户也取消不了（取消只收 pending/failed），
+// 不处理就是永久静默丢失。这里统一标 failed 并写清原因，让用户在列表里看得见；
+// 不自动重投，是因为无法确认上一次 SMTP 到底发出去了没有，重投可能重复发信。
+func (a *App) recoverStaleScheduledSends(ctx context.Context) {
+	cutoff := a.now().UTC().Add(-staleScheduledSendGrace).Format(time.RFC3339Nano)
+	res, err := a.db.ExecContext(ctx, `UPDATE scheduled_sends SET status='failed',error=?,updated_at=? WHERE status='sending' AND updated_at<?`,
+		"发送过程被中断，请到「已发送」确认后重发", a.now().UTC().Format(time.RFC3339Nano), cutoff)
+	if err != nil {
+		a.log.Warn("failed to recover stale scheduled sends", "error", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		a.log.Warn("recovered stale scheduled sends", "count", n)
+	}
+}
+
 func (a *App) processDueScheduledSends(ctx context.Context) error {
+	a.recoverStaleScheduledSends(ctx)
 	rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,draft_id,payload_json FROM scheduled_sends WHERE status='pending' AND send_at<=? ORDER BY send_at LIMIT 20`, a.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err
@@ -2135,6 +2174,10 @@ func (a *App) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "attachment not found")
 		return
 	}
+	if ok, err := pathIsUnderRoot(filepath.Join(a.config().DataDir, "attachments"), path); err != nil || !ok {
+		respondError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "attachment file missing")
@@ -2151,6 +2194,10 @@ func (a *App) handleAdminAttachment(w http.ResponseWriter, r *http.Request) {
 	var filename, contentType, path string
 	var size int64
 	if err := row.Scan(&filename, &contentType, &size, &path); err != nil {
+		respondError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+	if ok, err := pathIsUnderRoot(filepath.Join(a.config().DataDir, "attachments"), path); err != nil || !ok {
 		respondError(w, http.StatusNotFound, "attachment not found")
 		return
 	}
@@ -2472,8 +2519,11 @@ func (a *App) insertMessageWithDB(ctx context.Context, db dbExecutor, msg stored
 	if threadID == "" {
 		threadID = a.resolveThreadIDWithDB(ctx, db, msg.MailboxID, msg.MessageID, msg.InReplyTo, msg.References)
 	}
+	// 未知 charset 的邮件会原样带出非 UTF-8 字节。SQLite 无所谓，但
+	// Postgres/MySQL 的 TEXT 会直接拒绝，导致这封信每一轮同步都导入失败。
+	// 在唯一的写入口统一兜一层，比在每条解析路径上分别处理可靠。
 	_, err := db.ExecContext(ctx, `INSERT INTO messages(id,mailbox_id,folder_id,recipient_addr,message_uid,message_id,thread_id,subject,from_addr,from_name,to_addrs,cc_addrs,bcc_addrs,sent_at,received_at,snippet,body_text,body_html,is_read,is_starred,has_attachments,size_bytes,auth_results,auth_spf,auth_dkim,auth_dmarc,received_spf,raw_path,imap_uid,imap_modseq,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, mailboxID, folderID, recipientAddr, msg.MessageUID, msg.MessageID, threadID, msg.Subject, msg.From, msg.FromName, jsonEncode(msg.To), jsonEncode(msg.CC), jsonEncode(msg.BCC), msg.SentAt.Format(time.RFC3339Nano), msg.ReceivedAt.Format(time.RFC3339Nano), msg.Snippet, msg.BodyText, msg.BodyHTML, boolInt(msg.IsRead), boolInt(msg.IsStarred), boolInt(hasAttachments), size, auth.AuthenticationResults, auth.SPF, auth.DKIM, auth.DMARC, auth.ReceivedSPF, msg.RawPath, imapUID, imapModSeq, now, now)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, mailboxID, folderID, recipientAddr, msg.MessageUID, msg.MessageID, threadID, validUTF8(msg.Subject), validUTF8(msg.From), validUTF8(msg.FromName), jsonEncode(msg.To), jsonEncode(msg.CC), jsonEncode(msg.BCC), msg.SentAt.Format(time.RFC3339Nano), msg.ReceivedAt.Format(time.RFC3339Nano), validUTF8(msg.Snippet), validUTF8(msg.BodyText), validUTF8(msg.BodyHTML), boolInt(msg.IsRead), boolInt(msg.IsStarred), boolInt(hasAttachments), size, auth.AuthenticationResults, auth.SPF, auth.DKIM, auth.DMARC, auth.ReceivedSPF, msg.RawPath, imapUID, imapModSeq, now, now)
 	if err != nil {
 		return "", err
 	}
@@ -2875,4 +2925,12 @@ func normalizeAuthStatus(value string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// validUTF8 把无法解码的字节替换成 U+FFFD，避免写进 Postgres/MySQL 的 TEXT 时报错。
+func validUTF8(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	return strings.ToValidUTF8(value, "\uFFFD")
 }

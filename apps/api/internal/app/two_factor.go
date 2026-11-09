@@ -439,6 +439,11 @@ func (a *App) handleAdminResetTwoFactor(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	// 清掉别人的第二因子 = 以后只凭口令就能登录那个账号，
+	// 所以对管理员账号必须同样是管理员才能操作。
+	if !a.adminTargetGuard(w, r, id) {
+		return
+	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
