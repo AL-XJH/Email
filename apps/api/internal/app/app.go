@@ -126,6 +126,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	if err := a.loadPersistedSystemSettings(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := a.sealPersistedSettingSecrets(context.Background()); err != nil {
 		db.Close()
 		return nil, err
 	}

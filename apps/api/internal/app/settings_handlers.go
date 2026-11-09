@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -671,6 +672,30 @@ func (a *App) openSettingSecret(value string) string {
 		return value
 	}
 	return plain
+}
+
+// sealPersistedSettingSecrets 把历史明文密钥原地加密；否则升级后只有再次保存
+// 设置才会加密，备份/数据库泄露仍然能看到 SMTP 口令和 IMAP 根密钥。
+func (a *App) sealPersistedSettingSecrets(ctx context.Context) error {
+	keys := []string{"smtpPassword", "turnstileSecretKey", "linuxDoClientSecret", "externalImapSecretKey", "externalImapGmailClientSecret", "externalImapOutlookClientSecret"}
+	for _, key := range keys {
+		var value string
+		err := a.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key=?`, key).Scan(&value)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		sealed := a.sealSettingSecret(value)
+		if sealed == value {
+			continue
+		}
+		if _, err := a.db.ExecContext(ctx, `UPDATE system_settings SET value=?,updated_at=? WHERE key=?`, sealed, a.now().UTC().Format(time.RFC3339Nano), key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) saveSystemSettings(ctx context.Context, cfg Config) error {

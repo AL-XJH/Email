@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSettingSecretsSealAndOpenLegacyValues(t *testing.T) {
@@ -44,5 +45,26 @@ func TestSaveSystemSettingsSealsEverySecret(t *testing.T) {
 		if !strings.HasPrefix(value, "enc:v1:") {
 			t.Fatalf("%s stored in clear: %q", key, value)
 		}
+	}
+}
+
+func TestSealPersistedSettingSecretsMigratesLegacyPlaintext(t *testing.T) {
+	a := newTestApp(t)
+	a.updateConfig(func(c *Config) { c.NotificationSecretKey = "test-notification-key" })
+	if _, err := a.db.Exec(`INSERT INTO system_settings(key,value,updated_at) VALUES('smtpPassword','legacy-pass',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, a.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.sealPersistedSettingSecrets(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var value string
+	if err := a.db.QueryRow(`SELECT value FROM system_settings WHERE key='smtpPassword'`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(value, "enc:v1:") {
+		t.Fatalf("legacy secret not migrated: %q", value)
+	}
+	if got := a.openSettingSecret(value); got != "legacy-pass" {
+		t.Fatalf("migrated secret does not decrypt: %q", got)
 	}
 }
