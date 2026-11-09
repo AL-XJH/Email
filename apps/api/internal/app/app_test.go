@@ -3731,7 +3731,7 @@ func TestSubmissionRequeuesTerminalFailedDuplicateMessageID(t *testing.T) {
 	}
 }
 
-func TestSubmissionRequeuesDeliveredDuplicateMessageID(t *testing.T) {
+func TestSubmissionIgnoresDeliveredDuplicateMessageID(t *testing.T) {
 	a := newTestApp(t)
 	host, port, received := startCapturingSMTP(t, 2)
 	a.updateConfig(func(cfg *Config) { cfg.SMTPHost = host })
@@ -3752,6 +3752,7 @@ func TestSubmissionRequeuesDeliveredDuplicateMessageID(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first delivery not received")
 	}
+	// 客户端没收到 250 响应会拿同一个 Message-ID 重投；已经投递成功的不能再投一遍。
 	if err := a.submitSMTPMessage(context.Background(), user, mb, mb.Address, []string{"person@example.com"}, strings.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -3760,8 +3761,8 @@ func TestSubmissionRequeuesDeliveredDuplicateMessageID(t *testing.T) {
 	}
 	select {
 	case <-received:
-	case <-time.After(2 * time.Second):
-		t.Fatal("requeued delivered message was not relayed")
+		t.Fatal("delivered message was relayed a second time")
+	case <-time.After(700 * time.Millisecond):
 	}
 	var status string
 	var attemptCount int

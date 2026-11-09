@@ -272,7 +272,17 @@ func (a *App) submitSMTPMessage(ctx context.Context, user *User, mb *Mailbox, ma
 		}
 	}
 	a.recordSendAudit(ctx, sendAuditAccepted, sendQueueStatusQueued, sendAuditInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, Source: sendSourceSubmission, MailFrom: mailFrom, HeaderFrom: msg.From, Recipients: recipients})
-	if sentID != "" {
+	// 同一封邮件（Message-ID 相同）在 SMTP 上再来一次，常见原因是客户端没收到
+	// 250 响应后的自动重投，而不是用户想重发。已经投递成功/还在队列里的，
+	// 直接当成功处理；只有上一轮失败或被取消才真的重新入队。
+	requeue := insertedSent
+	if !requeue && sentID != "" {
+		requeue, err = a.smtpResubmitNeedsRequeue(ctx, sentID)
+		if err != nil {
+			return err
+		}
+	}
+	if sentID != "" && requeue {
 		if _, err := a.enqueueSend(ctx, sendQueueInput{UserID: user.ID, MailboxID: mb.ID, SentMessageID: sentID, MessageID: msg.MessageID, Source: sendSourceSubmission, MailFrom: mailFrom, HeaderFrom: msg.From, Recipients: recipients, MIMEBytes: prepared, Now: a.now().UTC()}); err != nil {
 			if insertedSent {
 				a.deleteMessage(ctx, sentID)
@@ -537,4 +547,23 @@ func domainPart(email string) string {
 
 func smtpError(code int, enhanced smtpserver.EnhancedCode, message string) *smtpserver.SMTPError {
 	return &smtpserver.SMTPError{Code: code, EnhancedCode: enhanced, Message: message}
+}
+
+// smtpResubmitNeedsRequeue 判断同一 Message-ID 再次通过 SMTP 提交时要不要重新入队。
+// 队列里没有记录、或上一轮失败/被取消 → 需要；已投递或还在排队/发送中 → 不需要。
+func (a *App) smtpResubmitNeedsRequeue(ctx context.Context, sentMessageID string) (bool, error) {
+	var status string
+	err := a.db.QueryRowContext(ctx, `SELECT status FROM send_queue WHERE sent_message_id=? ORDER BY created_at DESC LIMIT 1`, sentMessageID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case sendQueueStatusFailed, sendQueueStatusCanceled:
+		return true, nil
+	default:
+		return false, nil
+	}
 }

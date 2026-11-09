@@ -156,3 +156,25 @@ func TestDeleteMailFolderRelocatesMaildirFiles(t *testing.T) {
 		t.Fatalf("deleted folder directory still exists: %s (err=%v)", folderBase, err)
 	}
 }
+
+// 自定义文件夹名不能以点开头：maildir++ 的子文件夹就是「.名字」目录，
+// "." 会指到 Inbox 目录、".Sent" 会和系统 Sent 共用同一个目录。
+func TestCreateMailFolderRejectsDotPrefixedNames(t *testing.T) {
+	a := newTestApp(t)
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+	client := &testClient{t: t, server: ts}
+	var login map[string]any
+	if code := client.do("POST", "/api/auth/login", map[string]string{"email": "admin@lanqin.local", "password": "ChangeMe123!"}, &login); code != http.StatusOK {
+		t.Fatalf("login code=%d", code)
+	}
+	for _, name := range []string{".", ".Sent", ".hidden"} {
+		if code := client.do("POST", "/api/mail/folders", map[string]any{"name": name}, nil); code != http.StatusBadRequest {
+			t.Fatalf("create folder %q code=%d, want 400", name, code)
+		}
+	}
+	var folder MailFolder
+	if code := client.do("POST", "/api/mail/folders", map[string]any{"name": "合规文件夹"}, &folder); code != http.StatusCreated {
+		t.Fatalf("create normal folder code=%d", code)
+	}
+}

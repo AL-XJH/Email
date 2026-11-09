@@ -2132,6 +2132,12 @@ func normalizeCustomFolderName(raw string) (string, error) {
 	if strings.ContainsAny(name, `/\:`) || strings.Contains(name, "..") {
 		return "", errors.New("folder name contains invalid characters")
 	}
+	// maildir++ 里子文件夹就是「.名字」目录：允许自定义名以点开头的话，
+	// "." 会直接指到 Inbox 目录、".Sent" 会和系统 Sent 共用同一个目录，
+	// 邮件在两边反复搬迁。
+	if strings.HasPrefix(name, ".") {
+		return "", errors.New("folder name must not start with a dot")
+	}
 	for _, r := range name {
 		if r < 32 || r == 127 {
 			return "", errors.New("folder name contains invalid characters")
