@@ -737,6 +737,10 @@ func (a *App) reserveOpenAPISendIdempotency(ctx context.Context, userID, key, re
 	if sentMessageID == "" {
 		return openAPISendStatus{}, false, errors.New("a request with this Idempotency-Key is still processing")
 	}
+	if queueID == "" {
+		// 本地投递/已在测试里完成的发送可能没有队列行；幂等重放只需要消息 id。
+		return openAPISendStatus{ID: sentMessageID, MessageID: sentMessageID, Status: sendQueueStatusDelivered}, true, nil
+	}
 	item, err := a.loadSendQueueEntryForUser(ctx, queueID, userID)
 	if err != nil {
 		return openAPISendStatus{}, false, err

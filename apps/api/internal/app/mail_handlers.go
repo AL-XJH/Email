@@ -976,7 +976,7 @@ func (a *App) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if reserved {
-		_, _ = a.db.ExecContext(r.Context(), `UPDATE send_idempotency_keys SET sent_message_id=?,queue_id=? WHERE user_id=? AND idempotency_key=?`, msg.ID, msg.SendQueueID, currentUser(r).ID, idempotencyKey)
+		_, _ = a.db.ExecContext(r.Context(), `UPDATE send_idempotency_keys SET sent_message_id=?,queue_id=COALESCE((SELECT id FROM send_queue WHERE sent_message_id=? ORDER BY created_at DESC,id DESC LIMIT 1),'') WHERE user_id=? AND idempotency_key=?`, msg.ID, msg.ID, currentUser(r).ID, idempotencyKey)
 		committed = true
 	}
 	respondJSON(w, http.StatusCreated, msg)
