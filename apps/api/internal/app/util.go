@@ -207,7 +207,9 @@ func safeEmailCSSBlock(value string) bool {
 	if value == "" || len(value) > 50000 {
 		return false
 	}
-	unsafe := []string{"expression", "javascript:", "vbscript:", "data:", "behavior", "-moz-binding", "@import", "</", "url("}
+	// CSS 允许反斜杠转义（@\69 mport、u\72 l），只查字面量会被绕过；
+	// 邮件 CSS 不需要 @ 规则或转义，直接拒绝这两个字符。
+	unsafe := []string{"expression", "javascript:", "vbscript:", "data:", "behavior", "-moz-binding", "@import", "</", "url(", "\\", "@"}
 	for _, token := range unsafe {
 		if strings.Contains(value, token) {
 			return false
@@ -221,7 +223,7 @@ func safeEmailCSSValue(value string) bool {
 	if value == "" || len(value) > 512 {
 		return false
 	}
-	unsafe := []string{"expression", "javascript:", "vbscript:", "data:", "behavior", "-moz-binding", "@import", "</", "url("}
+	unsafe := []string{"expression", "javascript:", "vbscript:", "data:", "behavior", "-moz-binding", "@import", "</", "url(", "\\", "@"}
 	for _, token := range unsafe {
 		if strings.Contains(value, token) {
 			return false

@@ -1,6 +1,6 @@
 import * as React from "react"
 import { buildMailFrameSrcDoc } from "@/components/mail-content"
-import { translateUiText, useLanguage } from "@/lib/language"
+import { translateUiText, uiText, useLanguage } from "@/lib/language"
 
 /**
  * Renders untrusted mail HTML inside a sandboxed iframe.
@@ -11,6 +11,47 @@ import { translateUiText, useLanguage } from "@/lib/language"
  * over the surrounding application chrome. Rendering into an iframe without
  * `allow-scripts` confines both scripts and CSS to the frame.
  */
+function stripRemoteContent(html: string): { html: string; count: number } {
+  if (!html.trim()) return { html: "", count: 0 }
+  const doc = new DOMParser().parseFromString(html, "text/html")
+  let count = 0
+  const isRemote = (value: string) => {
+    const trimmed = value.trim()
+    return trimmed !== "" && !/^data:/i.test(trimmed) && !/^cid:/i.test(trimmed)
+  }
+  doc.querySelectorAll("img").forEach((image) => {
+    for (const attr of ["src", "srcset"]) {
+      const value = image.getAttribute(attr)
+      if (value && isRemote(value)) {
+        image.removeAttribute(attr)
+        count++
+      }
+    }
+  })
+  doc.querySelectorAll("[background]").forEach((element) => {
+    const value = element.getAttribute("background") || ""
+    if (isRemote(value)) {
+      element.removeAttribute("background")
+      count++
+    }
+  })
+  doc.querySelectorAll("[style]").forEach((element) => {
+    const style = element.getAttribute("style") || ""
+    if (/url\s*\(/i.test(style)) {
+      element.setAttribute("style", style.replace(/url\s*\([^)]*\)/gi, ""))
+      count++
+    }
+  })
+  doc.querySelectorAll("style").forEach((style) => {
+    const css = style.textContent || ""
+    if (/url\s*\(|@import/i.test(css)) {
+      style.textContent = css.replace(/url\s*\([^)]*\)/gi, "").replace(/@import[^;]+;/gi, "")
+      count++
+    }
+  })
+  return { html: doc.documentElement.outerHTML, count }
+}
+
 export function MailHtmlFrame({
   bodyHtml,
   bodyText,
@@ -25,9 +66,13 @@ export function MailHtmlFrame({
   const [language] = useLanguage()
   const iframeRef = React.useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = React.useState(260)
+  const [showRemote, setShowRemote] = React.useState(false)
+  const blocked = React.useMemo(() => stripRemoteContent(bodyHtml || ""), [bodyHtml])
+  React.useEffect(() => setShowRemote(false), [bodyHtml])
+  const activeHtml = showRemote ? bodyHtml || "" : blocked.html
   const srcDoc = React.useMemo(
-    () => buildMailFrameSrcDoc(bodyHtml || "", bodyText || "", language),
-    [bodyHtml, bodyText, language]
+    () => buildMailFrameSrcDoc(activeHtml, bodyText || "", language),
+    [activeHtml, bodyText, language]
   )
 
   const resize = React.useCallback(() => {
@@ -148,6 +193,16 @@ export function MailHtmlFrame({
   }, [resize, srcDoc])
 
   return (
+    <div className="relative">
+      {blocked.count > 0 && !showRemote && (
+        <button
+          type="button"
+          onClick={() => setShowRemote(true)}
+          className="mb-2 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          {uiText("显示远程图片")}
+        </button>
+      )}
     <iframe
       ref={iframeRef}
       data-lanqin-i18n-ignore
@@ -158,5 +213,6 @@ export function MailHtmlFrame({
       srcDoc={srcDoc}
       style={{ height }}
     />
+    </div>
   )
 }
