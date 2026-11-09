@@ -42,6 +42,10 @@ const (
 	externalIMAPOAuthOutlook  = "outlook"
 	externalIMAPSyncBatchSize = 10
 	externalIMAPSyncMaxPerRun = 100
+
+	// 单封超过这个体积就不跟着整批拉了：批量取正文时 10 封 20MB 的邮件
+	// 会同时驻留内存。超过的改用 FetchRaw 逐封取，峰值只跟最大的一封有关。
+	externalIMAPInlineBodyMaxBytes = 2 << 20
 )
 
 type externalIMAPClientFactory interface {
@@ -2060,18 +2064,49 @@ func (c *goExternalIMAPClient) FetchNew(ctx context.Context, folder string, afte
 	}
 	var set imap.UIDSet
 	set.AddNum(uids...)
-	bodySection := &imap.FetchItemBodySection{Peek: true}
-	messages, err := c.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
+	// 先只拉元数据（含 RFC822Size），再决定哪些信整封下载。
+	// 以前这里对整批 100 封直接 BODY.PEEK[]，碰上大附件就是几百 MB 同时驻留。
+	meta, err := c.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true}).Collect()
 	if err != nil {
 		return nil, err
 	}
+	inlineUIDs := externalIMAPInlineBodyUIDs(meta, externalIMAPInlineBodyMaxBytes)
+	bodies := make(map[imap.UID][]byte, len(meta))
+	if staticUIDSetCount(inlineUIDs) > 0 {
+		bodySection := &imap.FetchItemBodySection{Peek: true}
+		withBody, err := c.client.Fetch(inlineUIDs, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
+		if err != nil {
+			return nil, err
+		}
+		for _, message := range withBody {
+			if raw := message.FindBodySection(bodySection); raw != nil {
+				bodies[message.UID] = raw
+			}
+		}
+	}
 	out := []externalIMAPRemoteMessage{}
-	for _, message := range messages {
-		raw := message.FindBodySection(bodySection)
-		out = append(out, fetchBufferToExternalMessage(folder, selected.UIDValidity, message, raw))
+	for _, message := range meta {
+		// 超过阈值的信这里不带正文，同步循环会用 FetchRaw 一封一封取。
+		out = append(out, fetchBufferToExternalMessage(folder, selected.UIDValidity, message, bodies[message.UID]))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UID < out[j].UID })
 	return out, nil
+}
+
+// externalIMAPInlineBodyUIDs 挑出体积在阈值内的邮件，允许批量连正文一起取。
+// 超过阈值的留给逐封 FetchRaw，避免整批大附件把进程内存顶穿。
+func externalIMAPInlineBodyUIDs(meta []*imapclient.FetchMessageBuffer, maxBytes int64) imap.UIDSet {
+	var set imap.UIDSet
+	for _, message := range meta {
+		if message == nil {
+			continue
+		}
+		if maxBytes > 0 && message.RFC822Size > maxBytes {
+			continue
+		}
+		set.AddNum(message.UID)
+	}
+	return set
 }
 
 func (c *goExternalIMAPClient) uidSearchAllOptions() *imap.SearchOptions {
