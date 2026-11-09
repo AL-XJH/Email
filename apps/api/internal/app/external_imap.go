@@ -2124,7 +2124,7 @@ func (c *goExternalIMAPClient) FetchSummaries(ctx context.Context, folder string
 	var set imap.UIDSet
 	set.AddNum(uids...)
 	bodySection := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
-	messages, err := c.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
+	messages, err := collectFetchBuffersLimited(c.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}), c.maxMessageBytes)
 	if err != nil {
 		return nil, "", 0, err
 	}
