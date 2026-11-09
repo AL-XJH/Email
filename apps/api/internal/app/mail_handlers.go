@@ -1458,14 +1458,9 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Attachments != nil {
-		// 正文更新成功后才真正删旧附件；即使这里部分失败，也只是残留文件，
-		// 不会出现「正文已改、附件全丢」的不可恢复状态。
+		// 先删旧附件行、保留磁盘文件，rewrite 成功后再删文件：如果 rewrite 失败，
+		// 客户端收到 500 但正文已经落库，旧文件也还在，不会出现「报错但保存了、附件却没了」。
 		for _, ref := range replacedAttachments {
-			if ref.Path != "" {
-				if rmErr := os.Remove(ref.Path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-					a.log.Warn("failed to remove replaced draft attachment file", "path", ref.Path, "error", rmErr)
-				}
-			}
 			if _, delErr := a.db.ExecContext(r.Context(), `DELETE FROM attachments WHERE id=?`, ref.ID); delErr != nil {
 				a.log.Warn("failed to remove replaced draft attachment row", "attachment", ref.ID, "error", delErr)
 			}
@@ -1474,6 +1469,16 @@ func (a *App) handleSaveDraft(w http.ResponseWriter, r *http.Request) {
 	if err := a.rewriteMessageMaildir(r.Context(), draftID); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update draft")
 		return
+	}
+	if req.Attachments != nil {
+		for _, ref := range replacedAttachments {
+			if ref.Path == "" {
+				continue
+			}
+			if rmErr := os.Remove(ref.Path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				a.log.Warn("failed to remove replaced draft attachment file", "path", ref.Path, "error", rmErr)
+			}
+		}
 	}
 	msg, _ := a.messageByID(r.Context(), draftID, true)
 	respondJSON(w, http.StatusOK, msg)

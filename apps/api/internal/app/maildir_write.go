@@ -398,37 +398,38 @@ func (a *App) removeMaildirPath(ctx context.Context, rawPath string) error {
 	return nil
 }
 
-func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, error) {
+func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, []string, error) {
 	if strings.TrimSpace(a.config().MaildirRoot) == "" {
-		return 0, nil
+		return 0, nil, nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT id FROM messages WHERE mailbox_id IS NOT NULL AND mailbox_id<>'' AND folder_id IS NOT NULL AND folder_id<>'' AND raw_path='' ORDER BY updated_at LIMIT 100`)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	var ids []string
 	for rows.Next() {
 		select {
 		case <-ctx.Done():
 			rows.Close()
-			return 0, ctx.Err()
+			return 0, nil, ctx.Err()
 		default:
 		}
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, err
+		return 0, nil, err
 	}
 	if err := rows.Close(); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	count := 0
+	failures := []string{}
 	for _, id := range ids {
 		if err := a.rewriteMessageMaildir(ctx, id); err != nil {
 			// 一条写不出去（附件丢失、磁盘满、权限）就跳过它继续处理后面的，
@@ -440,7 +441,7 @@ func (a *App) backfillSQLiteMessagesToMaildir(ctx context.Context) (int, error) 
 		}
 		count++
 	}
-	return count, nil
+	return count, failures, nil
 }
 
 type maildirMessageState struct {

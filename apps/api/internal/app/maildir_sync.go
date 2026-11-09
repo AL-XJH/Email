@@ -312,11 +312,15 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 	}
 	// 补写 maildir 失败不能让本轮清理直接跳过：否则一条永远写不出去的坏行
 	// 会同时卡住后面所有待补写的邮件，并让「磁盘上已删的邮件」永远留在库里。
-	backfilled, backfillErr := a.backfillSQLiteMessagesToMaildir(ctx)
+	backfilled, backfillErrors, backfillErr := a.backfillSQLiteMessagesToMaildir(ctx)
 	if backfillErr != nil {
 		a.log.Warn("maildir backfill stopped early", "error", backfillErr, "backfilled", backfilled)
 	}
 	counts.Backfilled += backfilled
+	counts.FileErrors += len(backfillErrors)
+	for _, detail := range backfillErrors {
+		counts.fileErrorDetails = append(counts.fileErrorDetails, detail)
+	}
 	cleaned, cleanedMailboxIDs, err := a.cleanupMissingMaildirMessages(ctx, seenFiles, scannedDirs, unscannedDirs, fullScan)
 	if err != nil {
 		return counts, err
