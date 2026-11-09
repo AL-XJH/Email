@@ -73,50 +73,6 @@ services:
     networks:
       - lanqin-dev
 
-  # PostgreSQL 数据库（可选，用于测试 PostgreSQL 支持）
-  postgres:
-    image: postgres:16-alpine
-    container_name: lanqin-postgres-dev
-    environment:
-      - POSTGRES_DB=lanqin
-      - POSTGRES_USER=lanqin
-      - POSTGRES_PASSWORD=lanqin_dev_password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lanqin -d lanqin"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - lanqin-dev
-    profiles:
-      - postgres
-
-  # MySQL 数据库（可选，用于测试 MySQL 支持）
-  mysql:
-    image: mysql:8.4
-    container_name: lanqin-mysql-dev
-    environment:
-      - MYSQL_DATABASE=lanqin
-      - MYSQL_USER=lanqin
-      - MYSQL_PASSWORD=lanqin_dev_password
-      - MYSQL_ROOT_PASSWORD=root_dev_password
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ulanqin", "-planqin_dev_password"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - lanqin-dev
-    profiles:
-      - mysql
 
   # Mailhog - 邮件测试工具（捕获所有发出的邮件）
   mailhog:
@@ -140,5 +96,3 @@ volumes:
   web-node-modules:
   pnpm-store:
   dev-data:
-  postgres-data:
-  mysql-data:
