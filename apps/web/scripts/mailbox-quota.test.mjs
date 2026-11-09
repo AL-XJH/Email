@@ -108,7 +108,7 @@ test("admin details separate current usage from history and rerender in all lang
     mailboxes: ["synthetic@quota.test"],
     limits: { maxMailboxes: 3, maxMailboxesPerDay: 2 },
   }
-  for (const code of ["zh-CN", "zh-TW", "en"]) {
+  for (const code of ["zh-CN"]) {
     language = code
     for (const count of [1, 0]) {
       const html = renderToStaticMarkup(
@@ -187,5 +187,6 @@ test("quota rejection remains a safe translatable error across language changes"
     setStoredLanguage(code)
     messages.add(uiText(error.message))
   }
-  assert.equal(messages.size, 3)
+  // 界面语言锁定简体中文：无论外部怎么切，这条错误都保持同一句中文。
+  assert.equal(messages.size, 1)
 })

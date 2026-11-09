@@ -1,5 +1,3 @@
-import { exactTranslations } from "@/lib/language"
-
 const knownErrors: Record<string, string> = {
   "resource is a unified collection target; change or disable collection first":
     "请先更换或关闭引用此目标的统一收件设置",
@@ -25,7 +23,9 @@ const knownErrors: Record<string, string> = {
 export function errorMessage(error: unknown, status?: number): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : ""
   if (Object.prototype.hasOwnProperty.call(knownErrors, message)) return knownErrors[message]
-  if (Object.prototype.hasOwnProperty.call(exactTranslations, message)) return message
+  // 已经是中文的界面文案（例如服务端直接回的中文字符串）原样展示，
+  // 不要再盖成「操作未完成」。以前靠词条表判断，词条表随语言锁定一起删了。
+  if (containsCJK(message)) return message
   if (status === 401) return "登录会话已失效，请重新登录"
   if (status === 403) return "无权执行此操作"
   if (status === 404) return "请求的内容不存在或无权访问"
@@ -43,4 +43,13 @@ export class ApiError extends Error {
     super(errorMessage(message, status))
     this.name = "ApiError"
   }
+}
+
+function containsCJK(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0
+    if (code >= 0x4e00 && code <= 0x9fff) return true
+    if (code >= 0x3400 && code <= 0x4dbf) return true
+  }
+  return false
 }

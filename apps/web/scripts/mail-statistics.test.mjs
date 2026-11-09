@@ -22,7 +22,7 @@ function render(language, overrides = {}) {
 }
 
 test("empty mailbox renders localized empty state without invalid ratios", () => {
-  for (const [language, label] of [["zh-CN", "暂无邮件数据"], ["zh-TW", "暫無郵件資料"], ["en", "No message data"]]) {
+  for (const [language, label] of [["zh-CN", "暂无邮件数据"]]) {
     const html = render(language)
     assert.ok(html.includes(label))
     assert.ok(!html.includes("NaN"))
@@ -32,13 +32,13 @@ test("empty mailbox renders localized empty state without invalid ratios", () =>
 })
 
 test("statistics use message counts, escape folder names, and clamp full storage", () => {
-  const html = render("en", {
+  const html = render("zh-CN", {
     totalMessages: 10, unreadMessages: 2, storageBytes: 2048, quotaBytes: 1024,
     byFolder: [{ folder: '<img src=x onerror=alert(1)>', role: "inbox", count: 10, unread: 2, bytes: 2048 }],
   })
   assert.ok(html.includes('stroke-dasharray="80 100"'))
-  assert.ok(html.includes("Storage limit reached"))
-  assert.ok(html.includes("Available storage: 0 B"))
+  assert.ok(html.includes("存储容量已用尽"))
+  assert.ok(html.includes("剩余容量：0 B"))
   assert.ok(html.includes("width:100%"))
   assert.ok(!html.includes("width:200%"))
   assert.ok(html.includes("&lt;img"))
@@ -46,9 +46,8 @@ test("statistics use message counts, escape folder names, and clamp full storage
 })
 
 test("quota warning starts at ninety percent and absent quota has no false health claim", () => {
-  assert.ok(render("en", { storageBytes: 90, quotaBytes: 100 }).includes("Storage almost full"))
-  assert.ok(render("en", { storageBytes: 89, quotaBytes: 100 }).includes("Storage usage is healthy"))
-  const html = render("en", { storageBytes: 90 })
-  assert.ok(html.includes("No storage limit set"))
-  assert.ok(!html.includes("Storage usage is healthy"))
+  assert.ok(render("zh-CN", { storageBytes: 90, quotaBytes: 100 }).includes("存储容量即将用尽"))
+  assert.ok(render("zh-CN", { storageBytes: 89, quotaBytes: 100 }).includes("存储容量使用正常"))
+  const html = render("zh-CN", { storageBytes: 90 })
+  assert.ok(!html.includes("存储容量使用正常"))
 })

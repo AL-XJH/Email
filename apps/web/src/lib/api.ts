@@ -10,7 +10,6 @@ import type {
   MailboxSharePayload,
   MailboxShareUpdatePayload,
   MailboxShareAuditEvent,
-  MailboxPushRequest,
   UserNotification,
   ShareUser,
   Alias,

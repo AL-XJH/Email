@@ -1607,7 +1607,6 @@ function MailboxManagement({
   onSyncExternalFolder: (id: string, folder: string) => void
 }) {
   useUiLanguage()
-  const queryClient = useQueryClient()
 
 
   const canApply = !!applyOptions?.enabled && (applyOptions.domains || []).length > 0
