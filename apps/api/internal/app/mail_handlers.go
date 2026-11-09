@@ -1571,7 +1571,15 @@ func (a *App) handleSendQueue(w http.ResponseWriter, r *http.Request) {
 		last := items[len(items)-1]
 		next = encodeSendQueueCursor(last.CreatedAt, last.ID)
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"items": items, "nextCursor": next})
+	// 侧边栏角标要的是「整个队列里还有多少条在排队/失败」，不能拿当前页
+	// （最多 30 条，还带筛选）去数。
+	var activeCount int
+	if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM send_queue WHERE mailbox_id=? AND status IN (?,?,?)`,
+		mb.ID, sendQueueStatusQueued, sendQueueStatusFailed, sendQueueStatusSending).Scan(&activeCount); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to count send queue")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"items": items, "nextCursor": next, "activeCount": activeCount})
 }
 
 func (a *App) handleSendQueueAudit(w http.ResponseWriter, r *http.Request) {

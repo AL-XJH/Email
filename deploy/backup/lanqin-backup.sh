@@ -51,6 +51,14 @@ if [ -d "$APP_DIR/mail" ]; then
   tar -C "$APP_DIR" -czf "$target/mail.tgz" mail
 fi
 
+# 3b) Redis：Bayes 学习样本、灰名单、reputation 都在 AOF 里，
+#     不备份的话恢复后反垃圾等于从零开始学。
+if [ -d "$APP_DIR/redis" ]; then
+  docker exec "$CONTAINER" redis-cli BGSAVE >/dev/null 2>&1 || true
+  sleep 1
+  tar -C "$APP_DIR" -czf "$target/redis.tgz" redis 2>/dev/null || true
+fi
+
 # 4) 滚动清理：只删本脚本自己命名格式（YYYYmmdd-HHMMSS）的目录。
 find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '20[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]' -mtime "+$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null || true
 

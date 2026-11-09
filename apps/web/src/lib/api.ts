@@ -733,7 +733,9 @@ export const api = {
     if (params.from) query.set("from", params.from)
     if (params.to) query.set("to", params.to)
     const suffix = query.toString()
-    return request<ListResponse<SendQueueItem>>(`/api/mail/send-queue${suffix ? `?${suffix}` : ""}`)
+    return request<ListResponse<SendQueueItem> & { activeCount?: number }>(
+      `/api/mail/send-queue${suffix ? `?${suffix}` : ""}`
+    )
   },
   sendQueueAudit: (id: string) =>
     request<ListResponse<SendQueueAuditEvent>>(`/api/mail/send-queue/${id}/audit`),

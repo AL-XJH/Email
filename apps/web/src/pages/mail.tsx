@@ -548,8 +548,18 @@ export function MailPage() {
       return api.messages(folder, debouncedQuery, cursor, activeMailboxId, messagePageSize)
     },
     initialPageParam: "",
-    // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏。
-    placeholderData: (previous) => previous,
+    // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏；
+    // 但换邮箱/文件夹/标签时必须丢掉旧数据，否则新标题下面挂着旧文件夹的邮件。
+    placeholderData: (previous, previousQuery) => {
+      if (!previous || !previousQuery) return previous
+      const key = previousQuery.queryKey
+      return key[1] === activeMailboxId &&
+        key[2] === mailView &&
+        key[3] === folder &&
+        key[4] === selectedLabelId
+        ? previous
+        : undefined
+    },
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
     enabled:
       !!activeMailboxId &&
@@ -577,8 +587,13 @@ export function MailPage() {
         messagePageSize
       ),
     initialPageParam: "",
-    // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏。
-    placeholderData: (previous) => previous,
+    placeholderData: (previous, previousQuery) => {
+      if (!previous || !previousQuery) return previous
+      const key = previousQuery.queryKey
+      return key[1] === selectedExternalAccountId && key[2] === externalFolder
+        ? previous
+        : undefined
+    },
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
     enabled:
       !!selectedExternalAccountId && canReadMail && mailView === "external" && externalImapEnabled,
@@ -1373,9 +1388,11 @@ export function MailPage() {
       )
     : scheduledItems
   const sendQueueItems = sendQueue.data?.items || []
-  const sendQueueCount = sendQueueItems.filter(
-    (item) => item.status === "failed" || item.status === "queued" || item.status === "sending"
-  ).length
+  const sendQueueCount =
+    sendQueue.data?.activeCount ??
+    sendQueueItems.filter(
+      (item) => item.status === "failed" || item.status === "queued" || item.status === "sending"
+    ).length
   const visibleSendQueueItems = sendQueueItems
   const includeStarredView =
     selectedMailboxOwned ||

@@ -9,7 +9,8 @@ services:
       LANQIN_SUBMISSION_TLS_ADDR: ${LANQIN_SUBMISSION_TLS_ADDR:-}
     volumes:
       - ./data:/data
-      - ./mail:/var/mail/vhosts:ro
+      # 不能只读：API 要写已发送副本、草稿、移动/删除邮件。
+      - ./mail:/var/mail/vhosts
       # 生产环境如需第三方客户端校验证书，请取消下面挂载的注释，并在 .env 配置：
       # LANQIN_TLS_CERT_FILE=/certs/fullchain.pem
       # LANQIN_TLS_KEY_FILE=/certs/privkey.pem
@@ -107,6 +108,13 @@ services:
   rspamd:
     image: ${LANQIN_RSPAMD_IMAGE:-ghcr.io/lanqin996/lanqin-email-rspamd:latest}
     env_file: .env
+    environment:
+      # .env 里的 127.0.0.1 在 rspamd 容器里指向它自己；split 部署必须显式指到服务名。
+      LANQIN_REDIS_ADDR: redis:6379
+      LANQIN_RSPAMD_DNS: ${LANQIN_STACK_RSPAMD_DNS:-127.0.0.11:53}
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ./data:/data:ro
       - ./dkim:/var/lib/rspamd/dkim
