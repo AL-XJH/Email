@@ -1646,6 +1646,10 @@ func (a *App) migrateHotPathIndexes(ctx context.Context) error {
 		// 原来的 local_message_id 索引带 WHERE local_message_id<>''，而所有查询都写成
 		// em.local_message_id=m.id，计划器证明不了这个谓词成立，索引完全用不上（实测 10ms → 28s）。
 		`CREATE INDEX IF NOT EXISTS idx_external_imap_messages_local_all ON external_imap_messages(local_message_id)`,
+		// provider 的投递回执按 sent_message_id / message_id 反查 send_queue，
+		// 这两列原来没有索引，每条回执都是全表扫。
+		`CREATE INDEX IF NOT EXISTS idx_send_queue_sent_message ON send_queue(sent_message_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_send_queue_message_id ON send_queue(message_id)`,
 	}
 	for _, stmt := range statements {
 		if _, err := a.db.ExecContext(ctx, stmt); err != nil {

@@ -19,6 +19,18 @@ func TestPerformanceIndexesCoverHotMailboxQueries(t *testing.T) {
 		args      []any
 	}{
 		{
+			name:      "delivery receipt by sent message",
+			indexName: "idx_send_queue_sent_message",
+			query:     `SELECT id FROM send_queue WHERE sent_message_id=? ORDER BY created_at DESC LIMIT 1`,
+			args:      []any{"mail_test"},
+		},
+		{
+			name:      "delivery receipt by rfc message id",
+			indexName: "idx_send_queue_message_id",
+			query:     `SELECT id FROM send_queue WHERE message_id=? ORDER BY created_at DESC LIMIT 1`,
+			args:      []any{"<id@example.test>"},
+		},
+		{
 			name:      "message attachments",
 			indexName: "idx_attachments_message_filename",
 			query:     `SELECT filename FROM attachments WHERE message_id=? ORDER BY filename`,

@@ -113,10 +113,29 @@ func (a *App) storeDeliveryEvent(r *http.Request, tx *sql.Tx, event deliveryWebh
 		return false, errors.New("occurredAt must be an RFC3339 timestamp")
 	}
 	var queueID, sentMessageID, rfcMessageID string
-	err = tx.QueryRowContext(r.Context(), `SELECT id,sent_message_id,message_id FROM send_queue
-		WHERE (?<>'' AND id=?) OR (?<>'' AND sent_message_id=?) OR (?<>'' AND message_id=?)
-		ORDER BY created_at DESC LIMIT 1`, event.QueueID, event.QueueID, event.MessageID, event.MessageID, event.RFCMessageID, event.RFCMessageID).Scan(&queueID, &sentMessageID, &rfcMessageID)
-	if err != nil {
+	// 三次点查代替一条 OR：`a=? OR b=? OR c=?` 在 SQLite 里只能全表扫，
+	// 每条 provider 回执都会扫完整张 send_queue。按 id → sent_message_id →
+	// message_id 的顺序查，每个条件都能走索引。
+	found := false
+	for _, lookup := range []struct {
+		query string
+		value string
+	}{
+		{`SELECT id,sent_message_id,message_id FROM send_queue WHERE id=? ORDER BY created_at DESC LIMIT 1`, event.QueueID},
+		{`SELECT id,sent_message_id,message_id FROM send_queue WHERE sent_message_id=? ORDER BY created_at DESC LIMIT 1`, event.MessageID},
+		{`SELECT id,sent_message_id,message_id FROM send_queue WHERE message_id=? ORDER BY created_at DESC LIMIT 1`, event.RFCMessageID},
+	} {
+		if strings.TrimSpace(lookup.value) == "" {
+			continue
+		}
+		if scanErr := tx.QueryRowContext(r.Context(), lookup.query, lookup.value).Scan(&queueID, &sentMessageID, &rfcMessageID); scanErr == nil {
+			found = true
+			break
+		} else if !errors.Is(scanErr, sql.ErrNoRows) {
+			return false, scanErr
+		}
+	}
+	if !found {
 		return false, errors.New("send item not found")
 	}
 	if (event.QueueID != "" && event.QueueID != queueID) || (event.MessageID != "" && event.MessageID != sentMessageID) || (event.RFCMessageID != "" && event.RFCMessageID != rfcMessageID) {
