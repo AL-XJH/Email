@@ -536,6 +536,7 @@ func (a *App) migrate(ctx context.Context) error {
 			imap_uid INTEGER NOT NULL DEFAULT 0,
 			imap_modseq INTEGER NOT NULL DEFAULT 1,
 			draft_token TEXT NOT NULL DEFAULT '',
+			reply_to TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -1726,9 +1727,17 @@ func (a *App) migrateDraftTokens(ctx context.Context) error {
 		return err
 	}
 	rows.Close()
-	if !columns["draft_token"] {
-		if _, err := a.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN draft_token TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
+	for _, column := range []struct {
+		name string
+		sql  string
+	}{
+		{"draft_token", `ALTER TABLE messages ADD COLUMN draft_token TEXT NOT NULL DEFAULT ''`},
+		{"reply_to", `ALTER TABLE messages ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''`},
+	} {
+		if !columns[column.name] {
+			if _, err := a.db.ExecContext(ctx, column.sql); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -5,7 +5,7 @@ import { Navigate, RouterProvider, createBrowserRouter } from "react-router-dom"
 import { Toaster } from "@/components/ui/toaster"
 import { LanguageDomSync } from "@/lib/language"
 import { SiteTitleSync } from "@/components/site-title-sync"
-import { persistQueryCache, restoreQueryCache } from "@/lib/query-cache"
+import { clearQueryCacheSnapshot, persistQueryCache, restoreQueryCache } from "@/lib/query-cache"
 import { setUnauthorizedHandler } from "@/lib/api"
 import { ProtectedLayout } from "@/components/protected-layout"
 import { AdminOnly } from "@/components/admin-only"
@@ -42,7 +42,12 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 10_000 } },
 })
 // 必须在第一次渲染前 hydrate，否则还是会先闪一下骨架屏
-setUnauthorizedHandler(() => queryClient.clear())
+setUnauthorizedHandler(() => {
+  queryClient.clear()
+  // 401 代表当前会话已失效：只清内存会让下一次启动把旧账号的持久化快照
+  // 重新 hydrate 回来，邮箱切换器里出现别人的地址。
+  clearQueryCacheSnapshot()
+})
 restoreQueryCache(queryClient)
 persistQueryCache(queryClient)
 const router = createBrowserRouter([

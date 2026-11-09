@@ -27,9 +27,35 @@ import (
 // Every outbound-connection guard shares this predicate on purpose: when the
 // rules lived in one copy per feature they drifted apart, and the weaker copy
 // silently became the SSRF hole.
+var blockedOutboundCIDRs = func() []*net.IPNet {
+	cidrs := []string{
+		"0.0.0.0/8",       // 本网络
+		"100.64.0.0/10",   // CGNAT / Tailscale / 阿里云元数据 100.100.100.200
+		"192.0.0.0/24",    // IETF 协议分配
+		"192.0.2.0/24",    // TEST-NET-1
+		"198.18.0.0/15",   // benchmark
+		"198.51.100.0/24", // TEST-NET-2
+		"203.0.113.0/24",  // TEST-NET-3
+		"240.0.0.0/4",     // 保留 + broadcast
+	}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, value := range cidrs {
+		_, block, err := net.ParseCIDR(value)
+		if err == nil {
+			out = append(out, block)
+		}
+	}
+	return out
+}()
+
 func isPublicUnicastIP(ip net.IP) bool {
 	if ip == nil {
 		return false
+	}
+	for _, block := range blockedOutboundCIDRs {
+		if block.Contains(ip) {
+			return false
+		}
 	}
 	return ip.IsGlobalUnicast() &&
 		!ip.IsLoopback() &&

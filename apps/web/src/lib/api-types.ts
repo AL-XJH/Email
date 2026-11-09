@@ -272,6 +272,7 @@ export type MailMessage = {
   subject: string
   from: string
   fromName?: string
+  replyTo?: string
   to: string[]
   cc: string[]
   bcc?: string[]

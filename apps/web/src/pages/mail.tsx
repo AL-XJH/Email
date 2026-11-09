@@ -1238,6 +1238,10 @@ export function MailPage() {
         qc.invalidateQueries({ queryKey: ["mail-stats"] })
         qc.invalidateQueries({ queryKey: ["labels"] })
         qc.invalidateQueries({ queryKey: ["mail-notifications"] })
+        // 新邮件/已读状态变化必须让列表和详情失效；只刷侧栏角标会造成
+        // 「角标变了但收件箱不动」的假死。
+        qc.invalidateQueries({ queryKey: ["messages"] })
+        qc.invalidateQueries({ queryKey: ["message"] })
       })
       source.onopen = () => {
         attempts = 0
@@ -1296,6 +1300,7 @@ export function MailPage() {
                 selectedLabelId,
                 debouncedQuery,
                 messagePageSize,
+                mailFilter,
               ]
         const nextPage =
           mailView === "external"
@@ -1307,16 +1312,17 @@ export function MailPage() {
                 messagePageSize
               )
             : mailView === "starred"
-              ? await api.starredMessages(debouncedQuery, "", activeMailboxId, messagePageSize)
+              ? await api.starredMessages(debouncedQuery, "", activeMailboxId, messagePageSize, mailFilter)
               : mailView === "label"
                 ? await api.labelMessages(
                     selectedLabelId,
                     debouncedQuery,
                     "",
                     activeMailboxId,
-                    messagePageSize
+                    messagePageSize,
+                    mailFilter
                   )
-                : await api.messages(folder, debouncedQuery, "", activeMailboxId, messagePageSize)
+                : await api.messages(folder, debouncedQuery, "", activeMailboxId, messagePageSize, mailFilter)
         const current = qc.getQueryData<InfiniteData<MailListResponse>>(queryKey)
         if (current?.pages[0] && JSON.stringify(current.pages[0]) !== JSON.stringify(nextPage)) {
           await qc.invalidateQueries({ queryKey, exact: true })
@@ -1344,6 +1350,7 @@ export function MailPage() {
     externalFolder,
     externalImapEnabled,
     folder,
+    mailFilter,
     mailRefreshInterval,
     mailView,
     messagePageSize,
@@ -1599,9 +1606,15 @@ export function MailPage() {
   async function openReply(message: MailMessage) {
     if (!canSendSelectedMailbox) return
     const full = await withFullBody(message)
+    const self = (full.mailboxAddress || "").toLowerCase()
+    let to = (full.replyTo || full.from).trim()
+    // 回复自己 Sent 里的邮件时，收件人应该是原收件人，不是自己。
+    if (to.toLowerCase() === self) {
+      to = (full.to || []).find((address) => address.toLowerCase() !== self) || to
+    }
     openCompose({
       key: `reply-${full.id}-${Date.now()}`,
-      to: full.from,
+      to,
       subject: withPrefix(full.subject, "Re:"),
       ...quoteMessage(full),
     })
@@ -4915,7 +4928,7 @@ async function attachmentFilesFromMessage(message: MailMessage) {
   if (!message.attachments?.length) return []
   return Promise.all(
     message.attachments.map(async (attachment) => {
-      const response = await fetch(`/api/mail/attachments/${attachment.id}`, {
+      const response = await fetch(attachmentHref(message, attachment.id), {
         credentials: "include",
       })
       // 403/404 的响应体是 JSON 错误文本，直接包成 File 会把错误页当附件发出去。

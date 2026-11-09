@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
 	"encoding/base64"
@@ -30,18 +31,19 @@ import (
 )
 
 const (
-	externalIMAPStorageLocal  = "local"
-	externalIMAPStorageRemote = "remote"
-	externalIMAPTLS           = "tls"
-	externalIMAPStartTLS      = "starttls"
-	externalIMAPPlain         = "plain"
-	externalIMAPMaxFetch      = 30
-	externalIMAPAuthPassword  = "password"
-	externalIMAPAuthOAuth2    = "oauth2"
-	externalIMAPOAuthGmail    = "gmail"
-	externalIMAPOAuthOutlook  = "outlook"
-	externalIMAPSyncBatchSize = 10
-	externalIMAPSyncMaxPerRun = 100
+	externalIMAPStorageLocal     = "local"
+	externalIMAPStorageRemote    = "remote"
+	externalIMAPTLS              = "tls"
+	externalIMAPStartTLS         = "starttls"
+	externalIMAPPlain            = "plain"
+	externalIMAPMaxFetch         = 30
+	externalIMAPAuthPassword     = "password"
+	externalIMAPAuthOAuth2       = "oauth2"
+	externalIMAPOAuthGmail       = "gmail"
+	externalIMAPOAuthOutlook     = "outlook"
+	externalIMAPOAuthNonceCookie = "external_imap_oauth_nonce"
+	externalIMAPSyncBatchSize    = 10
+	externalIMAPSyncMaxPerRun    = 100
 
 	// 单封超过这个体积就不跟着整批拉了：批量取正文时 10 封 20MB 的邮件
 	// 会同时驻留内存。超过的改用 FetchRaw 逐封取，峰值只跟最大的一封有关。
@@ -517,6 +519,17 @@ func (a *App) handleStartExternalIMAPOAuth(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 把 nonce 绑到发起请求的浏览器：否则攻击者可以把自己的 state 链接发给
+	// 受害者，受害者授权后 Gmail token 会落到攻击者账号下。
+	http.SetCookie(w, &http.Cookie{
+		Name:     externalIMAPOAuthNonceCookie,
+		Value:    state.Nonce,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(strings.ToLower(a.config().PublicBaseURL), "https://"),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   10 * 60,
+	})
 	respondJSON(w, http.StatusOK, map[string]any{"url": conf.AuthCodeURL(stateValue, oauth2.AccessTypeOffline)})
 }
 
@@ -532,6 +545,12 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, "invalid oauth state")
 		return
 	}
+	nonceCookie, cookieErr := r.Cookie(externalIMAPOAuthNonceCookie)
+	if cookieErr != nil || subtle.ConstantTimeCompare([]byte(nonceCookie.Value), []byte(state.Nonce)) != 1 {
+		respondError(w, http.StatusBadRequest, "oauth state does not belong to this browser")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: externalIMAPOAuthNonceCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	if oauthErr := strings.TrimSpace(r.URL.Query().Get("error")); oauthErr != "" {
 		respondError(w, http.StatusBadRequest, "oauth failed: "+oauthErr)
 		return
@@ -2179,7 +2198,7 @@ func (c *goExternalIMAPClient) FetchNew(ctx context.Context, folder string, afte
 	bodies := make(map[imap.UID][]byte, len(meta))
 	if staticUIDSetCount(inlineUIDs) > 0 {
 		bodySection := &imap.FetchItemBodySection{Peek: true}
-		withBody, err := c.client.Fetch(inlineUIDs, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
+		withBody, err := collectFetchBuffersLimited(c.client.Fetch(inlineUIDs, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{bodySection}}), externalIMAPInlineBodyMaxBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -2269,6 +2288,56 @@ func boundedSearchUIDs(numSet imap.NumSet, limit int, newestFirst bool) []imap.U
 
 var errExternalIMAPMessageTooLarge = errors.New("external imap message exceeds size limit")
 
+// collectFetchBuffersLimited 替代 Collect：先看服务器声明的 literal 大小，
+// 超过上限立即拒绝，再 LimitReader 读取。恶意 IMAP 服务器可以声明 RFC822.SIZE=1
+// 却返回几 GB 的 literal，Collect 会直接 io.ReadAll 把进程打爆。
+func collectFetchBuffersLimited(cmd *imapclient.FetchCommand, maxBytes int64) ([]*imapclient.FetchMessageBuffer, error) {
+	var out []*imapclient.FetchMessageBuffer
+	for msg := cmd.Next(); msg != nil; msg = cmd.Next() {
+		buf := &imapclient.FetchMessageBuffer{SeqNum: msg.SeqNum}
+		for item := msg.Next(); item != nil; item = msg.Next() {
+			switch value := item.(type) {
+			case imapclient.FetchItemDataBodySection:
+				if value.Literal == nil {
+					continue
+				}
+				if maxBytes > 0 && value.Literal.Size() > maxBytes {
+					_ = cmd.Close()
+					return nil, errExternalIMAPMessageTooLarge
+				}
+				reader := io.Reader(value.Literal)
+				if maxBytes > 0 {
+					reader = io.LimitReader(value.Literal, maxBytes+1)
+				}
+				data, err := io.ReadAll(reader)
+				if err != nil {
+					_ = cmd.Close()
+					return nil, err
+				}
+				if maxBytes > 0 && int64(len(data)) > maxBytes {
+					_ = cmd.Close()
+					return nil, errExternalIMAPMessageTooLarge
+				}
+				buf.BodySection = append(buf.BodySection, imapclient.FetchBodySectionBuffer{Section: value.Section, Bytes: data})
+			case imapclient.FetchItemDataFlags:
+				buf.Flags = value.Flags
+			case imapclient.FetchItemDataEnvelope:
+				buf.Envelope = value.Envelope
+			case imapclient.FetchItemDataInternalDate:
+				buf.InternalDate = value.Time
+			case imapclient.FetchItemDataRFC822Size:
+				buf.RFC822Size = value.Size
+			case imapclient.FetchItemDataUID:
+				buf.UID = value.UID
+			case imapclient.FetchItemDataBodyStructure:
+				buf.BodyStructure = value.BodyStructure
+			}
+		}
+		out = append(out, buf)
+	}
+	return out, cmd.Close()
+}
+
 func (c *goExternalIMAPClient) FetchRaw(ctx context.Context, folder string, uid uint32) ([]byte, externalIMAPRemoteMessage, error) {
 	selected, err := c.client.Select(folder, nil).Wait()
 	if err != nil {
@@ -2289,7 +2358,7 @@ func (c *goExternalIMAPClient) FetchRaw(ctx context.Context, folder string, uid 
 		}
 	}
 	bodySection := &imap.FetchItemBodySection{Peek: true}
-	messages, err := c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
+	messages, err := collectFetchBuffersLimited(c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}), c.maxMessageBytes)
 	if err != nil {
 		return nil, externalIMAPRemoteMessage{}, err
 	}
@@ -2355,7 +2424,7 @@ func (c *goExternalIMAPClient) FetchPart(ctx context.Context, folder string, uid
 		return nil, Attachment{}, errExternalIMAPMessageTooLarge
 	}
 	bodySection := &imap.FetchItemBodySection{Part: path, Peek: true}
-	messages, err := c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{bodySection}}).Collect()
+	messages, err := collectFetchBuffersLimited(c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{bodySection}}), c.maxMessageBytes)
 	if err != nil {
 		return nil, Attachment{}, err
 	}
@@ -2500,6 +2569,14 @@ func (a *App) deleteExternalIMAPLocalData(ctx context.Context, accountID, userID
 		// 只删空文件夹：里面如果还有用户自己拖进去的邮件，保留更安全。
 		if _, err := a.db.ExecContext(ctx, `DELETE FROM folders WHERE id=? AND NOT EXISTS (SELECT 1 FROM messages WHERE folder_id=?)`, id, id); err != nil {
 			a.log.Warn("failed to delete external imap local folder", "folder", id, "error", err)
+		}
+	}
+	// UID 游标必须一起清：换服务器/换账号后如果沿用旧 last_uid，
+	// 新服务器 UID 更低的所有邮件都会被永久跳过。
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_folder_states WHERE account_id=?`, accountID); err != nil {
+		a.log.Warn("failed to clear external imap folder state", "account", accountID, "error", err)
+		if deleteErr == nil {
+			deleteErr = err
 		}
 	}
 	return deleteErr

@@ -174,6 +174,7 @@ type MailMessage struct {
 	Subject           string             `json:"subject"`
 	From              string             `json:"from"`
 	FromName          string             `json:"fromName,omitempty"`
+	ReplyTo           string             `json:"replyTo,omitempty"`
 	To                []string           `json:"to"`
 	CC                []string           `json:"cc"`
 	BCC               []string           `json:"bcc,omitempty"`

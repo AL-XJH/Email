@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
+
+var lastUIDValidity atomic.Int64
 
 type imapMetadata struct {
 	UID    int64
@@ -173,9 +176,20 @@ func (a *App) backfillFolderIMAPUIDs(ctx context.Context, folderID string) error
 func (a *App) newUIDValidity() int64 {
 	value := a.now().UTC().Unix()
 	if value <= 0 {
-		return time.Now().UTC().Unix()
+		value = time.Now().UTC().Unix()
 	}
-	return value
+	// 秒级时间戳在同一秒内删除/重建同名文件夹会重复，客户端会把新 UID
+	// 当成旧邮件。用进程内单调计数器保证同一进程内严格递增。
+	for {
+		previous := lastUIDValidity.Load()
+		next := value
+		if next <= previous {
+			next = previous + 1
+		}
+		if lastUIDValidity.CompareAndSwap(previous, next) {
+			return next
+		}
+	}
 }
 
 // imapClampSQL 返回「不小于某值」的 SQLite 写法。两参数 MAX 是标量函数。

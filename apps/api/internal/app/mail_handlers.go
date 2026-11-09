@@ -68,6 +68,7 @@ type storedMessage struct {
 	ThreadID       string
 	InReplyTo      string
 	References     string
+	ReplyTo        string
 	Subject        string
 	From           string
 	FromName       string
@@ -2661,7 +2662,7 @@ func (a *App) loadMessageForRequest(r *http.Request, id string, includeBody bool
 }
 
 func (a *App) messageByID(ctx context.Context, id string, includeBody bool) (*MailMessage, error) {
-	row := a.db.QueryRowContext(ctx, `SELECT m.id,COALESCE(m.mailbox_id,''),COALESCE(m.recipient_addr,''),COALESCE(m.folder_id,''),COALESCE(f.name,'Unregistered'),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.body_text,m.body_html,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,COALESCE(m.auth_results,''),COALESCE(m.auth_spf,'unknown'),COALESCE(m.auth_dkim,'unknown'),COALESCE(m.auth_dmarc,'unknown'),COALESCE(m.received_spf,'')
+	row := a.db.QueryRowContext(ctx, `SELECT m.id,COALESCE(m.mailbox_id,''),COALESCE(m.recipient_addr,''),COALESCE(m.folder_id,''),COALESCE(f.name,'Unregistered'),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.body_text,m.body_html,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,COALESCE(m.auth_results,''),COALESCE(m.auth_spf,'unknown'),COALESCE(m.auth_dkim,'unknown'),COALESCE(m.auth_dmarc,'unknown'),COALESCE(m.received_spf,''),COALESCE(m.reply_to,'')
 		FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.id=?`, id)
 	msg, err := scanMessageFull(row, includeBody)
 	if err != nil {
@@ -3068,7 +3069,7 @@ func scanMessageFull(row messageSummaryScanner, includeBody bool) (MailMessage, 
 	var auth MailAuthentication
 	var read, starred, hasAtt int
 	var bodyText, bodyHTML string
-	err := row.Scan(&msg.ID, &msg.MailboxID, &msg.RecipientAddr, &msg.FolderID, &msg.Folder, &msg.MessageUID, &msg.IMAPUID, &msg.IMAPModSeq, &msg.MessageID, &msg.ThreadID, &msg.Subject, &msg.From, &msg.FromName, &toJSON, &ccJSON, &bccJSON, &sent, &received, &msg.Snippet, &bodyText, &bodyHTML, &read, &starred, &hasAtt, &msg.SizeBytes, &auth.AuthenticationResults, &auth.SPF, &auth.DKIM, &auth.DMARC, &auth.ReceivedSPF)
+	err := row.Scan(&msg.ID, &msg.MailboxID, &msg.RecipientAddr, &msg.FolderID, &msg.Folder, &msg.MessageUID, &msg.IMAPUID, &msg.IMAPModSeq, &msg.MessageID, &msg.ThreadID, &msg.Subject, &msg.From, &msg.FromName, &toJSON, &ccJSON, &bccJSON, &sent, &received, &msg.Snippet, &bodyText, &bodyHTML, &read, &starred, &hasAtt, &msg.SizeBytes, &auth.AuthenticationResults, &auth.SPF, &auth.DKIM, &auth.DMARC, &auth.ReceivedSPF, &msg.ReplyTo)
 	if err != nil {
 		return msg, err
 	}

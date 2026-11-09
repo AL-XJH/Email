@@ -254,6 +254,10 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 	)
 	moved := false
 	if filepath.Clean(targetPath) != filepath.Clean(state.RawPath) {
+		// 同上：rename 前先推 updated_at，避免 cleanup 在 raw_path 更新前介入。
+		if _, err := a.db.ExecContext(ctx, `UPDATE messages SET updated_at=? WHERE id=?`, a.now().UTC().Format(time.RFC3339Nano), messageID); err != nil {
+			return err
+		}
 		if err := os.Rename(state.RawPath, targetPath); err != nil {
 			return err
 		}
@@ -366,9 +370,22 @@ func (a *App) updateMessageMaildirFlags(ctx context.Context, messageID string, r
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
+	// 先把 updated_at 推到现在：cleanup 只处理 5 分钟前的行，rename 后到
+	// UPDATE raw_path 之间即使被扫描看到，也不会把这条当「磁盘已删」清掉。
+	if _, err := a.db.ExecContext(ctx, `UPDATE messages SET updated_at=? WHERE id=?`, a.now().UTC().Format(time.RFC3339Nano), messageID); err != nil {
+		return err
+	}
 	if err := os.Rename(state.RawPath, targetPath); err != nil {
 		return err
 	}
+	moved := true
+	defer func() {
+		if moved {
+			if renameErr := os.Rename(targetPath, state.RawPath); renameErr != nil {
+				a.log.Error("failed to roll back maildir flag rename", "from", targetPath, "to", state.RawPath, "error", renameErr)
+			}
+		}
+	}()
 	if err := applyMaildirOwnership(targetPath); err != nil {
 		a.log.Warn("failed to chown maildir file after flag change", "path", targetPath, "error", err)
 	}
@@ -377,7 +394,11 @@ func (a *App) updateMessageMaildirFlags(ctx context.Context, messageID string, r
 		return err
 	}
 	_, err = a.db.ExecContext(ctx, `UPDATE messages SET raw_path=?,imap_modseq=CASE WHEN ? > 0 THEN ? ELSE imap_modseq END,updated_at=? WHERE id=?`, targetPath, modSeq, modSeq, a.now().UTC().Format(time.RFC3339Nano), messageID)
-	return err
+	if err != nil {
+		return err
+	}
+	moved = false
+	return nil
 }
 
 func (a *App) removeMaildirPath(ctx context.Context, rawPath string) error {

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -557,7 +558,10 @@ func (a *App) syncUnregisteredMaildirFile(ctx context.Context, mb maildirMailbox
 		msg.MessageUID = newID("uid")
 	}
 	if msg.MessageID == "" {
-		msg.MessageID = fmt.Sprintf("<%s@lanqin.local>", newID("msg"))
+		// 用原文哈希做稳定合成 id：MUA 把 new/x 改名成 cur/x:2,S 时，
+		// 随机 id 会让同一条消息匹配不到旧行、被当成新邮件再导入一份。
+		sum := sha256.Sum256(raw)
+		msg.MessageID = fmt.Sprintf("<%x@lanqin.local>", sum[:16])
 	}
 	if msg.ReceivedAt.IsZero() {
 		msg.ReceivedAt = a.now().UTC()
@@ -976,6 +980,7 @@ func (a *App) parseMaildirMessage(raw []byte, fallbackTo string) (storedMessage,
 		MessageID:      strings.TrimSpace(m.Header.Get("Message-Id")),
 		ThreadID:       "",
 		InReplyTo:      strings.TrimSpace(m.Header.Get("In-Reply-To")),
+		ReplyTo:        strings.TrimSpace(m.Header.Get("Reply-To")),
 		References:     strings.TrimSpace(m.Header.Get("References")),
 		Subject:        subject,
 		From:           from,
