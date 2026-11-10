@@ -155,3 +155,16 @@ func TestMarkSendQueueFailedStopsRetryingPermanentErrors(t *testing.T) {
 		t.Fatalf("next_attempt_at=%s, want a far-future parking time", nextAttempt)
 	}
 }
+
+func TestRecordRejectedSendRecipientsPersistsDeliveryEvent(t *testing.T) {
+	a := newTestApp(t)
+	item := sendQueueItem{ID: "snd_reject", SentMessageID: "msg_reject", MessageID: "<reject@example.test>"}
+	a.recordRejectedSendRecipients(context.Background(), item, map[string]string{"bad@example.test": "550 5.1.1 no such user"})
+	var status, reason string
+	if err := a.db.QueryRow(`SELECT status,reason FROM delivery_events WHERE sent_message_id=? AND recipient=?`, item.SentMessageID, "bad@example.test").Scan(&status, &reason); err != nil {
+		t.Fatalf("rejected recipient event missing: %v", err)
+	}
+	if status != "rejected" || !strings.Contains(reason, "550") {
+		t.Fatalf("delivery event status=%q reason=%q", status, reason)
+	}
+}

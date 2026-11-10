@@ -266,12 +266,14 @@ func (a *App) processSendQueueItem(ctx context.Context, id string) {
 		return
 	}
 	result, err := a.sendSMTP(item.MailFrom, item.Recipients, item.MIMEBytes)
+	// 即使整封最终失败（比如所有收件人都是 5xx），5xx 的地址也要留回执；
+	// 只记 queue.last_error 的话状态接口仍然看不到哪个地址被永久拒绝。
+	if len(result.Rejected) > 0 {
+		a.recordRejectedSendRecipients(ctx, item, result.Rejected)
+	}
 	if err != nil {
 		a.markSendQueueFailed(ctx, item, err)
 		return
-	}
-	if len(result.Rejected) > 0 {
-		a.recordRejectedSendRecipients(ctx, item, result.Rejected)
 	}
 	if err := a.writeSendQueueDeliveredMarker(item.ID); err != nil {
 		a.log.Warn("failed to persist send queue delivered marker", "id", item.ID, "error", err)
