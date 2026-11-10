@@ -827,7 +827,7 @@ func (a *App) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			mailbox_id TEXT NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
-			color TEXT NOT NULL DEFAULT '#64748b',
+			color TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(mailbox_id, name)
@@ -872,6 +872,9 @@ func (a *App) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := a.migrateDraftTokens(ctx); err != nil {
+		return err
+	}
+	if err := a.migrateLabelColors(ctx); err != nil {
 		return err
 	}
 	// 这两列必须先 ALTER 再建索引：旧库升级时 schema 里的
@@ -1210,6 +1213,41 @@ func (a *App) rebuildHTMLOnlyMessageSnippets(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// migrateLabelColors 把旧版本自动写死的灰色（#64748b）换成按名称生成的
+// 稳定颜色。标签页创建时前端先用同名哈希显示彩色，服务端返回灰色后又会
+// 自己变灰；空颜色让前端继续用同一个哈希兜底。
+func (a *App) migrateLabelColors(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT id,name,COALESCE(color,'') FROM mail_labels WHERE COALESCE(color,'')='' OR lower(color)='#64748b'`)
+	if err != nil {
+		return err
+	}
+	type labelColor struct {
+		id    string
+		color string
+	}
+	var updates []labelColor
+	for rows.Next() {
+		var id, name, color string
+		if err := rows.Scan(&id, &name, &color); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		updates = append(updates, labelColor{id: id, color: labelColorForName(name)})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	for _, item := range updates {
+		if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color=?,updated_at=? WHERE id=?`, item.color, now, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) migrateSendQueueMessageID(ctx context.Context) error {

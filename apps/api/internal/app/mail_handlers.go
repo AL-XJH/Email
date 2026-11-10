@@ -2951,7 +2951,9 @@ func (a *App) ensureLabel(ctx context.Context, mailboxID, name, color string) (M
 	}
 	id := newID("lbl")
 	if color == "" {
-		color = "#64748b"
+		// 前端会用同一套 FNV-1a 哈希给临时标签上色；服务端返回同名颜色
+		// 才能让新建后的颜色保持不变，而不是先彩色再跳成灰色。
+		color = labelColorForName(name)
 	}
 	_, err := a.db.ExecContext(ctx, `INSERT INTO mail_labels(id,mailbox_id,name,color,created_at,updated_at) VALUES(?,?,?,?,?,?)`, id, mailboxID, name, color, now, now)
 	if err != nil {
@@ -2972,6 +2974,16 @@ func normalizeLabelName(name string) string {
 		name = string([]rune(name)[:32])
 	}
 	return name
+}
+
+func labelColorForName(name string) string {
+	var hash uint32 = 0x811c9dc5
+	for index, r := range []rune(name) {
+		hash ^= uint32(r) + uint32(index)*0x01000193
+		hash *= 0x01000193
+		hash ^= hash >> 16
+	}
+	return fmt.Sprintf("hsl(%d, 70%%, 45%%)", hash%360)
 }
 
 func normalizeLabelColor(color string) string {
