@@ -4115,6 +4115,16 @@ func TestAuthPolicyDovecotResponseFormat(t *testing.T) {
 	if denied["status"] != float64(-1) {
 		t.Fatalf("expected numeric deny status -1, got %#v", denied["status"])
 	}
+
+	// Dovecot 实际拼接出来的是 ?key=<secret>?command=allow，第二个问号
+	// 会落在 key 的值里；认证必须仍能通过。
+	var dovecotStyle map[string]any
+	if code := client.do("POST", "/auth-policy?key=test-auth-policy-secret?command=allow", map[string]string{"login": "admin@lanqin.local", "protocol": "imap"}, &dovecotStyle); code != http.StatusOK {
+		t.Fatalf("dovecot-style auth policy code=%d body=%v", code, dovecotStyle)
+	}
+	if dovecotStyle["status"] != float64(0) {
+		t.Fatalf("dovecot-style auth policy status=%#v, want 0", dovecotStyle["status"])
+	}
 }
 
 func TestProfileAndPasswordUpdate(t *testing.T) {

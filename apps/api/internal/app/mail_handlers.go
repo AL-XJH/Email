@@ -1286,7 +1286,14 @@ func (a *App) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
 	// 没有 secret 就等于任何人都能清/植登录锁定。entrypoint 会在 /data 里生成
 	// 一个共享 secret；读不到时宁可拒绝 Dovecot 登录，也不放开这个端点。
 	secret := strings.TrimSpace(a.config().AuthPolicySecret)
-	if secret == "" || subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("key")), []byte(secret)) != 1 {
+	key := r.URL.Query().Get("key")
+	// Dovecot 的 auth_policy 客户端会在 URL 后面直接追加 "?command=allow"。
+	// 如果配置里已经有 "?key=..."，查询串就会变成
+	// "key=<secret>?command=allow"，这里只取 key 的第一段。
+	if before, _, ok := strings.Cut(key, "?"); ok {
+		key = before
+	}
+	if secret == "" || subtle.ConstantTimeCompare([]byte(key), []byte(secret)) != 1 {
 		respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
 		return
 	}
