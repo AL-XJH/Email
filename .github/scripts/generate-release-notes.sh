@@ -145,7 +145,7 @@ for part in "${overview_parts[@]}"; do
 done
 
 {
-	echo "> LanQin Email 是一套自建邮箱 Webmail 全栈方案，集成 Web、API、Postfix、Dovecot 与 Rspamd。"
+	echo "> XJH 邮箱是一套自建邮箱网页端全栈方案，集成 Web、API、Postfix、Dovecot 与 Rspamd。"
 	echo
 
 	if [[ -s "${manual_notes}" ]]; then
@@ -238,7 +238,7 @@ done
 
 	echo "## 文档"
 	echo
-	echo "- [中文说明](${repo_url}/blob/${tag}/README.zh-CN.md)"
+	echo "- [项目说明](${repo_url}/blob/${tag}/README.md)"
 	echo "- [部署文档](${repo_url}/blob/${tag}/deploy/README.md)"
 	echo "- [开放 API](${repo_url}/blob/${tag}/docs/API.md)"
 	echo "- [开源协议](${repo_url}/blob/${tag}/LICENSE)"

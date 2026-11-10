@@ -1,7 +1,4 @@
-# XJH Email
-
-[![English](https://img.shields.io/badge/English-README-blue)](./README.md)
-[![简体中文](https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-README-green)](./README.zh-CN.md)
+# XJH 邮箱
 
 ![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react)
@@ -12,101 +9,101 @@
 ![Dovecot](https://img.shields.io/badge/Dovecot-4B8BBE)
 ![Rspamd](https://img.shields.io/badge/Rspamd-FFD045)
 
-This is **AL-XJH/Email**, a personal self-hosted fork of [LanQin996/LanQin-Email](https://github.com/LanQin996/LanQin-Email).
+这是 **AL-XJH/Email**，一个以 [LanQin996/LanQin-Email](https://github.com/LanQin996/LanQin-Email) 为基础的个人自建邮箱分支。
 
-The frontend is React + TypeScript + shadcn/ui, the backend is Go + SQLite, and production runs as a single all-in-one container with API, Web, Nginx, Postfix, Dovecot, Rspamd and Redis. This fork is not trying to be a generic product: it is shaped around one operator's daily mail workflow, with a denser UI, spam handling, Telegram notifications and external IMAP, plus the data-safety work needed for long-term self-hosting.
+前端是 React + TypeScript + shadcn/ui，后端是 Go + SQLite；生产部署使用单容器，把 API、Web、Nginx、Postfix、Dovecot、Rspamd 和 Redis 放在一起。这个分支不再追求“功能大而全”，而是按实际使用场景重排界面、补反垃圾/通知/外部邮箱，并把安全与数据可靠性做到能长期自用。
 
-Production instance: `https://mail.alxjh.cn`
+生产实例：`https://mail.alxjh.cn`
 
-## What this fork changes
+## 这个分支做了什么
 
-### UI and interaction
+### 界面与交互
 
-- Dense webmail layout: 73px message rows, 36px sidebar rhythm, one 12/8/4/full radius system.
-- Mobile swipe-back from reader to list; folder/filter changes return to the top without flashing.
-- Collapsible label/folder groups, independently scrolling context menus, keyboard-friendly compact rows.
-- Removed the upstream "mailbox transfer" feature; it is not useful for a personal deployment.
+- 按 seek.li 的密度重排 网页邮箱：列表行高 73px、侧栏 36px 节奏、统一 12/8/4/full 四档圆角。
+- 手机上从阅读页侧滑返回列表；切换文件夹/筛选自动回到列表顶部，刷新不闪。
+- 标签/文件夹分组折叠、右键菜单独立滚动、紧凑模式支持键盘操作。
+- 删除「邮箱转移」：个人使用不需要把邮箱转给别人。
 
-### Inbound and spam
+### 收信与反垃圾
 
-- Rspamd scores are routed to Junk at the configured threshold; tunable from the admin panel.
-- Sender allowlist, sender blocking, verification-code chips, safe HTML rendering.
-- Catch-all mail and normal mailboxes share the same Maildir → SQLite ingestion path.
-- Search is pushed down to the server; unread/starred/attachment filters apply before pagination.
+- Rspamd 评分达到阈值后直接进垃圾箱，可在后台调整。
+- 发件人白名单、发件人拦截、验证码识别 chip、HTML 邮件安全渲染。
+- catch-all 邮件与普通邮箱统一走 Maildir → SQLite 同步。
+- 邮件搜索下推到服务端，未读/星标/附件过滤在分页前生效。
 
-### Reading and composing
+### 阅读与写信
 
-- Reply prefers `Reply-To`; Reply All is available on desktop and mobile; replying to your own Sent copy does not address yourself.
-- Forwarding keeps attachments and formatting; remote IMAP attachments can be forwarded too.
-- Draft autosave is serialized and deduplicated by a client token; sending is idempotent, so retries do not send a second copy.
-- Scheduled send, single-request bulk operations, attachment count/size limits.
-- Translation has a three-level fallback, does not trigger on Chinese text, and HTML anchors no longer open a blank tab.
+- 回复优先使用 `Reply-To`，支持全部回复，回复自己 Sent 里的邮件不会发给自己。
+- 转发保留原附件与排版；远程 IMAP 附件也能直接转发。
+- 草稿自动保存串行化，超时重试/双击不会产生两份草稿；发信支持幂等键，重试不会重复投递。
+- 定时发送、批量操作单请求化、附件数量/大小前端限制。
+- 翻译三级降级：主接口失败自动换备用接口；中文内容不误弹翻译；HTML 锚点不再打开空白页。
 
-### Telegram notifications
+### Telegram 通知
 
-- One message per mail, bold subject on the first line, recipient/verification-code information on the second.
-- Body capped at 1300 characters; long links collapse to a clickable "link"; English mail is translated before pushing.
-- Bot tokens are encrypted at rest; the notification outbox has retries and failure records.
+- 一封邮件一条消息，第一行加粗主题，第二行收件人/验证码信息。
+- 正文最多 1300 字，超长链接收成可点击「链接」，英文邮件自动翻译后再推送。
+- Bot Token 加密保存；通知 outbox 有重试和失败记录。
 
-### External mailboxes
+### 外部邮箱
 
-- Gmail/Outlook OAuth2 and plain IMAP accounts.
-- Local-storage mode syncs into SQLite; remote-direct mode reads the remote server without writing local message rows.
-- 50MB per-message cap; server-declared literal sizes are not trusted and reads are bounded.
-- Private/loopback targets are rejected by default to prevent SSRF.
+- Gmail / Outlook OAuth2 接入，也支持普通 IMAP 账号。
+- 本地存储模式同步入库；远端直连模式每次读取远端，不写本地邮件表。
+- 单封外部邮件 50MB 上限，服务端声明的 literal 大小不可信，读取时再限流。
+- 外部 IMAP 默认拒绝内网/回环地址，防止 SSRF。
 
-### Security and reliability
+### 安全与可靠性
 
-- TOTP 2FA: setup, enable and disable require the current password and share re-auth rate limits; an account with 2FA enabled is never downgraded because a global toggle was turned off.
-- RBAC plus delegated-admin dominance: a helpdesk account cannot reset a super admin, delete their mailbox, or reassign it to itself.
-- API tokens have independent scopes; mailbox password reset uses `users:reset-password` instead of `mailboxes:write`.
-- SMTP/OAuth/Turnstile/external-IMAP secrets use `enc:v1:` and legacy plaintext is migrated at startup.
-- SMTP submission has connection/concurrency limits; port 465 wraps the limiter in TLS so `*tls.Conn` is not hidden from go-smtp.
-- Maildir renames have rollback and cleanup watermarks; messages without a `Message-ID` get a stable SHA-256 synthetic id so renames do not duplicate them.
-- SQLite-only deployment; MySQL/PostgreSQL support and related code were removed.
+- TOTP 双因素：开启、关闭都要求当前密码并走再认证限速；已开启 2FA 的账号不会因为全局开关关闭而降级为单密码。
+- 权限组/RBAC + 委派管理员 dominance：客服不能重置超管、删超管邮箱或把超管邮箱改到自己名下。
+- API Token 独立 scope，邮箱改密使用 `users:reset-password`，不再复用 `mailboxes:write`。
+- 设置里的 SMTP/OAuth/Turnstile/外部 IMAP 密钥统一 `enc:v1:` 加密，启动时迁移历史明文。
+- SMTP 提交限制并发连接；465 先限流再套 TLS，避免 `*tls.Conn` 被包装后拒绝 AUTH。
+- maildir 改名/清理有回滚与水位保护；无 `Message-ID` 的邮件用原文哈希合成稳定 id，改名不会重复导入。
+- SQLite 单机部署，已移除 MySQL/PostgreSQL 支持和对应代码。
 
-## Stack
+## 技术栈
 
-| Layer | Technology |
+| 层 | 技术 |
 | --- | --- |
-| Frontend | React 18, TypeScript, Vite, shadcn/ui, TanStack Query |
-| Backend | Go 1.27, SQLite, Maildir sync, SMTP/IMAP clients |
-| Mail stack | Postfix, Dovecot, Rspamd, Redis 8 |
-| Deployment | Docker Compose, all-in-one by default (split stack optional) |
+| 前端 | React 18、TypeScript、Vite、shadcn/ui、TanStack Query |
+| 后端 | Go 1.27、SQLite、Maildir 同步、SMTP/IMAP 客户端 |
+| 邮件栈 | Postfix、Dovecot、Rspamd、Redis 8 |
+| 部署 | Docker Compose，单容器 all-in-one（可选多容器 stack） |
 
-## Repository layout
+## 目录结构
 
 ```text
 .
-├── apps/api              # Go API, SQLite schema, mail sync and business logic
-├── apps/web              # React/Vite webmail and admin panel
-├── deploy                # Compose, image build, Postfix/Dovecot/Rspamd config
-├── docs                  # API, deployment and native-install docs
-└── .github/workflows     # image build/release and CI
+├── apps/api              # Go API、SQLite schema、邮件同步与业务逻辑
+├── apps/web              # React/Vite 网页邮箱 与管理后台
+├── deploy                # Compose、镜像构建、Postfix/Dovecot/Rspamd 配置
+├── docs                  # API、部署与原生安装文档
+└── .github/workflows     # 镜像构建/发布与 CI
 ```
 
-## Requirements
+## 环境要求
 
-### Development
+### 开发
 
 - Go 1.27+
 - Node.js 20+
-- pnpm 10.28.2 (corepack works)
+- pnpm 10.28.2（可用 corepack 启用）
 
-### Deployment
+### 部署
 
 - Docker Engine
 - Docker Compose v2
-- A resolvable mail domain
-- Ports 25 / 465 / 587 / 993 / 995 (plus 80/443 for the web UI)
+- 可解析的邮件域名
+- 可用端口：25 / 465 / 587 / 993 / 995（以及 Web 的 80/443）
 
-> Public mail also needs correct MX, SPF, DKIM and DMARC records, and a provider that does not block port 25. Many clouds block it by default and require a support request.
+> 公网收发还需要正确配置 MX、SPF、DKIM、DMARC，并确认云厂商没有封禁 25 端口。很多云默认封 25，需要单独申请解封。
 
-## Quick start
+## 快速开始
 
-### Local development
+### 本地开发
 
-Backend:
+后端：
 
 ```bash
 cd apps/api
@@ -115,7 +112,7 @@ go test ./...
 go run ./cmd/server
 ```
 
-Frontend (new terminal):
+前端（新终端）：
 
 ```bash
 cd apps/web
@@ -125,134 +122,140 @@ pnpm install
 pnpm run dev
 ```
 
-Open:
+访问：
 
-- Web: `http://localhost:5173`
-- API: `http://localhost:8080`
+- Web：`http://localhost:5173`
+- API：`http://localhost:8080`
 
-The default admin email is `admin@lanqin.local`. Set `LANQIN_ADMIN_PASSWORD` explicitly for development; otherwise the first startup generates a random password and prints it to the log.
+默认管理员邮箱是 `admin@lanqin.local`。开发时请显式设置 `LANQIN_ADMIN_PASSWORD`；未设置时后端首次启动会生成随机密码并打印到日志。
 
-### Docker (single container)
+### Docker 部署（单容器）
 
-The server only needs the Compose files and config under `deploy/`; no build step on the server:
+服务器只需要 `deploy/` 下的 Compose 和配置，不需要在服务器上编译：
 
 ```bash
 cd deploy
 cp .env.example .env
-# edit domain, public URL, admin email/password, etc.
+# 至少修改：域名、访问地址、管理员邮箱、管理员密码
 docker compose pull
 docker compose up -d
 ```
 
-Image:
+镜像：
 
 ```text
 ghcr.io/al-xjh/lanqin-email:latest
 ```
 
-You can also pin a release tag such as `ghcr.io/al-xjh/lanqin-email:v1.2.5-lanqin.92`. Back up `.env` before an upgrade; rollback is the previous image plus `docker compose up -d`.
+也可以固定到某个发布标签，例如 `ghcr.io/al-xjh/lanqin-email:v1.2.5-lanqin.92`。生产升级前先备份 `.env`，回滚时改回上一版镜像再 `docker compose up -d`。
 
-### Build from source
+### 从源码构建
 
 ```bash
 docker build -f deploy/all-in-one/Dockerfile -t lanqin-email:dense .
 docker tag lanqin-email:dense ghcr.io/al-xjh/lanqin-email:latest
 ```
 
-Common commands:
+常用命令：
 
 ```bash
+# 日志
 docker compose logs -f lanqin-email
-docker compose pull && docker compose up -d
+
+# 更新
+docker compose pull
+docker compose up -d
+
+# 健康检查
 curl -sk https://mail.example.com/readyz
 ```
 
-See [`deploy/README.md`](./deploy/README.md) for more.
+更多部署细节见 [`deploy/README.md`](./deploy/README.md)。
 
-## First deployment checklist
+## 首次部署清单
 
-1. Set `LANQIN_PUBLIC_HOSTNAME`, `LANQIN_PUBLIC_BASE_URL`, `LANQIN_ADMIN_EMAIL` and `LANQIN_ADMIN_PASSWORD` in `deploy/.env`.
-2. Mount real certificates and set `LANQIN_TLS_CERT_FILE` / `LANQIN_TLS_KEY_FILE`.
-3. Add the mail domain in the admin panel; configure MX, SPF, DKIM and DMARC, then run the DNS check.
-4. Create mailboxes, aliases and permission groups; enable 2FA, Turnstile, invitation/open registration as needed.
-5. Send and receive a test message through the admin SMTP test and webmail, then test 465/587 and 993/995 with a third-party client.
-6. Configure backups covering `.env`, SQLite, Maildir and DKIM private keys.
+1. 修改 `deploy/.env` 的 `LANQIN_PUBLIC_HOSTNAME`、`LANQIN_PUBLIC_BASE_URL`、`LANQIN_ADMIN_EMAIL`、`LANQIN_ADMIN_PASSWORD`。
+2. 生产环境挂载真实证书，设置 `LANQIN_TLS_CERT_FILE` / `LANQIN_TLS_KEY_FILE`。
+3. 登录后台添加域名，按提示配置 MX、SPF、DKIM、DMARC，并运行 DNS 检测。
+4. 创建邮箱、别名、权限组；按需开启 2FA、Turnstile、邀请码/开放注册。
+5. 用后台 SMTP 测试和 网页邮箱 收发各测一封，再测试 465/587、993/995 第三方客户端。
+6. 配置备份任务，确认 `.env`、SQLite、Maildir、DKIM 私钥都在备份范围内。
 
-## Key environment variables
+## 关键环境变量
 
-See [`deploy/.env.example`](./deploy/.env.example) for everything. The common ones:
+完整配置见 [`deploy/.env.example`](./deploy/.env.example)。最常用的：
 
-| Variable | Purpose | Default / example |
+| 变量 | 说明 | 默认/示例 |
 | --- | --- | --- |
-| `LANQIN_IMAGE` | All-in-one image for this fork | `ghcr.io/al-xjh/lanqin-email:latest` |
-| `LANQIN_PUBLIC_HOSTNAME` | Mail server hostname | `mail.example.com` |
-| `LANQIN_PUBLIC_BASE_URL` | Public webmail URL | `https://mail.example.com` |
-| `LANQIN_ADMIN_EMAIL` | Initial admin email | `admin@example.com` |
-| `LANQIN_ADMIN_PASSWORD` | Initial admin password; change in production | `ChangeMe123!` |
-| `LANQIN_DB_PATH` | SQLite database path | `/data/lanqin.db` |
-| `LANQIN_DATA_DIR` | Data directory (secret, nonce, etc.) | `/data` |
-| `LANQIN_ALLOW_INSECURE_HTTP` | Allow non-HTTPS cookies; local debugging only | `false` |
-| `LANQIN_TRUSTED_PROXY_COUNT` | Trusted reverse-proxy hops | `1` in the bundled Compose |
-| `LANQIN_SMTP_HOST` / `LANQIN_SMTP_PORT` | Outbound SMTP for webmail | `127.0.0.1` / `25` |
-| `LANQIN_MAILDIR_ROOT` | Maildir root | `/var/mail/vhosts` |
-| `LANQIN_MAILDIR_SCAN_SECONDS` | Maildir scan interval | `5` |
-| `LANQIN_RSPAMD_DNS` | DNS used by Rspamd | `127.0.0.11:53` |
-| `LANQIN_AUTH_POLICY_SECRET` | Shared secret for `/auth-policy`; generated at `/data/auth-policy-secret` when empty | empty |
-| `LANQIN_EXTERNAL_IMAP_ENABLED` | Enable external IMAP | `false` |
-| `LANQIN_EXTERNAL_IMAP_MAX_MESSAGE_MB` | Per-message external IMAP cap | `50` |
-| `LANQIN_EXTERNAL_IMAP_ALLOW_PRIVATE_HOSTS` / `...ALLOW_INSECURE` | Allow private/loopback targets or plaintext IMAP; both default off | `false` |
-| `LANQIN_NOTIFICATION_SECRET_KEY` | Root key for Telegram bot tokens and TOTP seeds | random long string |
+| `LANQIN_IMAGE` | 本分支 all-in-one 镜像 | `ghcr.io/al-xjh/lanqin-email:latest` |
+| `LANQIN_PUBLIC_HOSTNAME` | 邮件服务器主机名 | `mail.example.com` |
+| `LANQIN_PUBLIC_BASE_URL` | 网页邮箱 对外地址 | `https://mail.example.com` |
+| `LANQIN_ADMIN_EMAIL` | 初始管理员邮箱 | `admin@example.com` |
+| `LANQIN_ADMIN_PASSWORD` | 初始管理员密码，生产必须修改 | `ChangeMe123!` |
+| `LANQIN_DB_PATH` | SQLite 路径 | `/data/lanqin.db` |
+| `LANQIN_DATA_DIR` | 数据目录（secret、nonce 等） | `/data` |
+| `LANQIN_ALLOW_INSECURE_HTTP` | 允许非 HTTPS Cookie，仅本地调试 | `false` |
+| `LANQIN_TRUSTED_PROXY_COUNT` | API 前可信反代层数 | 单容器 Compose 设为 `1` |
+| `LANQIN_SMTP_HOST` / `LANQIN_SMTP_PORT` | 网页邮箱 发信 SMTP | `127.0.0.1` / `25` |
+| `LANQIN_MAILDIR_ROOT` | Maildir 根目录 | `/var/mail/vhosts` |
+| `LANQIN_MAILDIR_SCAN_SECONDS` | Maildir 扫描间隔（秒） | `5` |
+| `LANQIN_RSPAMD_DNS` | Rspamd 使用的 DNS | `127.0.0.11:53` |
+| `LANQIN_AUTH_POLICY_SECRET` | `/auth-policy` 共享密钥；留空时 entrypoint 自动生成到 `/data/auth-policy-secret` | 空 |
+| `LANQIN_EXTERNAL_IMAP_ENABLED` | 启用外部 IMAP | `false` |
+| `LANQIN_EXTERNAL_IMAP_MAX_MESSAGE_MB` | 外部 IMAP 单封上限 | `50` |
+| `LANQIN_EXTERNAL_IMAP_ALLOW_PRIVATE_HOSTS` / `...ALLOW_INSECURE` | 允许外部 IMAP 连接内网/回环，或允许明文连接；默认都关闭 | `false` |
+| `LANQIN_NOTIFICATION_SECRET_KEY` | Telegram Bot Token / TOTP 种子加密根密钥 | 随机长字符串 |
 
-Generate the notification key with the operator, for example:
+`LANQIN_NOTIFICATION_SECRET_KEY` 由部署者生成并保管，例如：
 
 ```bash
 openssl rand -base64 32
 ```
 
-It is not stored through the admin UI. Losing or changing it makes saved bot tokens undecryptable and invalidates encrypted TOTP seeds; back it up with `.env`.
+它不会通过后台界面保存。丢失或更换会导致已保存的 Bot Token 无法解密、已加密 TOTP 种子失效；请和 `.env` 一起备份。
 
-## Mail flow
+## 邮件链路
 
-1. **Inbound**: Postfix receives → Rspamd scores/marks → Dovecot writes Maildir → API worker syncs to SQLite → webmail displays.
-2. **Outbound**: webmail calls the API → MIME is built → written to Sent → SMTP submits to Postfix or an external SMTP server.
-3. **Third-party clients**: SMTP 465/587, IMAP 993, POP3 995; certificates must match `LANQIN_PUBLIC_HOSTNAME`.
-4. **External mailboxes**: add Gmail/Outlook or plain IMAP in personal settings; local-storage and remote-direct modes are mutually exclusive per account.
+1. **收件**：Postfix 接收 → Rspamd 评分/标记 → Dovecot 写入 Maildir → API worker 同步到 SQLite → 网页邮箱 展示。
+2. **发件**：网页邮箱 调 API → 构造 MIME → 写入 Sent → SMTP 提交给 Postfix 或外部 SMTP → 投递。
+3. **第三方客户端**：SMTP 465/587、IMAP 993、POP3 995；证书必须匹配 `LANQIN_PUBLIC_HOSTNAME`。
+4. **外部邮箱**：个人设置里添加 Gmail/Outlook 或普通 IMAP；本地模式和远端直连模式二选一。
 
-## Open API
+## 开放 API
 
-Use `/api/open/v1` with scoped API tokens. See [`docs/API.md`](./docs/API.md) and the machine-readable [`docs/openapi.json`](./docs/openapi.json).
+外部集成使用 `/api/open/v1` 和带 scope 的 API Token。说明见 [`docs/API.md`](./docs/API.md)，机器可读契约见 [`docs/openapi.json`](./docs/openapi.json)。
 
-Sending supports `Idempotency-Key`; delivery status is available through signed webhooks or delivery-event queries.
+发信支持 `Idempotency-Key`；投递状态可通过签名 webhook 或 delivery events 查询。
 
-## Operations
+## 运维
 
 ```bash
-# backup script
+# 备份（脚本在 deploy/backup/lanqin-backup.sh）
 install -m 755 deploy/backup/lanqin-backup.sh /usr/local/bin/lanqin-backup
 lanqin-backup
 
-# health
+# 查看健康
 curl -sk https://mail.example.com/readyz
 
-# logs
+# 查看日志
 docker compose logs --since 10m lanqin-email
 ```
 
-Backups contain a consistent SQLite snapshot, `.env`, DKIM keys, Maildir and attachments. They default to `/root/lanqin-backups/<timestamp>/` and are kept for 14 days. Before restoring, stop Compose and remove `data/lanqin.db-wal` and `data/lanqin.db-shm`; otherwise the old WAL is replayed onto the restored database.
+备份包含 SQLite 一致性快照、`.env`、DKIM 私钥、Maildir 和附件；默认放在 `/root/lanqin-backups/<时间戳>/`，保留 14 天。恢复前先 `docker compose down`，并删除 `data/lanqin.db-wal` / `data/lanqin.db-shm`，否则旧 WAL 会回放到恢复的库上。
 
-## Security notes
+## 安全说明
 
-- Change the default admin password; restrict `.env`, SQLite, Maildir and DKIM private keys to the required users.
-- Put the web UI behind Nginx or an edge gateway; expose only 80/443, 25, 465, 587, 993 and 995.
-- `/auth-policy` uses the shared secret in `/data/auth-policy-secret` and rejects requests when the secret is empty. Do not publish port 8080.
-- The split stack trusts the Docker subnet for Postfix relay from the API. Treat a compromised container as an internal-network compromise.
+- 生产必须改掉默认管理员密码；`.env`、SQLite、Maildir、DKIM 私钥只给必要用户读权限。
+- 推荐把 Web 放在 Nginx/边缘网关后，只暴露 80/443、25、465、587、993、995。
+- `/auth-policy` 默认使用 `/data/auth-policy-secret` 共享密钥，secret 为空时直接拒绝；不要把 8080 直接暴露到公网。
+- 多容器 split stack 的 Postfix 仍信任 Docker 子网以便 API 投递；如果容器本身被攻陷，应把它当作内网边界处理。
 
-## Relationship to upstream
+## 与上游的关系
 
-- Upstream: `LanQin996/LanQin-Email`; `main` tracks upstream and is only used for syncing.
-- This fork: `XJH-Email` and `ui/dense`, containing the UI rework, spam handling, notifications, external IMAP and security hardening.
-- Changes are not guaranteed to be merged upstream; deploy this fork from `ghcr.io/al-xjh/lanqin-email`.
+- 上游：`LanQin996/LanQin-Email`，`main` 保持上游原版，用于同步。
+- 本分支：`XJH-Email` 与 `ui/dense`，包含界面重排、反垃圾、通知、外部邮箱、安全加固等自定义改动。
+- 这些改动不保证会被上游合并；部署本分支请使用本仓库镜像 `ghcr.io/al-xjh/lanqin-email`。
 
-## License
+## 许可证
 
-Original copyright belongs to LanQin996. Changes in this fork are released under the same [GNU GPL v3 only](./LICENSE). Third-party components retain their own licenses and notices.
+原项目版权归 LanQin996 所有；本分支的修改同样按 [GNU GPL v3 only](./LICENSE) 发布。第三方组件保留各自许可证与版权声明。
