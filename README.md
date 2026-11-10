@@ -13,7 +13,6 @@
 
 前端是 React + TypeScript + shadcn/ui，后端是 Go + SQLite；生产部署使用单容器，把 API、Web、Nginx、Postfix、Dovecot、Rspamd 和 Redis 放在一起。这个分支不再追求“功能大而全”，而是按实际使用场景重排界面、补反垃圾/通知/外部邮箱，并把安全与数据可靠性做到能长期自用。
 
-生产实例：`https://mail.alxjh.cn`
 
 ## 这个分支做了什么
 
