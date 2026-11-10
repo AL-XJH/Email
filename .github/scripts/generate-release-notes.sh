@@ -145,7 +145,7 @@ for part in "${overview_parts[@]}"; do
 done
 
 {
-	echo "> XJH 邮箱是一套自建邮箱网页端全栈方案，集成 Web、API、Postfix、Dovecot 与 Rspamd。"
+	echo "> 自建邮箱是一套网页端全栈方案，集成 Web、API、Postfix、Dovecot 与 Rspamd。"
 	echo
 
 	if [[ -s "${manual_notes}" ]]; then

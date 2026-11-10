@@ -1,4 +1,4 @@
-
+# 自建邮箱
 
 ![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react)
