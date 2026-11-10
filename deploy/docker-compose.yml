@@ -1,6 +1,6 @@
 services:
   lanqin-email:
-    image: ${LANQIN_IMAGE:-ghcr.io/lanqin996/lanqin-email:latest}
+    image: ${LANQIN_IMAGE:-ghcr.io/al-xjh/lanqin-email:latest}
     env_file: .env
     ports:
       - "80:80"
