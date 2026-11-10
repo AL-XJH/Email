@@ -9,7 +9,7 @@
 ![Dovecot](https://img.shields.io/badge/Dovecot-4B8BBE)
 ![Rspamd](https://img.shields.io/badge/Rspamd-FFD045)
 
-这是 **AL-XJH/Email**，一个以 [LanQin996/LanQin-Email](https://github.com/LanQin996/LanQin-Email) 为基础的个人自建邮箱分支。
+这是一个以 [LanQin996/LanQin-Email](https://github.com/LanQin996/LanQin-Email) 为基础的个人自建邮箱分支。
 
 前端是 React + TypeScript + shadcn/ui，后端是 Go + SQLite；生产部署使用单容器，把 API、Web、Nginx、Postfix、Dovecot、Rspamd 和 Redis 放在一起。这个分支不再追求“功能大而全”，而是按实际使用场景重排界面、补反垃圾/通知/外部邮箱，并把安全与数据可靠性做到能长期自用。
 
