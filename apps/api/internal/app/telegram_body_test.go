@@ -153,7 +153,7 @@ func TestTelegramMessagePartsCollapsesLinkOnlyNewsletter(t *testing.T) {
 		body.WriteString("Read more: https://hs-41051298.t.hubspotemail.net/e2t/c/" + strings.Repeat("x", 460) + "\n\n")
 		body.WriteString("Cerebras and Oracle: the world's fastest AI is coming to Oracle Cloud Infrastructure.\n\n")
 	}
-	parts := telegramMessageParts("xjh@alxjh.cn", "Cerebras <info@cerebras.net>", "The Latest from Cerebras", "", body.String(), 20000)
+	parts := telegramMessageParts("user@example.test", "Cerebras <info@cerebras.net>", "The Latest from Cerebras", "", body.String(), 20000)
 	if len(parts) != 1 {
 		t.Fatalf("压掉追踪链接后应该只剩一条，实际 %d 条（共 %d 字符）", len(parts), len([]rune(strings.Join(parts, ""))))
 	}

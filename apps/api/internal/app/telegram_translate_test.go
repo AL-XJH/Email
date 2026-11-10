@@ -67,7 +67,7 @@ func TestTranslateTelegramPayloadTranslatesEnglish(t *testing.T) {
 		Text:    "old",
 		Subject: "Your invoice for November is available",
 		Body:    "Your invoice for November is available. Thanks for your business and see you next month.",
-		Mailbox: "xjh@example.test",
+		Mailbox: "user@example.test",
 		From:    "Stripe <no-reply@stripe.test>",
 	}
 	got := a.translateTelegramPayload(context.Background(), payload)
@@ -84,7 +84,7 @@ func TestTranslateTelegramPayloadTranslatesEnglish(t *testing.T) {
 		t.Fatalf("消息头第一行仍然要是加粗主题: %q", got.Parts[0])
 	}
 	// 收件人/发件人这些结构化字段不能被翻掉。
-	if !strings.Contains(got.Parts[0], "xjh@example.test") {
+	if !strings.Contains(got.Parts[0], "user@example.test") {
 		t.Fatalf("收件人被翻没了: %q", got.Parts[0])
 	}
 }
@@ -106,7 +106,7 @@ func TestTranslateTelegramPayloadLeavesChineseAlone(t *testing.T) {
 		Text:    "原样",
 		Subject: "【京东】您的订单已签收",
 		Body:    "订单 2837461928 已由本人签收，感谢您在京东购物，期待再次为您服务。",
-		Mailbox: "xjh@example.test",
+		Mailbox: "user@example.test",
 		From:    "京东 <no-reply@jd.test>",
 	}
 	got := a.translateTelegramPayload(context.Background(), payload)
@@ -159,10 +159,10 @@ func TestTelegramWorkerSendsTranslatedText(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := telegramNotificationPayload{
-		Text:    "<b>Your invoice for November is available</b>\n收件人: xjh@example.test",
+		Text:    "<b>Your invoice for November is available</b>\n收件人: user@example.test",
 		Subject: "Your invoice for November is available",
 		Body:    "Your monthly invoice is now available. We charged your card ending in 4242 for $20.00 on November 1. Thanks for your business.",
-		Mailbox: "xjh@example.test",
+		Mailbox: "user@example.test",
 		From:    "Stripe Billing no-reply@stripe.test",
 	}
 	if _, err := a.db.Exec(`INSERT INTO telegram_notification_outbox(id,event_key,user_id,mailbox_id,message_id,rule_id,payload_json,next_attempt_at,created_at,updated_at)
@@ -185,7 +185,7 @@ func TestTelegramWorkerSendsTranslatedText(t *testing.T) {
 	if !strings.HasPrefix(first, "<b>这是译文正文。</b>") {
 		t.Fatalf("第一行应该是加粗的译文主题: %q", first)
 	}
-	if !strings.Contains(first, "xjh@example.test") {
+	if !strings.Contains(first, "user@example.test") {
 		t.Fatalf("收件人丢了: %q", first)
 	}
 	var delivered string
