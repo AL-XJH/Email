@@ -6,35 +6,89 @@ import (
 	"testing"
 )
 
-func TestNewLabelGetsStableGeneratedColor(t *testing.T) {
+func TestNewLabelGetsDistinctPaletteColor(t *testing.T) {
 	a := newTestApp(t)
 	ctx := context.Background()
 	mailboxID := adminMailboxIDForTest(t, a)
 
-	label, err := a.ensureLabel(ctx, mailboxID, "账单", "")
+	first, err := a.ensureLabel(ctx, mailboxID, "账单", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(label.Color, "hsl(") {
-		t.Fatalf("new label color=%q, want generated hsl color", label.Color)
+	second, err := a.ensureLabel(ctx, mailboxID, "工作", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if label.Color != labelColorForName("账单") {
-		t.Fatalf("color not deterministic: %q != %q", label.Color, labelColorForName("账单"))
+	if first.Color != labelColorForIndex(0) {
+		t.Fatalf("first color=%q, want %q", first.Color, labelColorForIndex(0))
+	}
+	if second.Color != labelColorForIndex(1) {
+		t.Fatalf("second color=%q, want %q", second.Color, labelColorForIndex(1))
+	}
+	if first.Color == second.Color {
+		t.Fatalf("adjacent labels got the same color: %q", first.Color)
 	}
 
-	// 旧版本把默认颜色写成灰色；启动迁移必须把它换回按名称生成的颜色。
-	if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color='#64748b' WHERE id=?`, label.ID); err != nil {
+	// 删掉中间标签后，新标签优先复用空出来的色相，而不是继续往后挤。
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM mail_labels WHERE id=?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	third, err := a.ensureLabel(ctx, mailboxID, "第三个", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Color != labelColorForIndex(1) {
+		t.Fatalf("refilled color=%q, want %q", third.Color, labelColorForIndex(1))
+	}
+}
+
+func TestMigrateLabelColorsDistributesOldLabels(t *testing.T) {
+	a := newTestApp(t)
+	ctx := context.Background()
+	mailboxID := adminMailboxIDForTest(t, a)
+
+	first, err := a.ensureLabel(ctx, mailboxID, "账单", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.ensureLabel(ctx, mailboxID, "工作", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟 .94 之前的库：全是灰色，且还没有新配色标记。
+	if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color='#64748b',created_at='2026-01-01T00:00:01Z' WHERE id=?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color='#64748b',created_at='2026-01-01T00:00:02Z' WHERE id=?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM system_settings WHERE key='labelColorScheme'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.migrateLabelColors(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var migrated string
-	if err := a.db.QueryRowContext(ctx, `SELECT color FROM mail_labels WHERE id=?`, label.ID).Scan(&migrated); err != nil {
+	var firstColor, secondColor string
+	if err := a.db.QueryRowContext(ctx, `SELECT color FROM mail_labels WHERE id=?`, first.ID).Scan(&firstColor); err != nil {
 		t.Fatal(err)
 	}
-	if migrated != labelColorForName("账单") {
-		t.Fatalf("migrated color=%q, want %q", migrated, labelColorForName("账单"))
+	if err := a.db.QueryRowContext(ctx, `SELECT color FROM mail_labels WHERE id=?`, second.ID).Scan(&secondColor); err != nil {
+		t.Fatal(err)
+	}
+	if firstColor != labelColorForIndex(0) || secondColor != labelColorForIndex(1) {
+		t.Fatalf("migrated colors=%q,%q want %q,%q", firstColor, secondColor, labelColorForIndex(0), labelColorForIndex(1))
+	}
+	var marker string
+	if err := a.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key='labelColorScheme'`).Scan(&marker); err != nil || marker != "golden-angle-v1" {
+		t.Fatalf("migration marker=%q err=%v", marker, err)
+	}
+	// 再跑一次不能把颜色重新洗一遍。
+	if err := a.migrateLabelColors(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var again string
+	if err := a.db.QueryRowContext(ctx, `SELECT color FROM mail_labels WHERE id=?`, first.ID).Scan(&again); err != nil || again != firstColor {
+		t.Fatalf("second migration changed color: %q -> %q err=%v", firstColor, again, err)
 	}
 }
 
@@ -61,8 +115,21 @@ func TestEnsureLabelIsIdempotent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("label count=%d, want 1", count)
 	}
-	// 已有的同名标签不应被重复创建时的自动颜色覆盖。
 	if second.Color != first.Color {
 		t.Fatalf("duplicate changed color: %q -> %q", first.Color, second.Color)
+	}
+}
+
+func TestLabelColorForIndexMovesAroundWheel(t *testing.T) {
+	seen := map[string]bool{}
+	for index := 0; index < 12; index++ {
+		color := labelColorForIndex(index)
+		if !strings.HasPrefix(color, "hsl(") {
+			t.Fatalf("index %d color=%q", index, color)
+		}
+		if seen[color] {
+			t.Fatalf("index %d repeated color %q", index, color)
+		}
+		seen[color] = true
 	}
 }

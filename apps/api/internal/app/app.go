@@ -1215,26 +1215,36 @@ func (a *App) rebuildHTMLOnlyMessageSnippets(ctx context.Context) error {
 	return tx.Commit()
 }
 
-// migrateLabelColors 把旧版本自动写死的灰色（#64748b）换成按名称生成的
-// 稳定颜色。标签页创建时前端先用同名哈希显示彩色，服务端返回灰色后又会
-// 自己变灰；空颜色让前端继续用同一个哈希兜底。
+// migrateLabelColors 一次性把旧的自动颜色（空 / #64748b / 按名字哈希的
+// hsl）重排成按创建顺序均匀分布的色相，避免相邻标签颜色太接近。用户显式
+// 指定的十六进制颜色保持不动。完成后写标记，后续启动不再改已有颜色。
 func (a *App) migrateLabelColors(ctx context.Context) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT id,name,COALESCE(color,'') FROM mail_labels WHERE COALESCE(color,'')='' OR lower(color)='#64748b'`)
+	const scheme = "golden-angle-v1"
+	var current string
+	err := a.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key='labelColorScheme'`).Scan(&current)
+	if err == nil && current == scheme {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	type labelRow struct {
+		id        string
+		mailboxID string
+		color     string
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,mailbox_id,COALESCE(color,'') FROM mail_labels ORDER BY mailbox_id, created_at, id`)
 	if err != nil {
 		return err
 	}
-	type labelColor struct {
-		id    string
-		color string
-	}
-	var updates []labelColor
+	var labels []labelRow
 	for rows.Next() {
-		var id, name, color string
-		if err := rows.Scan(&id, &name, &color); err != nil {
+		var item labelRow
+		if err := rows.Scan(&item.id, &item.mailboxID, &item.color); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		updates = append(updates, labelColor{id: id, color: labelColorForName(name)})
+		labels = append(labels, item)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -1242,12 +1252,24 @@ func (a *App) migrateLabelColors(ctx context.Context) error {
 	}
 	_ = rows.Close()
 	now := a.now().UTC().Format(time.RFC3339Nano)
-	for _, item := range updates {
-		if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color=?,updated_at=? WHERE id=?`, item.color, now, item.id); err != nil {
+	mailboxID := ""
+	index := 0
+	for _, item := range labels {
+		if item.mailboxID != mailboxID {
+			mailboxID = item.mailboxID
+			index = 0
+		}
+		color := labelColorForIndex(index)
+		if strings.HasPrefix(item.color, "#") && !strings.EqualFold(item.color, "#64748b") {
+			color = item.color
+		}
+		if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color=?,updated_at=? WHERE id=?`, color, now, item.id); err != nil {
 			return err
 		}
+		index++
 	}
-	return nil
+	_, err = a.db.ExecContext(ctx, `INSERT INTO system_settings(key,value,updated_at) VALUES('labelColorScheme',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, scheme, now)
+	return err
 }
 
 func (a *App) migrateSendQueueMessageID(ctx context.Context) error {

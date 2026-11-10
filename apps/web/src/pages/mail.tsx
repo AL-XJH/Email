@@ -69,7 +69,7 @@ import {
   SendQueueAuditEvent,
   SendQueueStatus,
 } from "@/lib/api"
-import { cn, formatBytes, formatDateTime } from "@/lib/utils"
+import { cn, formatBytes, formatDateTime, labelColorForIndex } from "@/lib/utils"
 import { applyTheme, getInitialTheme } from "@/lib/theme"
 import { useDisplayMode } from "@/lib/display-mode"
 
@@ -820,7 +820,18 @@ export function MailPage() {
     onMutate: async (name) => {
       await qc.cancelQueries({ queryKey: ["labels"] })
       const prevLabels = qc.getQueryData<ListResponse<MailLabel>>(["labels", activeMailboxId])
-      const tempLabel: MailLabel = { id: `temp-${Date.now()}`, name, color: "" }
+      const usedColors = new Set(
+        (prevLabels?.items || []).map((item) => item.color).filter(Boolean)
+      )
+      let color = labelColorForIndex(0)
+      for (let index = 0; index < 360; index++) {
+        const candidate = labelColorForIndex(index)
+        if (!usedColors.has(candidate)) {
+          color = candidate
+          break
+        }
+      }
+      const tempLabel: MailLabel = { id: `temp-${Date.now()}`, name, color }
       qc.setQueryData<ListResponse<MailLabel>>(["labels", activeMailboxId], (current) =>
         current
           ? { ...current, items: [...(current.items || []), tempLabel] }

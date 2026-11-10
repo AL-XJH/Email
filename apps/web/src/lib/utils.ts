@@ -174,6 +174,15 @@ export interface LabelColorStyle {
  * Uses FNV-1a hash with position-dependent mixing → HSL mapping.
  * Text is always white (lightness 45 % guarantees dark-enough background).
  */
+/**
+ * 按标签创建顺序分配颜色。黄金角 137.508° 让相邻标签在色环上拉开距离；
+ * 与后端 labelColorForIndex 保持同一公式。
+ */
+export function labelColorForIndex(index: number): string {
+  const hue = ((Math.round(index * 137.508) % 360) + 360) % 360
+  return `hsl(${hue}, 70%, 45%)`
+}
+
 export function generateLabelColor(name: string): LabelColorStyle {
   // FNV-1a with 32-bit offset basis and prime
   let h = 0x811c9dc5

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/textproto"
 	"os"
@@ -2951,9 +2952,13 @@ func (a *App) ensureLabel(ctx context.Context, mailboxID, name, color string) (M
 	}
 	id := newID("lbl")
 	if color == "" {
-		// 前端会用同一套 FNV-1a 哈希给临时标签上色；服务端返回同名颜色
-		// 才能让新建后的颜色保持不变，而不是先彩色再跳成灰色。
-		color = labelColorForName(name)
+		// 按黄金角分配色相，保证同一邮箱里新建的标签颜色彼此拉得开；
+		// 优先挑还没用过的色相，删掉标签后也不会马上撞色。
+		nextColor, err := a.nextLabelColor(ctx, mailboxID)
+		if err != nil {
+			return MailLabel{}, err
+		}
+		color = nextColor
 	}
 	// 两个请求同时提交同名标签时，唯一约束会让其中一个 INSERT 失败。
 	// 用 OR IGNORE 后再读一次，让重复提交也按幂等成功返回已有标签。
@@ -2981,14 +2986,43 @@ func normalizeLabelName(name string) string {
 	return name
 }
 
-func labelColorForName(name string) string {
-	var hash uint32 = 0x811c9dc5
-	for index, r := range []rune(name) {
-		hash ^= uint32(r) + uint32(index)*0x01000193
-		hash *= 0x01000193
-		hash ^= hash >> 16
+// labelColorForIndex 用黄金角 137.508° 分配色相：相邻索引的颜色在色环上
+// 隔得足够远，比按名字哈希更容易撞到相近颜色。前端 createLabel 的乐观
+// 颜色用同一个公式，服务端返回后不会跳色。
+func labelColorForIndex(index int) string {
+	hue := int(math.Round(float64(index)*137.508)) % 360
+	if hue < 0 {
+		hue += 360
 	}
-	return fmt.Sprintf("hsl(%d, 70%%, 45%%)", hash%360)
+	return fmt.Sprintf("hsl(%d, 70%%, 45%%)", hue)
+}
+
+func (a *App) nextLabelColor(ctx context.Context, mailboxID string) (string, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT color FROM mail_labels WHERE mailbox_id=?`, mailboxID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	used := make(map[string]bool)
+	count := 0
+	for rows.Next() {
+		var color string
+		if err := rows.Scan(&color); err != nil {
+			return "", err
+		}
+		used[color] = true
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	for index := 0; index < 360; index++ {
+		color := labelColorForIndex(index)
+		if !used[color] {
+			return color, nil
+		}
+	}
+	return labelColorForIndex(count), nil
 }
 
 func normalizeLabelColor(color string) string {
