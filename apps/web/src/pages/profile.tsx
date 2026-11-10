@@ -361,12 +361,16 @@ export function ProfilePage() {
     onError: (error) => toast({ title: "修改失败", description: errorMessage(error) }),
   })
   const setupTwoFactor = useMutation({
-    mutationFn: api.setupTwoFactor,
+    mutationFn: (currentPassword: string) => api.setupTwoFactor(currentPassword),
     onSuccess: () => toast({ title: "双因素密钥已生成" }),
     onError: (error) => toast({ title: "生成失败", description: errorMessage(error) }),
   })
   const enableTwoFactor = useMutation({
-    mutationFn: (form: FormData) => api.enableTwoFactor(String(form.get("code") || "")),
+    mutationFn: (form: FormData) =>
+      api.enableTwoFactor(
+        String(form.get("code") || ""),
+        String(form.get("currentPassword") || "")
+      ),
     onSuccess: (data) => {
       qc.setQueryData(["me"], data)
       setupTwoFactor.reset()
@@ -1192,7 +1196,7 @@ function ProfileOverview({
   twoFactorFormRef: React.RefObject<HTMLFormElement>
   setupTwoFactor: {
     data?: { secret: string; otpauthUrl: string }
-    mutate: () => void
+    mutate: (currentPassword: string) => void
     reset: () => void
     isPending: boolean
   }
@@ -1201,6 +1205,7 @@ function ProfileOverview({
   onCopy: (text: string) => void
 }) {
   useUiLanguage()
+  const [setupPassword, setSetupPassword] = React.useState("")
 
   return (
     <div className="space-y-6">
@@ -1326,9 +1331,25 @@ function ProfileOverview({
           </div>
 
           {!user.twoFactorEnabled && !setupTwoFactor.data && (
-            <Button onClick={() => setupTwoFactor.mutate()} disabled={setupTwoFactor.isPending}>
-              {setupTwoFactor.isPending ? uiText("生成中...") : uiText("启用双因素认证")}
-            </Button>
+            <form
+              className="flex flex-col gap-2 sm:flex-row"
+              onSubmit={(event) => {
+                event.preventDefault()
+                setupTwoFactor.mutate(setupPassword)
+              }}
+            >
+              <Input
+                type="password"
+                value={setupPassword}
+                onChange={(event) => setSetupPassword(event.target.value)}
+                placeholder={uiText("当前登录密码")}
+                autoComplete="current-password"
+                required
+              />
+              <Button type="submit" disabled={setupTwoFactor.isPending || !setupPassword}>
+                {setupTwoFactor.isPending ? uiText("生成中...") : uiText("启用双因素认证")}
+              </Button>
+            </form>
           )}
 
           {!user.twoFactorEnabled && setupTwoFactor.data && (
@@ -1373,6 +1394,14 @@ function ProfileOverview({
                   </Field>
                 </div>
               </div>
+              <Field label={uiText("当前登录密码")}>
+                <Input
+                  name="currentPassword"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                />
+              </Field>
               <Field label={uiText("验证码")}>
                 <Input
                   name="code"
@@ -2681,7 +2710,9 @@ function ApiTokensSection({
                     <Checkbox
                       checked={scopes.includes(value)}
                       onCheckedChange={(checked) =>
-                        setScopes((current) => toggleApiTokenScope(current, value, checked === true))
+                        setScopes((current) =>
+                          toggleApiTokenScope(current, value, checked === true)
+                        )
                       }
                     />
                     <span>{uiText(label)}</span>

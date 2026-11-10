@@ -288,6 +288,22 @@ func (a *App) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "需要登录后才能操作")
 		return
 	}
+	var req struct {
+		CurrentPassword string `json:"currentPassword"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	clientIP := r.RemoteAddr
+	if err := a.beginReauth(r.Context(), user.Email, clientIP); err != nil {
+		if errors.Is(err, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to check rate limit")
+		return
+	}
 	current, _, err := a.loadUserAuthByID(r.Context(), user.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load user")
@@ -297,6 +313,17 @@ func (a *App) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "two-factor authentication is already enabled")
 		return
 	}
+	// 只凭会话就能生成新 secret，会让被盗会话直接把账号锁死；开启 2FA
+	// 与关闭一样要求当前密码，并共用再认证限速。
+	if err := a.verifyCurrentPassword(r.Context(), user.ID, req.CurrentPassword); err != nil {
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, clientIP); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "当前密码错误")
+		return
+	}
+	_ = a.clearLoginAccountFailures(r.Context(), user.Email)
 	secret, err := newTOTPSecret()
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to generate secret")
@@ -329,10 +356,28 @@ func (a *App) handleTwoFactorEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Code string `json:"code"`
+		Code            string `json:"code"`
+		CurrentPassword string `json:"currentPassword"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, err)
+		return
+	}
+	clientIP := r.RemoteAddr
+	if err := a.beginReauth(r.Context(), user.Email, clientIP); err != nil {
+		if errors.Is(err, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to check rate limit")
+		return
+	}
+	if err := a.verifyCurrentPassword(r.Context(), user.ID, req.CurrentPassword); err != nil {
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, clientIP); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "当前密码错误")
 		return
 	}
 	current, secret, err := a.loadUserAuthByID(r.Context(), user.ID)

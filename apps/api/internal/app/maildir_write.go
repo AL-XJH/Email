@@ -123,7 +123,7 @@ func (a *App) writeRawMessageToMaildirFolder(ctx context.Context, messageID, fol
 	if strings.EqualFold(folderName, "Inbox") && !state.IsRead {
 		subdir = "new"
 	}
-	if err := ensureMaildirFolderDirs(base, folderBase); err != nil {
+	if err := a.ensureMaildirFolderDirs(base, folderBase); err != nil {
 		return err
 	}
 	filename := maildirFilename(messageID, state.MessageID)
@@ -241,7 +241,7 @@ func (a *App) moveMessageMaildir(ctx context.Context, messageID, targetFolderID 
 	}
 	base := filepath.Join(strings.TrimSpace(a.config().MaildirRoot), mb.Domain, mb.LocalPart, "Maildir")
 	folderBase := maildirFolderPath(base, folderName)
-	if err := ensureMaildirFolderDirs(base, folderBase); err != nil {
+	if err := a.ensureMaildirFolderDirs(base, folderBase); err != nil {
 		return err
 	}
 	// 目标文件名必须按库里的已读/星标状态重新生成 flags，不能直接沿用源文件名：
@@ -599,15 +599,17 @@ func pathIsUnderRoot(root, path string) (bool, error) {
 	return rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..", nil
 }
 
-func ensureMaildirFolderDirs(base, folderBase string) error {
+func (a *App) ensureMaildirFolderDirs(base, folderBase string) error {
 	for _, sub := range []string{"tmp", "new", "cur"} {
 		if err := os.MkdirAll(filepath.Join(folderBase, sub), 0o755); err != nil {
 			return err
 		}
 	}
 	for _, dir := range maildirOwnershipDirs(base, folderBase) {
+		// 与文件级 chown 保持一致：NFS root-squash / userns 下目录 chown 会
+		// 失败，但目录已经建好，继续写入比让整封邮件永久失败更有用。
 		if err := applyMaildirOwnership(dir); err != nil {
-			return err
+			a.log.Warn("failed to change maildir directory ownership", "path", dir, "error", err)
 		}
 	}
 	return nil

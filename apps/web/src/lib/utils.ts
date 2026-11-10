@@ -6,7 +6,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-
 // Intl.DateTimeFormat 的构造本身就不便宜（要加载 locale 数据）。列表里每行
 // 每次渲染都 new 一个，50 行翻页/勾选时就是几千次构造。按语言+配置缓存。
 const dateFormatters = new Map<string, Intl.DateTimeFormat>()

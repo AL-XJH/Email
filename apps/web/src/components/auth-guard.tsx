@@ -8,7 +8,9 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const me = useMe()
   const location = useLocation()
 
-  if (me.isLoading) return <AuthLoading />
+  // 持久化缓存里的 ["me"] 会让 isLoading=false；必须等本次挂载后的
+  // /api/me 返回，否则上一个账号的邮箱/邮件会在鉴权前先渲染出来。
+  if (me.isLoading || !me.isFetchedAfterMount) return <AuthLoading />
   if (me.isError && isTimeoutError(me.error))
     return <AuthError message={errorMessage(me.error)} onRetry={() => me.refetch()} />
   if (me.isError || !me.data?.user) {

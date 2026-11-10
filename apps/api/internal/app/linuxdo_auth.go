@@ -329,7 +329,14 @@ func (a *App) finishLinuxDoLogin(w http.ResponseWriter, r *http.Request, profile
 			a.redirectLinuxDoResult(w, r, "/login", "disabled")
 			return
 		}
-		if user.TwoFactorEnabled && strings.TrimSpace(secret) != "" {
+		if user.TwoFactorEnabled {
+			// 已绑定 2FA 就必须挑战；密钥缺失时失败关闭，不能因为 SSO 路径
+			// 读不到 secret 就把账号降级成单因子。
+			if strings.TrimSpace(secret) == "" {
+				a.log.Error("linux.do login: two-factor enabled but secret is unavailable", "user", user.ID)
+				a.redirectLinuxDoResult(w, r, "/login", "session")
+				return
+			}
 			challenge, challengeErr := a.createLoginChallenge(r.Context(), user.ID)
 			if challengeErr != nil {
 				a.redirectLinuxDoResult(w, r, "/login", "session")

@@ -230,7 +230,6 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 		target := item.target
 		dir := target.Directory
 		scannedDirs[dir] = struct{}{}
-		fileErrorsBefore := counts.FileErrors
 		entries, err := os.ReadDir(dir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			// 单个目录读不了（权限、NFS 抖动、目录被删）不能让整轮同步失败，
@@ -294,7 +293,9 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 		if err != nil {
 			return counts, err
 		}
-		if counts.FileErrors == fileErrorsBefore && after == item.signature {
+		// 单个坏文件不能让整个目录每 5 秒重解析一遍：目录签名没变就保留
+		// 缓存，坏文件靠周期性全量扫描重试；只有目录真的变了才清缓存。
+		if after == item.signature {
 			a.maildirDirs[dir] = after
 		} else {
 			delete(a.maildirDirs, dir)
@@ -625,7 +626,10 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 		msg.MessageUID = newID("uid")
 	}
 	if msg.MessageID == "" {
-		msg.MessageID = fmt.Sprintf("<%s@lanqin.local>", newID("msg"))
+		// 合成 id 必须只由原文决定：MUA 把 new/x 改名成 cur/x:2,S 时，
+		// 随机 id 会让同一封邮件匹配不到旧行、被重复导入并丢掉标签/线程。
+		sum := sha256.Sum256(raw)
+		msg.MessageID = fmt.Sprintf("<%x@lanqin.local>", sum[:16])
 	}
 	if msg.ReceivedAt.IsZero() {
 		msg.ReceivedAt = a.now().UTC()
@@ -670,11 +674,40 @@ func (a *App) maildirMessageExists(ctx context.Context, mailboxID, folderID, raw
 
 func (a *App) unregisteredMaildirMessageExists(ctx context.Context, rawPath, messageID, recipient string) (bool, error) {
 	var count int
-	err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id IS NULL AND (raw_path=? OR (recipient_addr=? AND message_id=? AND message_id <> '' AND COALESCE(raw_path,'')=''))`, rawPath, recipient, messageID).Scan(&count)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE mailbox_id IS NULL AND raw_path=?`, rawPath).Scan(&count); err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	if count > 0 {
+		return true, nil
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return false, nil
+	}
+	// MUA/MDA 把 new/x 改名成 cur/x:2,S 后路径变了，但仍是同一封邮件。
+	// 只认「占位行」或「旧文件已经不在」的行；同 Message-ID 的两个真实
+	// 文件（重复投递/手工复制）必须各自保留，不能合并。
+	rows, err := a.db.QueryContext(ctx, `SELECT id,COALESCE(raw_path,'') FROM messages WHERE mailbox_id IS NULL AND recipient_addr=? AND message_id=? AND message_id <> ''`, recipient, messageID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	for rows.Next() {
+		var id, existingPath string
+		if err := rows.Scan(&id, &existingPath); err != nil {
+			return false, err
+		}
+		if existingPath != "" {
+			if _, statErr := os.Stat(existingPath); !os.IsNotExist(statErr) {
+				continue
+			}
+		}
+		if _, err := a.db.ExecContext(ctx, `UPDATE messages SET raw_path=?,updated_at=? WHERE id=?`, rawPath, now, id); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, rows.Err()
 }
 
 func (a *App) attachMaildirRawPathToExisting(ctx context.Context, mailboxID, folderID, rawPath, messageID string) {

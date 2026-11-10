@@ -1123,7 +1123,10 @@ function PermissionLimitEditor({
     // 输入框清空的中间态不能当成 0（0 = 不限），否则改一个数字会顺手把上限删掉。
     if (raw.trim() === "") return
     const next = Number(raw)
-    onChange({ ...value, [key]: Number.isFinite(next) && next >= 0 ? Math.floor(next) : value[key] })
+    onChange({
+      ...value,
+      [key]: Number.isFinite(next) && next >= 0 ? Math.floor(next) : value[key],
+    })
   }
   return (
     <div className="space-y-3 rounded-lg border p-3">

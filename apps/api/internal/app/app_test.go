@@ -4222,12 +4222,12 @@ func TestUserTwoFactorSetupAndLogin(t *testing.T) {
 		Secret     string `json:"secret"`
 		OtpauthURL string `json:"otpauthUrl"`
 	}
-	if code := client.do("POST", "/api/me/2fa/setup", map[string]string{}, &setup); code != http.StatusOK || setup.Secret == "" || !strings.HasPrefix(setup.OtpauthURL, "otpauth://totp/") {
+	if code := client.do("POST", "/api/me/2fa/setup", map[string]string{"currentPassword": "ChangeMe123!"}, &setup); code != http.StatusOK || setup.Secret == "" || !strings.HasPrefix(setup.OtpauthURL, "otpauth://totp/") {
 		t.Fatalf("setup code=%d setup=%+v", code, setup)
 	}
 
 	var out map[string]any
-	if code := client.do("POST", "/api/me/2fa/enable", map[string]string{"code": "000000"}, &out); code != http.StatusUnauthorized {
+	if code := client.do("POST", "/api/me/2fa/enable", map[string]string{"code": "000000", "currentPassword": "ChangeMe123!"}, &out); code != http.StatusUnauthorized {
 		t.Fatalf("wrong enable code=%d body=%v", code, out)
 	}
 	code, err := generateTOTP(setup.Secret, a.now().UTC())
@@ -4237,7 +4237,7 @@ func TestUserTwoFactorSetupAndLogin(t *testing.T) {
 	var enabled struct {
 		User User `json:"user"`
 	}
-	if status := client.do("POST", "/api/me/2fa/enable", map[string]string{"code": code}, &enabled); status != http.StatusOK || !enabled.User.TwoFactorEnabled {
+	if status := client.do("POST", "/api/me/2fa/enable", map[string]string{"code": code, "currentPassword": "ChangeMe123!"}, &enabled); status != http.StatusOK || !enabled.User.TwoFactorEnabled {
 		t.Fatalf("enable status=%d user=%+v", status, enabled.User)
 	}
 

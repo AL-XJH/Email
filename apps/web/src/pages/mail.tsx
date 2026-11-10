@@ -44,6 +44,7 @@ import {
   Plus,
   RefreshCcw,
   Reply,
+  ReplyAll,
   RotateCcw,
   Search,
   Send,
@@ -490,6 +491,9 @@ export function MailPage() {
     if (mailView === "label" && labels.data.items.some((item) => item.id === selectedLabelId))
       return
     if (mailView === "starred" && selectedMailbox?.shareIncludesStarred) return
+    // 只读共享邮箱也能切到外部 IMAP 视图；这里重置会把用户选择立刻弹回
+    // 第一个文件夹，导致外部账号永远打不开。
+    if (mailView === "external") return
     const firstFolder = folders.data.items[0]
     if (firstFolder) {
       setMailView("folder")
@@ -539,7 +543,13 @@ export function MailPage() {
     queryFn: ({ pageParam }) => {
       const cursor = typeof pageParam === "string" ? pageParam : ""
       if (mailView === "starred")
-        return api.starredMessages(debouncedQuery, cursor, activeMailboxId, messagePageSize, mailFilter)
+        return api.starredMessages(
+          debouncedQuery,
+          cursor,
+          activeMailboxId,
+          messagePageSize,
+          mailFilter
+        )
       if (mailView === "label")
         return api.labelMessages(
           selectedLabelId,
@@ -549,7 +559,14 @@ export function MailPage() {
           messagePageSize,
           mailFilter
         )
-      return api.messages(folder, debouncedQuery, cursor, activeMailboxId, messagePageSize, mailFilter)
+      return api.messages(
+        folder,
+        debouncedQuery,
+        cursor,
+        activeMailboxId,
+        messagePageSize,
+        mailFilter
+      )
     },
     initialPageParam: "",
     // 换关键词时先把上一份结果留着，避免整张列表塌成骨架屏；
@@ -1312,7 +1329,13 @@ export function MailPage() {
                 messagePageSize
               )
             : mailView === "starred"
-              ? await api.starredMessages(debouncedQuery, "", activeMailboxId, messagePageSize, mailFilter)
+              ? await api.starredMessages(
+                  debouncedQuery,
+                  "",
+                  activeMailboxId,
+                  messagePageSize,
+                  mailFilter
+                )
               : mailView === "label"
                 ? await api.labelMessages(
                     selectedLabelId,
@@ -1322,7 +1345,14 @@ export function MailPage() {
                     messagePageSize,
                     mailFilter
                   )
-                : await api.messages(folder, debouncedQuery, "", activeMailboxId, messagePageSize, mailFilter)
+                : await api.messages(
+                    folder,
+                    debouncedQuery,
+                    "",
+                    activeMailboxId,
+                    messagePageSize,
+                    mailFilter
+                  )
         const current = qc.getQueryData<InfiniteData<MailListResponse>>(queryKey)
         if (current?.pages[0] && JSON.stringify(current.pages[0]) !== JSON.stringify(nextPage)) {
           await qc.invalidateQueries({ queryKey, exact: true })
@@ -1868,7 +1898,16 @@ export function MailPage() {
   }
   function runMessageContextAction(
     action:
-      "open" | "reply" | "forward" | "read" | "star" | "archive" | "trash" | "spam" | "delete",
+      | "open"
+      | "reply"
+      | "replyAll"
+      | "forward"
+      | "read"
+      | "star"
+      | "archive"
+      | "trash"
+      | "spam"
+      | "delete",
     message: MailMessage
   ) {
     closeMessageContextMenu()
@@ -1878,6 +1917,10 @@ export function MailPage() {
     }
     if (action === "reply") {
       openReply(message)
+      return
+    }
+    if (action === "replyAll") {
+      openReplyAll(message)
       return
     }
     if (action === "forward") {
@@ -2637,7 +2680,10 @@ export function MailPage() {
               </div>
             </div>
           </div>
-          <ScrollArea key={`mail-page-${mailListScope}-${messagePageIndex}`} className="min-h-0 flex-1">
+          <ScrollArea
+            key={`mail-page-${mailListScope}-${messagePageIndex}`}
+            className="min-h-0 flex-1"
+          >
             {(mailView === "external" ? externalMessages.isLoading : messages.isLoading) && (
               <MessageSkeleton />
             )}
@@ -2744,6 +2790,12 @@ export function MailPage() {
                       <Button variant="outline" size="sm" onClick={() => openReply(selected)}>
                         <Reply className="h-4 w-4" />
                         {uiText("回复")}
+                      </Button>
+                    )}
+                    {canSendSelectedMailbox && (
+                      <Button variant="outline" size="sm" onClick={() => openReplyAll(selected)}>
+                        <ReplyAll className="h-4 w-4" />
+                        {uiText("全部回复")}
                       </Button>
                     )}
                     {canSendSelectedMailbox && (
@@ -4182,7 +4234,16 @@ function MessageContextMenu({
   onClose: () => void
   onAction: (
     action:
-      "open" | "reply" | "forward" | "read" | "star" | "archive" | "trash" | "spam" | "delete",
+      | "open"
+      | "reply"
+      | "replyAll"
+      | "forward"
+      | "read"
+      | "star"
+      | "archive"
+      | "trash"
+      | "spam"
+      | "delete",
     message: MailMessage
   ) => void
   onMoveToFolder: (message: MailMessage, folderName: string) => void
@@ -4268,6 +4329,7 @@ function MessageContextMenu({
       {!draft && canSend && (
         <>
           {item(uiText("回复"), <Reply className="h-4 w-4" />, "reply")}
+          {item(uiText("全部回复"), <ReplyAll className="h-4 w-4" />, "replyAll")}
           {item(uiText("转发"), <Forward className="h-4 w-4" />, "forward")}
         </>
       )}

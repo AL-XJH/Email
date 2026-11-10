@@ -210,11 +210,18 @@ func (w *base64LineWriter) close() error {
 	return err
 }
 
-func (a *App) sendSMTP(from string, recipients []string, mimeBytes []byte) error {
+// smtpSendResult records per-recipient failures that did not abort the whole
+// message. A 5xx RCPT rejection is permanent for that address only; the caller
+// must persist it instead of reporting the send as fully delivered.
+type smtpSendResult struct {
+	Rejected map[string]string
+}
+
+func (a *App) sendSMTP(from string, recipients []string, mimeBytes []byte) (smtpSendResult, error) {
 	return sendSMTPWithConfig(*a.config(), from, recipients, mimeBytes)
 }
 
-func sendSMTPWithConfig(cfg Config, from string, recipients []string, mimeBytes []byte) error {
+func sendSMTPWithConfig(cfg Config, from string, recipients []string, mimeBytes []byte) (smtpSendResult, error) {
 	addr := net.JoinHostPort(cfg.SMTPHost, cfg.SMTPPort)
 	var auth smtp.Auth
 	if cfg.SMTPUsername != "" {
@@ -229,63 +236,64 @@ func sendSMTPWithConfig(cfg Config, from string, recipients []string, mimeBytes 
 	return sendSMTPStartTLS(addr, cfg.SMTPHost, auth, from, recipients, mimeBytes)
 }
 
-func sendSMTPPlain(addr, host string, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) error {
+func sendSMTPPlain(addr, host string, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) (smtpSendResult, error) {
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		return err
+		return smtpSendResult{}, err
 	}
 	client, err := smtp.NewClient(&idleConn{Conn: conn, d: smtpSessionTimeout}, host)
 	if err != nil {
 		_ = conn.Close()
-		return err
+		return smtpSendResult{}, err
 	}
 	defer client.Close()
 	return sendSMTPMessage(client, auth, from, recipients, mimeBytes)
 }
 
-func sendSMTPImplicitTLS(addr, host string, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) error {
+func sendSMTPImplicitTLS(addr, host string, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) (smtpSendResult, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 	if err != nil {
-		return err
+		return smtpSendResult{}, err
 	}
 	client, err := smtp.NewClient(&idleConn{Conn: conn, d: smtpSessionTimeout}, host)
 	if err != nil {
 		_ = conn.Close()
-		return err
+		return smtpSendResult{}, err
 	}
 	defer client.Close()
 	return sendSMTPMessage(client, auth, from, recipients, mimeBytes)
 }
 
-func sendSMTPStartTLS(addr, host string, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) error {
+func sendSMTPStartTLS(addr, host string, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) (smtpSendResult, error) {
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		return err
+		return smtpSendResult{}, err
 	}
 	client, err := smtp.NewClient(&idleConn{Conn: conn, d: smtpSessionTimeout}, host)
 	if err != nil {
 		_ = conn.Close()
-		return err
+		return smtpSendResult{}, err
 	}
 	defer client.Close()
 	if ok, _ := client.Extension("STARTTLS"); !ok {
-		return errors.New("smtp server does not support STARTTLS")
+		return smtpSendResult{}, errors.New("smtp server does not support STARTTLS")
 	}
 	if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
-		return err
+		return smtpSendResult{}, err
 	}
 	return sendSMTPMessage(client, auth, from, recipients, mimeBytes)
 }
 
-func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) error {
+func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipients []string, mimeBytes []byte) (smtpSendResult, error) {
+	result := smtpSendResult{}
 	if auth != nil {
 		if err := client.Auth(auth); err != nil {
-			return err
+			return result, err
 		}
 	}
 	if err := client.Mail(from); err != nil {
-		return err
+		return result, err
 	}
 	// 一个收件人被拒（拼错的地址、对方域 550）不能拖垮整封信：
 	// 跳过 5xx 的收件人，4xx 视为整封可重试；一个都没接受才算失败。
@@ -295,36 +303,40 @@ func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipient
 		if err := client.Rcpt(rcpt); err != nil {
 			var smtpErr *textproto.Error
 			if errors.As(err, &smtpErr) && smtpErr.Code >= 500 && smtpErr.Code < 600 {
+				if result.Rejected == nil {
+					result.Rejected = map[string]string{}
+				}
+				result.Rejected[rcpt] = err.Error()
 				if firstErr == nil {
 					firstErr = err
 				}
 				continue
 			}
-			return err
+			return result, err
 		}
 		accepted++
 	}
 	if accepted == 0 {
 		if firstErr != nil {
-			return firstErr
+			return result, firstErr
 		}
-		return errors.New("smtp: no recipient accepted")
+		return result, errors.New("smtp: no recipient accepted")
 	}
 	wc, err := client.Data()
 	if err != nil {
-		return err
+		return result, err
 	}
 	if _, err := wc.Write(mimeBytes); err != nil {
 		_ = wc.Close()
-		return err
+		return result, err
 	}
 	if err := wc.Close(); err != nil {
-		return fmt.Errorf("%w: %v", errDeliveryUnknown, err)
+		return result, fmt.Errorf("%w: %v", errDeliveryUnknown, err)
 	}
 	// 走到这里服务器已经返回 250，邮件确定被接受。QUIT 只是礼貌收尾：
 	// 把它的错误当成发送失败会让上层重试，收件人收到两封一样的信。
 	_ = client.Quit()
-	return nil
+	return result, nil
 }
 
 func htmlEscape(s string) string {

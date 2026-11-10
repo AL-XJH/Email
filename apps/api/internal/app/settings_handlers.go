@@ -496,7 +496,7 @@ func (a *App) handleTestSMTP(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	if err := sendSMTPWithConfig(cfg, from, []string{to}, mimeBytes); err != nil {
+	if _, err := sendSMTPWithConfig(cfg, from, []string{to}, mimeBytes); err != nil {
 		respondError(w, http.StatusBadGateway, err.Error())
 		return
 	}

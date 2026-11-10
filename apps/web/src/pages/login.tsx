@@ -82,7 +82,8 @@ export function LoginPage() {
   const returnTo =
     requestedPath.startsWith("/") && !requestedPath.startsWith("//") ? requestedPath : "/"
   const turnstileRequired = !!publicSettings.data?.turnstileEnabled
-  if (me.data?.user) return <Navigate to={returnTo} replace />
+  // 同样不能相信 hydrate 回来的 me：等挂载后的校验完成再跳转。
+  if (me.data?.user && me.isFetchedAfterMount) return <Navigate to={returnTo} replace />
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-10">
       <div className="w-full max-w-[420px]">

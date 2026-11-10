@@ -265,9 +265,13 @@ func (a *App) processSendQueueItem(ctx context.Context, id string) {
 		}
 		return
 	}
-	if err := a.sendSMTP(item.MailFrom, item.Recipients, item.MIMEBytes); err != nil {
+	result, err := a.sendSMTP(item.MailFrom, item.Recipients, item.MIMEBytes)
+	if err != nil {
 		a.markSendQueueFailed(ctx, item, err)
 		return
+	}
+	if len(result.Rejected) > 0 {
+		a.recordRejectedSendRecipients(ctx, item, result.Rejected)
 	}
 	if err := a.writeSendQueueDeliveredMarker(item.ID); err != nil {
 		a.log.Warn("failed to persist send queue delivered marker", "id", item.ID, "error", err)
@@ -275,6 +279,21 @@ func (a *App) processSendQueueItem(ctx context.Context, id string) {
 	if err := a.markSendQueueDelivered(ctx, item); err != nil {
 		a.log.Warn("failed to mark send queue delivered", "id", item.ID, "error", err)
 		return
+	}
+}
+
+// recordRejectedSendRecipients persists permanent 5xx RCPT failures. Without this
+// the queue row is marked delivered and the status API reports every recipient as
+// relayed, even though one address was never accepted.
+func (a *App) recordRejectedSendRecipients(ctx context.Context, item sendQueueItem, rejected map[string]string) {
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	for recipient, reason := range rejected {
+		externalID := "smtp-reject:" + item.ID + ":" + normalizeEmail(recipient)
+		_, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO delivery_events(id,external_id,provider,queue_id,sent_message_id,rfc_message_id,recipient,status,reason,occurred_at,created_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`, newID("dev"), externalID, "smtp", item.ID, item.SentMessageID, item.MessageID, normalizeEmail(recipient), "rejected", reason, now, now)
+		if err != nil {
+			a.log.Warn("failed to record rejected recipient", "queue", item.ID, "recipient", recipient, "error", err)
+		}
 	}
 }
 

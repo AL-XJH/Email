@@ -37,19 +37,30 @@ function stripRemoteContent(html: string): { html: string; count: number } {
   })
   doc.querySelectorAll("[style]").forEach((element) => {
     const style = element.getAttribute("style") || ""
-    if (/url\s*\(/i.test(style)) {
-      element.setAttribute("style", style.replace(/url\s*\([^)]*\)/gi, ""))
+    if (/(?:url|image-set)\s*\(/i.test(style)) {
+      element.setAttribute("style", style.replace(/(?:url|image-set)\s*\([^)]*\)/gi, ""))
       count++
     }
   })
   doc.querySelectorAll("style").forEach((style) => {
     const css = style.textContent || ""
-    if (/url\s*\(|@import/i.test(css)) {
-      style.textContent = css.replace(/url\s*\([^)]*\)/gi, "").replace(/@import[^;]+;/gi, "")
+    if (/(?:url|image-set)\s*\(|@import/i.test(css)) {
+      style.textContent = css
+        .replace(/(?:url|image-set)\s*\([^)]*\)/gi, "")
+        .replace(/@import[^;]+;/gi, "")
       count++
     }
   })
   return { html: doc.documentElement.outerHTML, count }
+}
+
+// 正则清不掉所有 CSS 写法（image-set、嵌套函数等），再加一层 CSP 兜底：
+// 即使有漏网的 URL，sandbox 里的浏览器也不会去请求。
+function blockRemoteCSP(html: string) {
+  const meta =
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:;\">"
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head([^>]*)>/i, `<head$1>${meta}`)
+  return meta + html
 }
 
 export function MailHtmlFrame({
@@ -70,10 +81,10 @@ export function MailHtmlFrame({
   const blocked = React.useMemo(() => stripRemoteContent(bodyHtml || ""), [bodyHtml])
   React.useEffect(() => setShowRemote(false), [bodyHtml])
   const activeHtml = showRemote ? bodyHtml || "" : blocked.html
-  const srcDoc = React.useMemo(
-    () => buildMailFrameSrcDoc(activeHtml, bodyText || "", language),
-    [activeHtml, bodyText, language]
-  )
+  const srcDoc = React.useMemo(() => {
+    const built = buildMailFrameSrcDoc(activeHtml, bodyText || "", language)
+    return !showRemote && blocked.count > 0 ? blockRemoteCSP(built) : built
+  }, [activeHtml, blocked.count, bodyText, language, showRemote])
 
   const resize = React.useCallback(() => {
     const frame = iframeRef.current
@@ -203,16 +214,16 @@ export function MailHtmlFrame({
           {uiText("显示远程图片")}
         </button>
       )}
-    <iframe
-      ref={iframeRef}
-      data-lanqin-i18n-ignore
-      title={translateUiText("邮件正文", language)}
-      className={className || "block w-full border-0 bg-white"}
-      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-      referrerPolicy="no-referrer"
-      srcDoc={srcDoc}
-      style={{ height }}
-    />
+      <iframe
+        ref={iframeRef}
+        data-lanqin-i18n-ignore
+        title={translateUiText("邮件正文", language)}
+        className={className || "block w-full border-0 bg-white"}
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        referrerPolicy="no-referrer"
+        srcDoc={srcDoc}
+        style={{ height }}
+      />
     </div>
   )
 }

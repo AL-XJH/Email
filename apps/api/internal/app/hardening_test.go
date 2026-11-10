@@ -582,7 +582,7 @@ func TestTOTPSecretIsEncryptedAtRestWhenKeyConfigured(t *testing.T) {
 	var setup struct {
 		Secret string `json:"secret"`
 	}
-	if code := client.do("POST", "/api/me/2fa/setup", nil, &setup); code != http.StatusOK || setup.Secret == "" {
+	if code := client.do("POST", "/api/me/2fa/setup", map[string]string{"currentPassword": "ChangeMe123!"}, &setup); code != http.StatusOK || setup.Secret == "" {
 		t.Fatalf("2fa setup code=%d secret=%q", code, setup.Secret)
 	}
 
@@ -606,7 +606,7 @@ func TestTOTPSecretIsEncryptedAtRestWhenKeyConfigured(t *testing.T) {
 	var enabled struct {
 		User User `json:"user"`
 	}
-	if status := client.do("POST", "/api/me/2fa/enable", map[string]string{"code": code}, &enabled); status != http.StatusOK || !enabled.User.TwoFactorEnabled {
+	if status := client.do("POST", "/api/me/2fa/enable", map[string]string{"code": code, "currentPassword": "ChangeMe123!"}, &enabled); status != http.StatusOK || !enabled.User.TwoFactorEnabled {
 		t.Fatalf("enable with an encrypted seed status=%d user=%+v", status, enabled.User)
 	}
 }

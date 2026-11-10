@@ -246,14 +246,7 @@ export type MailLabel = {
   messageCount?: number
 }
 export type BulkMessageAction =
-  | "read"
-  | "unread"
-  | "star"
-  | "unstar"
-  | "archive"
-  | "trash"
-  | "spam"
-  | "delete"
+  "read" | "unread" | "star" | "unstar" | "archive" | "trash" | "spam" | "delete"
 
 export type MailMessage = {
   id: string

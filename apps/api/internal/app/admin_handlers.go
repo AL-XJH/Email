@@ -700,6 +700,10 @@ func (a *App) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	address := local + "@" + domain.Name
+	// 委派管理员不能把超管的邮箱地址删掉再建到自己名下；创建同样要过 dominance。
+	if !a.adminTargetGuard(w, r, userID) {
+		return
+	}
 
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -796,6 +800,13 @@ func (a *App) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, 404, "mailbox not found")
 		return
 	}
+	if !a.adminTargetGuard(w, r, existingMailbox.UserID) {
+		return
+	}
+	if userID != existingMailbox.UserID && !a.canAdministerTarget(r, userID) {
+		respondError(w, http.StatusForbidden, "cannot manage an account with permissions you do not hold")
+		return
+	}
 	if userID != existingMailbox.UserID && !a.mailboxReassignAllowed(r, existingMailbox.UserID, userID) {
 		respondError(w, http.StatusForbidden, "cannot reassign this mailbox")
 		return
@@ -866,6 +877,9 @@ func (a *App) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 	var owner string
 	if err := a.db.QueryRowContext(r.Context(), `SELECT user_id FROM mailboxes WHERE id=?`, id).Scan(&owner); err != nil {
 		respondError(w, http.StatusNotFound, "mailbox not found")
+		return
+	}
+	if !a.adminTargetGuard(w, r, owner) {
 		return
 	}
 	var count int

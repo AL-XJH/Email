@@ -234,7 +234,14 @@ func (a *App) handleOpenAPICreateMailbox(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if strings.TrimSpace(req.UserID) == "" {
+		// resolveMailboxOwnerTx falls back to the mailbox address when ownerEmail is
+		// empty, so the checks must use that same effective address. Otherwise an
+		// API caller can omit ownerEmail and bind an existing super-admin address
+		// (or create a login) without the admin.users.create boundary.
 		ownerEmail := normalizeEmail(req.OwnerEmail)
+		if ownerEmail == "" {
+			ownerEmail = normalizeEmail(address)
+		}
 		if ownerEmail != "" {
 			var existingOwner int
 			_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(1) FROM users WHERE email=? AND disabled=0`, ownerEmail).Scan(&existingOwner)
@@ -348,6 +355,13 @@ func (a *App) handleOpenAPIUpdateMailbox(w http.ResponseWriter, r *http.Request)
 	existingMailbox, checkErr := a.mailboxByID(r.Context(), id)
 	if checkErr != nil {
 		respondError(w, 404, "mailbox not found")
+		return
+	}
+	if !a.adminTargetGuard(w, r, existingMailbox.UserID) {
+		return
+	}
+	if userID != existingMailbox.UserID && !a.canAdministerTarget(r, userID) {
+		respondError(w, http.StatusForbidden, "cannot manage an account with permissions you do not hold")
 		return
 	}
 	if status != "active" || userID != existingMailbox.UserID {

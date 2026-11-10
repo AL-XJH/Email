@@ -194,12 +194,15 @@ export const api = {
     }),
   deleteApiToken: (id: string) =>
     request<{ ok: boolean }>(`/api/me/api-tokens/${id}`, { method: "DELETE" }),
-  setupTwoFactor: () =>
-    request<{ secret: string; otpauthUrl: string }>("/api/me/2fa/setup", { method: "POST" }),
-  enableTwoFactor: (code: string) =>
+  setupTwoFactor: (currentPassword: string) =>
+    request<{ secret: string; otpauthUrl: string }>("/api/me/2fa/setup", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword }),
+    }),
+  enableTwoFactor: (code: string, currentPassword: string) =>
     request<{ user: User }>("/api/me/2fa/enable", {
       method: "POST",
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, currentPassword }),
     }),
   disableTwoFactor: (code: string, currentPassword: string) =>
     request<{ user: User }>("/api/me/2fa/disable", {
@@ -652,7 +655,14 @@ export const api = {
       `/api/mail/labels/${id}${mailboxId ? `?mailboxId=${encodeURIComponent(mailboxId)}` : ""}`,
       { method: "DELETE" }
     ),
-  messages: (folder: string, q = "", cursor = "", mailboxId?: string, limit = 30, filter = "all") => {
+  messages: (
+    folder: string,
+    q = "",
+    cursor = "",
+    mailboxId?: string,
+    limit = 30,
+    filter = "all"
+  ) => {
     const params = new URLSearchParams({ folder, q, cursor })
     params.set("limit", String(limit))
     if (mailboxId) params.set("mailboxId", mailboxId)
@@ -665,7 +675,14 @@ export const api = {
     ),
   messageThread: (id: string) =>
     request<ListResponse<MailMessage>>(`/api/mail/messages/${id}/thread`),
-  labelMessages: (labelId: string, q = "", cursor = "", mailboxId?: string, limit = 30, filter = "all") => {
+  labelMessages: (
+    labelId: string,
+    q = "",
+    cursor = "",
+    mailboxId?: string,
+    limit = 30,
+    filter = "all"
+  ) => {
     const params = new URLSearchParams({ labelId, q, cursor })
     params.set("limit", String(limit))
     if (mailboxId) params.set("mailboxId", mailboxId)
