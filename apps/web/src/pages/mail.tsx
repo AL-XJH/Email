@@ -2370,7 +2370,16 @@ export function MailPage() {
                       collapsed={sidebarCollapsed}
                       pending={createLabel.isPending}
                       onCreate={(name) => {
-                        createLabel.mutate(name)
+                        const key = name.trim().replace(/\s+/g, " ").toLocaleLowerCase()
+                        const duplicate = labelItems.some(
+                          (item) =>
+                            item.name.trim().replace(/\s+/g, " ").toLocaleLowerCase() === key
+                        )
+                        if (duplicate) {
+                          toast({ title: "标签已存在" })
+                        } else {
+                          createLabel.mutate(name)
+                        }
                         setNewLabelEditing(false)
                       }}
                       editing={newLabelEditing}

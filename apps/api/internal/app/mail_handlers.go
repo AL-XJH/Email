@@ -2955,11 +2955,16 @@ func (a *App) ensureLabel(ctx context.Context, mailboxID, name, color string) (M
 		// 才能让新建后的颜色保持不变，而不是先彩色再跳成灰色。
 		color = labelColorForName(name)
 	}
-	_, err := a.db.ExecContext(ctx, `INSERT INTO mail_labels(id,mailbox_id,name,color,created_at,updated_at) VALUES(?,?,?,?,?,?)`, id, mailboxID, name, color, now, now)
-	if err != nil {
+	// 两个请求同时提交同名标签时，唯一约束会让其中一个 INSERT 失败。
+	// 用 OR IGNORE 后再读一次，让重复提交也按幂等成功返回已有标签。
+	if _, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO mail_labels(id,mailbox_id,name,color,created_at,updated_at) VALUES(?,?,?,?,?,?)`, id, mailboxID, name, color, now, now); err != nil {
 		return MailLabel{}, err
 	}
-	return MailLabel{ID: id, MailboxID: mailboxID, Name: name, Color: color}, nil
+	row = a.db.QueryRowContext(ctx, `SELECT id,mailbox_id,name,color FROM mail_labels WHERE mailbox_id=? AND lower(name)=lower(?)`, mailboxID, name)
+	if err := row.Scan(&existing.ID, &existing.MailboxID, &existing.Name, &existing.Color); err != nil {
+		return MailLabel{}, err
+	}
+	return existing, nil
 }
 
 func (a *App) labelBelongsToMailbox(ctx context.Context, labelID, mailboxID string) bool {
