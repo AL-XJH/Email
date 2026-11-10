@@ -154,6 +154,7 @@ type MailLabel struct {
 	MailboxID    string `json:"mailboxId,omitempty"`
 	Name         string `json:"name"`
 	Color        string `json:"color"`
+	SortOrder    int    `json:"sortOrder,omitempty"`
 	MessageCount int    `json:"messageCount,omitempty"`
 }
 

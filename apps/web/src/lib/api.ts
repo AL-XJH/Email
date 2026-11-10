@@ -650,6 +650,13 @@ export const api = {
       body: JSON.stringify({ name: payload.name, color: payload.color || "" }),
     })
   },
+  reorderLabels: (payload: { mailboxId?: string; labelIds: string[] }) => {
+    const query = payload.mailboxId ? `?mailboxId=${encodeURIComponent(payload.mailboxId)}` : ""
+    return request<{ ok: boolean }>(`/api/mail/labels/reorder${query}`, {
+      method: "POST",
+      body: JSON.stringify({ labelIds: payload.labelIds }),
+    })
+  },
   deleteLabel: (id: string, mailboxId?: string) =>
     request<{ labels: MailLabel[] }>(
       `/api/mail/labels/${id}${mailboxId ? `?mailboxId=${encodeURIComponent(mailboxId)}` : ""}`,

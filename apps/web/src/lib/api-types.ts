@@ -243,6 +243,7 @@ export type MailLabel = {
   mailboxId?: string
   name: string
   color: string
+  sortOrder?: number
   messageCount?: number
 }
 export type BulkMessageAction =

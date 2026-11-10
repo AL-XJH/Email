@@ -181,6 +181,7 @@ type MailNotificationState = { latestId: string; latestReceivedAt: string }
 type MessageContextMenuState = { message: MailMessage; x: number; y: number }
 type SidebarContextMenuState = { item: MailMenuItem; x: number; y: number }
 type FolderDropTarget = { key: string; edge: "before" | "after" | "end" }
+type LabelDropTarget = { id: string; edge: "before" | "after" }
 
 const MAIL_PAGE_SIZE_KEY = "lanqin:mail-page-size"
 
@@ -349,6 +350,8 @@ export function MailPage() {
   const [folderDialogOpen, setFolderDialogOpen] = React.useState(false)
   const [draggingFolderId, setDraggingFolderId] = React.useState("")
   const [folderDropTarget, setFolderDropTarget] = React.useState<FolderDropTarget | null>(null)
+  const [draggingLabelId, setDraggingLabelId] = React.useState("")
+  const [labelDropTarget, setLabelDropTarget] = React.useState<LabelDropTarget | null>(null)
   const sidebarPanelRef = React.useRef<ImperativePanelHandle>(null)
   const themeMountedRef = React.useRef(false)
   const mailNotifyStateRef = React.useRef<Record<string, MailNotificationState>>({})
@@ -844,6 +847,29 @@ export function MailPage() {
       toast({ title: "创建标签失败" })
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["labels"] }),
+  })
+  const reorderLabels = useMutation({
+    mutationFn: (labelIds: string[]) => api.reorderLabels({ mailboxId: activeMailboxId, labelIds }),
+    onMutate: async (labelIds) => {
+      await qc.cancelQueries({ queryKey: ["labels", activeMailboxId] })
+      const previous = qc.getQueryData<ListResponse<MailLabel>>(["labels", activeMailboxId])
+      qc.setQueryData<ListResponse<MailLabel>>(["labels", activeMailboxId], (current) => {
+        if (!current?.items) return current
+        const byID = new Map(current.items.map((item) => [item.id, item]))
+        const ordered = labelIds.flatMap((id, index) => {
+          const item = byID.get(id)
+          return item ? [{ ...item, sortOrder: index + 1 }] : []
+        })
+        const remaining = current.items.filter((item) => !labelIds.includes(item.id))
+        return { ...current, items: [...ordered, ...remaining] }
+      })
+      return { previous }
+    },
+    onError: (error, _labelIds, context) => {
+      if (context?.previous) qc.setQueryData(["labels", activeMailboxId], context.previous)
+      toast({ title: "标签排序失败", description: errorMessage(error) })
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["labels", activeMailboxId] }),
   })
   const deleteLabel = useMutation({
     mutationFn: (id: string) => api.deleteLabel(id, activeMailboxId),
@@ -1844,6 +1870,18 @@ export function MailPage() {
     const nextFolders = assignCustomFolderOrders(nextMenu)
     reorderFolders.mutate(nextFolders)
   }
+  function reorderLabel(draggedId: string, target: LabelDropTarget) {
+    if (!canManageSelectedLabels || reorderLabels.isPending) return
+    const dragged = labelItems.find((item) => item.id === draggedId)
+    if (!dragged || draggedId === target.id) return
+    const withoutDragged = labelItems.filter((item) => item.id !== draggedId)
+    const targetIndex = withoutDragged.findIndex((item) => item.id === target.id)
+    if (targetIndex < 0) return
+    const insertIndex = target.edge === "before" ? targetIndex : targetIndex + 1
+    const next = [...withoutDragged]
+    next.splice(insertIndex, 0, dragged)
+    reorderLabels.mutate(next.map((item) => item.id))
+  }
   function moveSidebarFolder(item: MailMenuItem, action: "top" | "up" | "down" | "bottom") {
     if (item.type !== "folder" || !item.custom) return
     const currentIndex = mailMenuItems.findIndex((entry) => entry.key === item.key)
@@ -1906,6 +1944,36 @@ export function MailPage() {
   function clearFolderDragState() {
     setDraggingFolderId("")
     setFolderDropTarget(null)
+  }
+  function handleLabelDragStart(event: React.DragEvent, label: MailLabel) {
+    if (!canManageSelectedLabels || sidebarCollapsed) return
+    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("text/plain", label.id)
+    setDraggingLabelId(label.id)
+  }
+  function handleLabelDragOver(event: React.DragEvent, label: MailLabel) {
+    if (!draggingLabelId || label.id === draggingLabelId) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    const rect = event.currentTarget.getBoundingClientRect()
+    setLabelDropTarget({
+      id: label.id,
+      edge: event.clientY < rect.top + rect.height / 2 ? "before" : "after",
+    })
+  }
+  function handleLabelDrop(event: React.DragEvent, label: MailLabel) {
+    if (!draggingLabelId) return
+    event.preventDefault()
+    const draggedId = event.dataTransfer.getData("text/plain") || draggingLabelId
+    const rect = event.currentTarget.getBoundingClientRect()
+    const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after"
+    setDraggingLabelId("")
+    setLabelDropTarget(null)
+    reorderLabel(draggedId, { id: label.id, edge })
+  }
+  function clearLabelDragState() {
+    setDraggingLabelId("")
+    setLabelDropTarget(null)
   }
   function runMessageContextAction(
     action:
@@ -2329,12 +2397,35 @@ export function MailPage() {
                   labelItems.map((label) => {
                     const colors = { backgroundColor: labelDotColor(label) }
                     return (
-                      <SidebarMenuItem key={label.id}>
+                      <SidebarMenuItem
+                        key={label.id}
+                        draggable={canManageSelectedLabels && !sidebarCollapsed}
+                        onDragStart={(event) => handleLabelDragStart(event, label)}
+                        onDragOver={(event) => handleLabelDragOver(event, label)}
+                        onDragLeave={() => {
+                          if (labelDropTarget?.id === label.id) setLabelDropTarget(null)
+                        }}
+                        onDrop={(event) => handleLabelDrop(event, label)}
+                        onDragEnd={clearLabelDragState}
+                      >
                         <SidebarMenuButton
                           isActive={
                             !labelEditMode && mailView === "label" && selectedLabelId === label.id
                           }
-                          className={cn(sidebarCollapsed && "justify-center px-0")}
+                          className={cn(
+                            sidebarCollapsed && "justify-center px-0",
+                            canManageSelectedLabels &&
+                              !sidebarCollapsed &&
+                              "cursor-grab active:cursor-grabbing",
+                            draggingLabelId === label.id && "opacity-50",
+                            labelDropTarget?.id === label.id && "bg-accent/60",
+                            labelDropTarget?.id === label.id &&
+                              labelDropTarget.edge === "before" &&
+                              "border-t-2 border-t-primary",
+                            labelDropTarget?.id === label.id &&
+                              labelDropTarget.edge === "after" &&
+                              "border-b-2 border-b-primary"
+                          )}
                           onClick={() => {
                             if (!labelEditMode) openLabel(label.id)
                           }}

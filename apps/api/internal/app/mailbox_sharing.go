@@ -692,7 +692,7 @@ func (a *App) loadMailboxShareScopes(ctx context.Context, item *MailboxShare) er
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	rows, err = a.db.QueryContext(ctx, `SELECT l.id,l.name FROM mailbox_share_labels msl JOIN mail_labels l ON l.id=msl.label_id WHERE msl.share_id=? ORDER BY l.name`, item.ID)
+	rows, err = a.db.QueryContext(ctx, `SELECT l.id,l.name FROM mailbox_share_labels msl JOIN mail_labels l ON l.id=msl.label_id WHERE msl.share_id=? ORDER BY l.sort_order,l.name`, item.ID)
 	if err != nil {
 		return err
 	}

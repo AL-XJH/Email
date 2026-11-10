@@ -133,3 +133,42 @@ func TestLabelColorForIndexMovesAroundWheel(t *testing.T) {
 		seen[color] = true
 	}
 }
+
+func TestLabelOrderDefaultsToCreationAndCanBeReordered(t *testing.T) {
+	a := newTestApp(t)
+	ctx := context.Background()
+	mailboxID := adminMailboxIDForTest(t, a)
+
+	first, err := a.ensureLabel(ctx, mailboxID, "Zeta", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.ensureLabel(ctx, mailboxID, "Alpha", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels, err := a.labelsForMailbox(ctx, mailboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(labels) != 2 || labels[0].Name != "Zeta" || labels[1].Name != "Alpha" {
+		t.Fatalf("default order=%v, want creation order Zeta,Alpha", labels)
+	}
+	if labels[0].SortOrder != 1 || labels[1].SortOrder != 2 {
+		t.Fatalf("sort orders=%d,%d", labels[0].SortOrder, labels[1].SortOrder)
+	}
+	// 模拟把 Alpha 拖到最前；列表必须按 sort_order，而不是按名称。
+	if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET sort_order=1 WHERE id=?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET sort_order=2 WHERE id=?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	labels, err = a.labelsForMailbox(ctx, mailboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(labels) != 2 || labels[0].ID != second.ID || labels[1].ID != first.ID {
+		t.Fatalf("reordered labels=%v, want Alpha then Zeta", labels)
+	}
+}

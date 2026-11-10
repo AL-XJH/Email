@@ -828,6 +828,7 @@ func (a *App) migrate(ctx context.Context) error {
 			mailbox_id TEXT NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			color TEXT NOT NULL DEFAULT '',
+			sort_order INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(mailbox_id, name)
@@ -872,6 +873,9 @@ func (a *App) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := a.migrateDraftTokens(ctx); err != nil {
+		return err
+	}
+	if err := a.migrateMailLabelSortOrder(ctx); err != nil {
 		return err
 	}
 	if err := a.migrateLabelColors(ctx); err != nil {
@@ -1218,6 +1222,78 @@ func (a *App) rebuildHTMLOnlyMessageSnippets(ctx context.Context) error {
 // migrateLabelColors 一次性把旧的自动颜色（空 / #64748b / 按名字哈希的
 // hsl）重排成按创建顺序均匀分布的色相，避免相邻标签颜色太接近。用户显式
 // 指定的十六进制颜色保持不动。完成后写标记，后续启动不再改已有颜色。
+// migrateMailLabelSortOrder 给旧库补 sort_order 列，并按创建顺序写入初始
+// 顺序。升级前标签是按名称排序的，这里只初始化一次；之后完全由用户拖拽
+// 的顺序决定。
+func (a *App) migrateMailLabelSortOrder(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `PRAGMA table_info(mail_labels)`)
+	if err != nil {
+		return err
+	}
+	hasColumn := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "sort_order" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	if !hasColumn {
+		if _, err := a.db.ExecContext(ctx, `ALTER TABLE mail_labels ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	var assigned int
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM mail_labels WHERE sort_order<>0`).Scan(&assigned); err != nil {
+		return err
+	}
+	if assigned > 0 {
+		return nil
+	}
+	rows, err = a.db.QueryContext(ctx, `SELECT id,mailbox_id FROM mail_labels ORDER BY mailbox_id, created_at, id`)
+	if err != nil {
+		return err
+	}
+	type labelOrder struct{ id, mailboxID string }
+	var labels []labelOrder
+	for rows.Next() {
+		var item labelOrder
+		if err := rows.Scan(&item.id, &item.mailboxID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		labels = append(labels, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	mailboxID := ""
+	order := 0
+	for _, item := range labels {
+		if item.mailboxID != mailboxID {
+			mailboxID = item.mailboxID
+			order = 0
+		}
+		order++
+		if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET sort_order=? WHERE id=?`, order, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) migrateLabelColors(ctx context.Context) error {
 	const scheme = "golden-angle-v1"
 	var current string

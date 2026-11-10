@@ -696,6 +696,80 @@ func (a *App) handleMailLabels(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{"items": labels})
 }
 
+func (a *App) handleReorderMailLabels(w http.ResponseWriter, r *http.Request) {
+	mb, err := a.mailboxForCurrentUser(r)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "mailbox not found")
+		return
+	}
+	var req struct {
+		LabelIDs []string `json:"labelIds"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(req.LabelIDs))
+	for _, id := range req.LabelIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			badRequest(w, errors.New("invalid label order"))
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		badRequest(w, errors.New("labelIds is required"))
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `SELECT id FROM mail_labels WHERE mailbox_id=?`, mb.ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load labels")
+		return
+	}
+	valid := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			respondError(w, http.StatusInternalServerError, "failed to scan labels")
+			return
+		}
+		valid[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		respondError(w, http.StatusInternalServerError, "failed to scan labels")
+		return
+	}
+	_ = rows.Close()
+	for _, id := range ids {
+		if !valid[id] {
+			badRequest(w, errors.New("invalid label order"))
+			return
+		}
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to reorder labels")
+		return
+	}
+	defer tx.Rollback()
+	for index, id := range ids {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE mail_labels SET sort_order=?,updated_at=? WHERE id=? AND mailbox_id=?`, index+1, a.now().UTC().Format(time.RFC3339Nano), id, mb.ID); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to reorder labels")
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to reorder labels")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (a *App) handleCreateMailLabel(w http.ResponseWriter, r *http.Request) {
 	mb, err := a.mailboxForCurrentUser(r)
 	if err != nil {
@@ -2857,11 +2931,11 @@ func (a *App) attachmentsForMessage(ctx context.Context, messageID string) ([]At
 }
 
 func (a *App) labelsForMailbox(ctx context.Context, mailboxID string) ([]MailLabel, error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT l.id,l.mailbox_id,l.name,l.color,COUNT(ml.message_id)
+	rows, err := a.db.QueryContext(ctx, `SELECT l.id,l.mailbox_id,l.name,l.color,l.sort_order,COUNT(ml.message_id)
 		FROM mail_labels l LEFT JOIN message_labels ml ON ml.label_id=l.id
 		WHERE l.mailbox_id=?
-		GROUP BY l.id,l.mailbox_id,l.name,l.color
-		ORDER BY lower(l.name)`, mailboxID)
+		GROUP BY l.id,l.mailbox_id,l.name,l.color,l.sort_order
+		ORDER BY l.sort_order,l.created_at,l.id`, mailboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -2869,7 +2943,7 @@ func (a *App) labelsForMailbox(ctx context.Context, mailboxID string) ([]MailLab
 	items := []MailLabel{}
 	for rows.Next() {
 		var item MailLabel
-		if err := rows.Scan(&item.ID, &item.MailboxID, &item.Name, &item.Color, &item.MessageCount); err != nil {
+		if err := rows.Scan(&item.ID, &item.MailboxID, &item.Name, &item.Color, &item.SortOrder, &item.MessageCount); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -2878,10 +2952,10 @@ func (a *App) labelsForMailbox(ctx context.Context, mailboxID string) ([]MailLab
 }
 
 func (a *App) labelsForMessage(ctx context.Context, messageID string) ([]MailLabel, error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT l.id,l.mailbox_id,l.name,l.color
+	rows, err := a.db.QueryContext(ctx, `SELECT l.id,l.mailbox_id,l.name,l.color,l.sort_order
 		FROM mail_labels l JOIN message_labels ml ON ml.label_id=l.id
 		WHERE ml.message_id=?
-		ORDER BY lower(l.name)`, messageID)
+		ORDER BY l.sort_order,l.created_at,l.id`, messageID)
 	if err != nil {
 		return nil, err
 	}
@@ -2889,7 +2963,7 @@ func (a *App) labelsForMessage(ctx context.Context, messageID string) ([]MailLab
 	items := []MailLabel{}
 	for rows.Next() {
 		var item MailLabel
-		if err := rows.Scan(&item.ID, &item.MailboxID, &item.Name, &item.Color); err != nil {
+		if err := rows.Scan(&item.ID, &item.MailboxID, &item.Name, &item.Color, &item.SortOrder); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -2909,10 +2983,10 @@ func (a *App) attachLabelsToMessages(ctx context.Context, items []MailMessage) e
 		index[items[i].ID] = i
 		args = append(args, items[i].ID)
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT ml.message_id,l.id,l.mailbox_id,l.name,l.color
+	rows, err := a.db.QueryContext(ctx, `SELECT ml.message_id,l.id,l.mailbox_id,l.name,l.color,l.sort_order
 		FROM message_labels ml JOIN mail_labels l ON l.id=ml.label_id
 		WHERE ml.message_id IN (`+strings.Join(ids, ",")+`)
-		ORDER BY lower(l.name)`, args...)
+		ORDER BY l.sort_order,l.created_at,l.id`, args...)
 	if err != nil {
 		return err
 	}
@@ -2920,7 +2994,7 @@ func (a *App) attachLabelsToMessages(ctx context.Context, items []MailMessage) e
 	for rows.Next() {
 		var messageID string
 		var label MailLabel
-		if err := rows.Scan(&messageID, &label.ID, &label.MailboxID, &label.Name, &label.Color); err != nil {
+		if err := rows.Scan(&messageID, &label.ID, &label.MailboxID, &label.Name, &label.Color, &label.SortOrder); err != nil {
 			return err
 		}
 		if itemIndex, ok := index[messageID]; ok {
@@ -2938,8 +3012,8 @@ func (a *App) ensureLabel(ctx context.Context, mailboxID, name, color string) (M
 	color = normalizeLabelColor(color)
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	var existing MailLabel
-	row := a.db.QueryRowContext(ctx, `SELECT id,mailbox_id,name,color FROM mail_labels WHERE mailbox_id=? AND lower(name)=lower(?)`, mailboxID, name)
-	if err := row.Scan(&existing.ID, &existing.MailboxID, &existing.Name, &existing.Color); err == nil {
+	row := a.db.QueryRowContext(ctx, `SELECT id,mailbox_id,name,color,sort_order FROM mail_labels WHERE mailbox_id=? AND lower(name)=lower(?)`, mailboxID, name)
+	if err := row.Scan(&existing.ID, &existing.MailboxID, &existing.Name, &existing.Color, &existing.SortOrder); err == nil {
 		if color != "" && color != existing.Color {
 			if _, err := a.db.ExecContext(ctx, `UPDATE mail_labels SET color=?, updated_at=? WHERE id=?`, color, now, existing.ID); err != nil {
 				return MailLabel{}, err
@@ -2960,13 +3034,18 @@ func (a *App) ensureLabel(ctx context.Context, mailboxID, name, color string) (M
 		}
 		color = nextColor
 	}
-	// 两个请求同时提交同名标签时，唯一约束会让其中一个 INSERT 失败。
-	// 用 OR IGNORE 后再读一次，让重复提交也按幂等成功返回已有标签。
-	if _, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO mail_labels(id,mailbox_id,name,color,created_at,updated_at) VALUES(?,?,?,?,?,?)`, id, mailboxID, name, color, now, now); err != nil {
+	// 新标签排在当前末尾；顺序之后由拖拽接口维护。
+	var nextOrder int
+	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort_order),0)+1 FROM mail_labels WHERE mailbox_id=?`, mailboxID).Scan(&nextOrder); err != nil {
 		return MailLabel{}, err
 	}
-	row = a.db.QueryRowContext(ctx, `SELECT id,mailbox_id,name,color FROM mail_labels WHERE mailbox_id=? AND lower(name)=lower(?)`, mailboxID, name)
-	if err := row.Scan(&existing.ID, &existing.MailboxID, &existing.Name, &existing.Color); err != nil {
+	// 两个请求同时提交同名标签时，唯一约束会让其中一个 INSERT 失败。
+	// 用 OR IGNORE 后再读一次，让重复提交也按幂等成功返回已有标签。
+	if _, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO mail_labels(id,mailbox_id,name,color,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, id, mailboxID, name, color, nextOrder, now, now); err != nil {
+		return MailLabel{}, err
+	}
+	row = a.db.QueryRowContext(ctx, `SELECT id,mailbox_id,name,color,sort_order FROM mail_labels WHERE mailbox_id=? AND lower(name)=lower(?)`, mailboxID, name)
+	if err := row.Scan(&existing.ID, &existing.MailboxID, &existing.Name, &existing.Color, &existing.SortOrder); err != nil {
 		return MailLabel{}, err
 	}
 	return existing, nil
