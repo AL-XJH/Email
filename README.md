@@ -252,7 +252,7 @@ docker compose logs --since 10m lanqin-email
 ## 与上游的关系
 
 - 上游：`LanQin996/LanQin-Email`，`main` 保持上游原版，用于同步。
-- 本分支：`XJH-Email` 与 `ui/dense`，包含界面重排、反垃圾、通知、外部邮箱、安全加固等自定义改动。
+- 本分支：`ui/dense`（默认分支），包含界面重排、反垃圾、通知、外部邮箱、安全加固等自定义改动。
 - 这些改动不保证会被上游合并；部署本分支请使用本仓库镜像 `ghcr.io/al-xjh/lanqin-email`。
 
 ## 许可证
