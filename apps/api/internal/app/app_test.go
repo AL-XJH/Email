@@ -4222,6 +4222,10 @@ func TestUserTwoFactorSetupAndLogin(t *testing.T) {
 		Secret     string `json:"secret"`
 		OtpauthURL string `json:"otpauthUrl"`
 	}
+	var noPassword map[string]any
+	if code := client.do("POST", "/api/me/2fa/setup", map[string]string{}, &noPassword); code != http.StatusUnauthorized {
+		t.Fatalf("2fa setup without current password=%d body=%v", code, noPassword)
+	}
 	if code := client.do("POST", "/api/me/2fa/setup", map[string]string{"currentPassword": "ChangeMe123!"}, &setup); code != http.StatusOK || setup.Secret == "" || !strings.HasPrefix(setup.OtpauthURL, "otpauth://totp/") {
 		t.Fatalf("setup code=%d setup=%+v", code, setup)
 	}
