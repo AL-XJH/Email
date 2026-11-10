@@ -35,14 +35,14 @@ elif id rspamd >/dev/null 2>&1; then
 	chown -R rspamd:rspamd /run/rspamd /var/lib/rspamd 2>/dev/null || true
 fi
 
-AUTH_POLICY_NONCE_FILE="${LANQIN_AUTH_POLICY_NONCE_FILE:-/data/dovecot-auth-policy-nonce}"
+AUTH_POLICY_NONCE_FILE="${LANQIN_AUTH_POLICY_NONCE_FILE:-${LANQIN_DATA_DIR:-/data}/dovecot-auth-policy-nonce}"
 mkdir -p "$(dirname "$AUTH_POLICY_NONCE_FILE")"
 if [ ! -s "$AUTH_POLICY_NONCE_FILE" ]; then
 	od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$AUTH_POLICY_NONCE_FILE"
 fi
 chmod 600 "$AUTH_POLICY_NONCE_FILE" 2>/dev/null || true
 AUTH_POLICY_HASH_NONCE="$(cat "$AUTH_POLICY_NONCE_FILE")"
-AUTH_POLICY_SECRET_FILE="${LANQIN_AUTH_POLICY_SECRET_FILE:-/data/auth-policy-secret}"
+AUTH_POLICY_SECRET_FILE="${LANQIN_AUTH_POLICY_SECRET_FILE:-${LANQIN_DATA_DIR:-/data}/auth-policy-secret}"
 if [ -n "${LANQIN_AUTH_POLICY_SECRET:-}" ]; then
 	AUTH_POLICY_SECRET="$LANQIN_AUTH_POLICY_SECRET"
 elif [ -s "$AUTH_POLICY_SECRET_FILE" ]; then

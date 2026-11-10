@@ -10,14 +10,14 @@ addgroup --system --gid 5000 vmail 2>/dev/null || true
 adduser --system --uid 5000 --gid 5000 --home /var/mail/vhosts --no-create-home vmail 2>/dev/null || true
 mkdir -p /data /var/mail/vhosts
 chown -R 5000:5000 /var/mail/vhosts
-AUTH_POLICY_NONCE_FILE="${LANQIN_AUTH_POLICY_NONCE_FILE:-/data/dovecot-auth-policy-nonce}"
+AUTH_POLICY_NONCE_FILE="${LANQIN_AUTH_POLICY_NONCE_FILE:-${LANQIN_DATA_DIR:-/data}/dovecot-auth-policy-nonce}"
 mkdir -p "$(dirname "$AUTH_POLICY_NONCE_FILE")"
 if [ ! -s "$AUTH_POLICY_NONCE_FILE" ]; then
 	od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$AUTH_POLICY_NONCE_FILE"
 fi
 chmod 600 "$AUTH_POLICY_NONCE_FILE" 2>/dev/null || true
 AUTH_POLICY_HASH_NONCE="$(cat "$AUTH_POLICY_NONCE_FILE")"
-AUTH_POLICY_SECRET_FILE="${LANQIN_AUTH_POLICY_SECRET_FILE:-/data/auth-policy-secret}"
+AUTH_POLICY_SECRET_FILE="${LANQIN_AUTH_POLICY_SECRET_FILE:-${LANQIN_DATA_DIR:-/data}/auth-policy-secret}"
 if [ -n "${LANQIN_AUTH_POLICY_SECRET:-}" ]; then
 	AUTH_POLICY_SECRET="$LANQIN_AUTH_POLICY_SECRET"
 elif [ -s "$AUTH_POLICY_SECRET_FILE" ]; then
