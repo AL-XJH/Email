@@ -690,24 +690,37 @@ func (a *App) unregisteredMaildirMessageExists(ctx context.Context, rawPath, mes
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
-	now := a.now().UTC().Format(time.RFC3339Nano)
+	type candidate struct {
+		id   string
+		path string
+	}
+	var candidates []candidate
 	for rows.Next() {
-		var id, existingPath string
-		if err := rows.Scan(&id, &existingPath); err != nil {
+		var item candidate
+		if err := rows.Scan(&item.id, &item.path); err != nil {
+			_ = rows.Close()
 			return false, err
 		}
-		if existingPath != "" {
-			if _, statErr := os.Stat(existingPath); !os.IsNotExist(statErr) {
+		candidates = append(candidates, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	_ = rows.Close()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	for _, item := range candidates {
+		if item.path != "" {
+			if _, statErr := os.Stat(item.path); !os.IsNotExist(statErr) {
 				continue
 			}
 		}
-		if _, err := a.db.ExecContext(ctx, `UPDATE messages SET raw_path=?,updated_at=? WHERE id=?`, rawPath, now, id); err != nil {
+		if _, err := a.db.ExecContext(ctx, `UPDATE messages SET raw_path=?,updated_at=? WHERE id=?`, rawPath, now, item.id); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-	return false, rows.Err()
+	return false, nil
 }
 
 func (a *App) attachMaildirRawPathToExisting(ctx context.Context, mailboxID, folderID, rawPath, messageID string) {
