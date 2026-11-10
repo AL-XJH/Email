@@ -1208,11 +1208,12 @@ func (a *App) checkAndRecordProtocolRate(ctx context.Context, user *User, mb *Ma
 // directly. Responses deliberately do not distinguish "no such user" from
 // "disabled" so the endpoint cannot be used to enumerate mailboxes.
 func (a *App) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
-	if secret := strings.TrimSpace(a.config().AuthPolicySecret); secret != "" {
-		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("key")), []byte(secret)) != 1 {
-			respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
-			return
-		}
+	// 没有 secret 就等于任何人都能清/植登录锁定。entrypoint 会在 /data 里生成
+	// 一个共享 secret；读不到时宁可拒绝 Dovecot 登录，也不放开这个端点。
+	secret := strings.TrimSpace(a.config().AuthPolicySecret)
+	if secret == "" || subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("key")), []byte(secret)) != 1 {
+		respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
+		return
 	}
 	var req struct {
 		Login        string `json:"login"`

@@ -42,6 +42,24 @@ if [ ! -s "$AUTH_POLICY_NONCE_FILE" ]; then
 fi
 chmod 600 "$AUTH_POLICY_NONCE_FILE" 2>/dev/null || true
 AUTH_POLICY_HASH_NONCE="$(cat "$AUTH_POLICY_NONCE_FILE")"
+AUTH_POLICY_SECRET_FILE="${LANQIN_AUTH_POLICY_SECRET_FILE:-/data/auth-policy-secret}"
+if [ -n "${LANQIN_AUTH_POLICY_SECRET:-}" ]; then
+	AUTH_POLICY_SECRET="$LANQIN_AUTH_POLICY_SECRET"
+elif [ -s "$AUTH_POLICY_SECRET_FILE" ]; then
+	AUTH_POLICY_SECRET="$(cat "$AUTH_POLICY_SECRET_FILE")"
+else
+	mkdir -p "$(dirname "$AUTH_POLICY_SECRET_FILE")"
+	od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$AUTH_POLICY_SECRET_FILE"
+	chmod 600 "$AUTH_POLICY_SECRET_FILE" 2>/dev/null || true
+	AUTH_POLICY_SECRET="$(cat "$AUTH_POLICY_SECRET_FILE")"
+fi
+export LANQIN_AUTH_POLICY_SECRET="$AUTH_POLICY_SECRET"
+AUTH_POLICY_URL="${LANQIN_AUTH_POLICY_URL:-http://127.0.0.1:8080/auth-policy}"
+case "$AUTH_POLICY_URL" in
+	*\?*) AUTH_POLICY_SEP='&' ;;
+	*) AUTH_POLICY_SEP='?' ;;
+esac
+AUTH_POLICY_SECRET_SED="$(printf '%s' "$AUTH_POLICY_SECRET" | sed 's/[&#]/\\&/g')"
 
 /usr/local/bin/lanqin-postfix-configure-db
 /usr/local/bin/lanqin-dovecot-configure-db
@@ -78,6 +96,7 @@ postconf -e "message_size_limit = 37748736"
 sed -i "s#^ssl_cert = <.*#ssl_cert = <${TLS_CERT}#" /etc/dovecot/dovecot.conf
 sed -i "s#^ssl_key = <.*#ssl_key = <${TLS_KEY}#" /etc/dovecot/dovecot.conf
 sed -i "s#^auth_policy_hash_nonce = .*#auth_policy_hash_nonce = ${AUTH_POLICY_HASH_NONCE}#" /etc/dovecot/dovecot.conf
+sed -i "s#^auth_policy_server_url = .*#auth_policy_server_url = ${AUTH_POLICY_URL}${AUTH_POLICY_SEP}key=${AUTH_POLICY_SECRET_SED}#" /etc/dovecot/dovecot.conf
 if [ -f /etc/rspamd/local.d/options.inc ]; then
 	sed -i "s#__LANQIN_RSPAMD_DNS__#${LANQIN_RSPAMD_DNS}#" /etc/rspamd/local.d/options.inc
 fi

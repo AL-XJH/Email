@@ -100,7 +100,7 @@ func LoadConfig() Config {
 		MaildirScanSeconds:              getenvInt("LANQIN_MAILDIR_SCAN_SECONDS", defaultMaildirScanSeconds),
 		AllowInsecureHTTP:               getenvBool("LANQIN_ALLOW_INSECURE_HTTP", false),
 		TrustedProxyCount:               getenvInt("LANQIN_TRUSTED_PROXY_COUNT", 0),
-		AuthPolicySecret:                getenv("LANQIN_AUTH_POLICY_SECRET", ""),
+		AuthPolicySecret:                resolveAuthPolicySecret(dataDir),
 		OpenRegistration:                getenvBool("LANQIN_OPEN_REGISTRATION", false),
 		InviteRegistrationEnabled:       false,
 		TwoFactorEnabled:                getenvBool("LANQIN_TWO_FACTOR_ENABLED", false),
@@ -164,4 +164,22 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// resolveAuthPolicySecret keeps the Dovecot auth-policy endpoint authenticated even
+// when the operator did not set LANQIN_AUTH_POLICY_SECRET. The secret lives in the
+// data volume so the API and Dovecot (same or separate containers) read the same
+// value; the entrypoints put it in auth_policy_server_url as ?key=...
+func resolveAuthPolicySecret(dataDir string) string {
+	if value := strings.TrimSpace(os.Getenv("LANQIN_AUTH_POLICY_SECRET")); value != "" {
+		return value
+	}
+	path := strings.TrimSpace(os.Getenv("LANQIN_AUTH_POLICY_SECRET_FILE"))
+	if path == "" {
+		path = filepath.Join(dataDir, "auth-policy-secret")
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
 }

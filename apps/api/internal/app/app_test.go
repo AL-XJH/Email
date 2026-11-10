@@ -68,6 +68,7 @@ func newTestApp(t *testing.T) *App {
 		PublicHostname:    "mail.example.test",
 		PublicBaseURL:     "http://localhost:5173",
 		AllowInsecureHTTP: true,
+		AuthPolicySecret:  "test-auth-policy-secret",
 	}
 	return newTestAppWithConfig(t, cfg)
 }
@@ -4100,7 +4101,7 @@ func TestAuthPolicyDovecotResponseFormat(t *testing.T) {
 	client := &testClient{t: t, server: ts}
 
 	var allowed map[string]any
-	if code := client.do("POST", "/auth-policy?command=allow", map[string]string{"login": "admin@lanqin.local", "protocol": "smtp"}, &allowed); code != http.StatusOK {
+	if code := client.do("POST", "/auth-policy?command=allow&key=test-auth-policy-secret", map[string]string{"login": "admin@lanqin.local", "protocol": "smtp"}, &allowed); code != http.StatusOK {
 		t.Fatalf("auth policy allow code=%d body=%v", code, allowed)
 	}
 	if allowed["status"] != float64(0) {
@@ -4108,7 +4109,7 @@ func TestAuthPolicyDovecotResponseFormat(t *testing.T) {
 	}
 
 	var denied map[string]any
-	if code := client.do("POST", "/auth-policy?command=allow", map[string]string{"login": "missing@lanqin.local", "protocol": "imap"}, &denied); code != http.StatusOK {
+	if code := client.do("POST", "/auth-policy?command=allow&key=test-auth-policy-secret", map[string]string{"login": "missing@lanqin.local", "protocol": "imap"}, &denied); code != http.StatusOK {
 		t.Fatalf("auth policy deny code=%d body=%v", code, denied)
 	}
 	if denied["status"] != float64(-1) {
