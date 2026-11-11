@@ -26,10 +26,9 @@ const (
 	telegramNotificationMaxAttempts  = 10
 	telegramNotificationTextMaxRunes = 3500
 	telegramNotificationTestCooldown = 10 * time.Second
-	// 一条推送最多这么多字（消息头 + 正文）。
-	// 基准是 BitsFlow 那封迁移通知：正文 1041 字、整条推送 1204 字，一条读完不费劲；
-	// 比这更长的邮件只推开头，剩下的点「打开邮件」看。
-	telegramNotificationTextBudget = 1300
+	// 一条推送最多这么多字（消息头 + 正文）。之前是 1300，用户反馈还是太长，
+	// 再砍一半到 650；更长的邮件只推开头，剩下的点「打开邮件」看。
+	telegramNotificationTextBudget = 650
 )
 
 var (
