@@ -1085,20 +1085,28 @@ export function MailPage() {
           const result = await api.readAllFolder(activeMailboxId, folder)
           total += result.updated
           remaining = result.remaining
+          // 有邮件的 raw_path 失效或不在 Maildir 根目录时，服务端会拒绝
+          // 只改库；这批一个字都没更新就停下，别连续打 100 次。
+          if (result.updated === 0) break
         }
-        return total
+        return { count: total, remaining }
       }
       const unread = items.filter((message) => !message.isRead)
       await runWithConcurrency(unread, 4, (message) => api.markRead(message.id, true))
-      return unread.length
+      return { count: unread.length, remaining: 0 }
     },
-    onSuccess: async (count) => {
+    onSuccess: async ({ count, remaining }) => {
       await qc.invalidateQueries({ queryKey: ["messages"] })
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
       await qc.invalidateQueries({ queryKey: ["labels"] })
       toast({
-        title: count > 0 ? uiMessage("已标记 {0} 封邮件为已读", [count]) : "当前没有未读邮件",
+        title:
+          remaining > 0
+            ? uiMessage("已标记 {0} 封，{1} 封文件状态异常未处理", [count, remaining])
+            : count > 0
+              ? uiMessage("已标记 {0} 封邮件为已读", [count])
+              : "当前没有未读邮件",
       })
     },
     onError: (error) => toast({ title: "操作失败", description: errorMessage(error) }),

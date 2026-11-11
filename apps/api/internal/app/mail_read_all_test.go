@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -95,5 +96,76 @@ func TestReadAllFolderMarksWholeFolderAndKeepsMaildirFlags(t *testing.T) {
 	}
 	if unread != 0 {
 		t.Fatalf("maildir sync flipped %d messages back to unread", unread)
+	}
+}
+
+// raw_path 不在 Maildir 根目录下时不能只改数据库：文件没改名，库却显示
+// 已读，下一轮同步会按文件名把它翻回未读。这里必须保留未读并让 remaining
+// 如实反映。
+func TestReadAllFolderSkipsUnsafeMaildirPath(t *testing.T) {
+	a := newTestApp(t)
+	root := t.TempDir()
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = root })
+	ctx := context.Background()
+	mailboxID := adminMailboxIDForTest(t, a)
+	mb, err := a.mailboxByID(ctx, mailboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err := a.ensureFolder(ctx, mailboxID, "Inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 隔离掉测试账号初始化时可能自带的欢迎邮件。
+	if _, err := a.db.ExecContext(ctx, `UPDATE messages SET is_read=1 WHERE mailbox_id=? AND folder_id=?`, mailboxID, inboxID); err != nil {
+		t.Fatal(err)
+	}
+	now := a.now().UTC()
+	msg := storedMessage{
+		MailboxID:  mailboxID,
+		FolderID:   inboxID,
+		MessageUID: newID("uid"),
+		MessageID:  "<unsafe-path-" + newID("x") + "@example.test>",
+		Subject:    "unread",
+		From:       "sender@example.test",
+		To:         []string{mb.Address},
+		SentAt:     now,
+		ReceivedAt: now,
+		Snippet:    "body",
+		BodyText:   "body",
+		IsRead:     false,
+	}
+	id, err := a.insertMessage(ctx, msg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.eml")
+	if _, err := a.db.ExecContext(ctx, `UPDATE messages SET raw_path=? WHERE id=?`, outside, id); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := a.markFolderRead(ctx, mailboxID, inboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 0 {
+		t.Fatalf("updated=%d, want 0 for unsafe path", updated)
+	}
+	var read int
+	var rawPath string
+	if err := a.db.QueryRowContext(ctx, `SELECT is_read,COALESCE(raw_path,'') FROM messages WHERE id=?`, id).Scan(&read, &rawPath); err != nil {
+		t.Fatal(err)
+	}
+	if read != 0 {
+		t.Fatalf("is_read=%d, want 0 when maildir file was not renamed", read)
+	}
+	if rawPath != outside {
+		t.Fatalf("raw_path=%q, want unchanged %q", rawPath, outside)
+	}
+	var remaining int
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND folder_id=? AND is_read=0`, mailboxID, inboxID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining=%d, want 1", remaining)
 	}
 }

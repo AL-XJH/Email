@@ -288,23 +288,34 @@ func (a *App) markFolderRead(ctx context.Context, mailboxID, folderID string) (i
 	for _, item := range items {
 		newPath := item.rawPath
 		if item.rawPath != "" {
-			if ok, pathErr := a.pathIsUnderMaildirRoot(item.rawPath); pathErr == nil && ok {
-				target := maildirPathWithFlags(item.rawPath, true, item.starred)
-				if target != item.rawPath {
-					if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr == nil {
-						if renameErr := os.Rename(item.rawPath, target); renameErr == nil {
-							_ = applyMaildirOwnership(target)
-							newPath = target
-						} else {
-							// 文件没改成 S 标志就绝不能把库标成已读：下一轮同步
-							// 会按缺 S 翻回未读，接口却已经报告成功了。
-							a.log.Warn("failed to rename maildir file for read-all", "message", item.id, "error", renameErr)
-							continue
-						}
+			ok, pathErr := a.pathIsUnderMaildirRoot(item.rawPath)
+			if pathErr != nil {
+				// 路径都算不出来时不能碰数据库：否则库已读、文件仍未读，
+				// 下一轮同步还会按文件名翻回去。
+				a.log.Warn("failed to validate maildir path for read-all", "message", item.id, "error", pathErr)
+				continue
+			}
+			if !ok {
+				// raw_path 过期、配置换过 MaildirRoot、或数据被写脏：跳过这条，
+				// 让接口如实返回 remaining，而不是假装成功。
+				a.log.Warn("maildir path outside root for read-all", "message", item.id, "path", item.rawPath)
+				continue
+			}
+			target := maildirPathWithFlags(item.rawPath, true, item.starred)
+			if target != item.rawPath {
+				if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr == nil {
+					if renameErr := os.Rename(item.rawPath, target); renameErr == nil {
+						_ = applyMaildirOwnership(target)
+						newPath = target
 					} else {
-						a.log.Warn("failed to prepare maildir directory for read-all", "message", item.id, "error", mkErr)
+						// 文件没改成 S 标志就绝不能把库标成已读：下一轮同步
+						// 会按缺 S 翻回未读，接口却已经报告成功了。
+						a.log.Warn("failed to rename maildir file for read-all", "message", item.id, "error", renameErr)
 						continue
 					}
+				} else {
+					a.log.Warn("failed to prepare maildir directory for read-all", "message", item.id, "error", mkErr)
+					continue
 				}
 			}
 		}
