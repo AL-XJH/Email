@@ -414,7 +414,9 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to load preferences")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"user": currentUser(r), "preferences": preferences})
+	u := *currentUser(r)
+	u.AvatarURL = a.userAvatarURL(u.ID)
+	respondJSON(w, http.StatusOK, map[string]any{"user": u, "preferences": preferences})
 }
 
 func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +485,7 @@ func (a *App) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to load preferences")
 		return
 	}
+	updated.AvatarURL = a.userAvatarURL(updated.ID)
 	respondJSON(w, http.StatusOK, map[string]any{"user": updated, "preferences": preferences})
 }
 

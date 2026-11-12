@@ -185,6 +185,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  updateAvatar: (file: File) => {
+    const form = new FormData()
+    form.append("file", file)
+    return request<{ ok: boolean; avatarUrl: string }>("/api/me/avatar", {
+      method: "POST",
+      body: form,
+    })
+  },
+  deleteAvatar: () => request<{ ok: boolean }>("/api/me/avatar", { method: "DELETE" }),
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
     request<{ ok: boolean }>("/api/me/password", { method: "POST", body: JSON.stringify(payload) }),
   apiTokens: () => request<ListResponse<APIToken>>("/api/me/api-tokens"),

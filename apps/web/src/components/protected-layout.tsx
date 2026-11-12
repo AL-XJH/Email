@@ -20,7 +20,7 @@ import { useLogout } from "@/hooks/use-logout"
 import { AuthGuard } from "@/components/auth-guard"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { hasAnyPermission } from "@/lib/permissions"
 import type { PermissionKey } from "@/lib/api-types"
 import {
@@ -141,6 +141,9 @@ function ProtectedContent() {
               <SidebarMenuButton size="lg" className="group-data-[collapsible=icon]:!p-0" asChild>
                 <Link to="/profile">
                   <Avatar className="h-8 w-8 rounded-lg">
+                    {user.avatarUrl ? (
+                      <AvatarImage src={user.avatarUrl} alt={user.displayName} />
+                    ) : null}
                     <AvatarFallback className="rounded-lg bg-muted text-foreground">
                       {user.displayName.slice(0, 1).toUpperCase()}
                     </AvatarFallback>

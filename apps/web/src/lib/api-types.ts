@@ -81,6 +81,7 @@ export type User = {
   id: string
   email: string
   displayName: string
+  avatarUrl?: string
   role: "admin" | "user"
   disabled: boolean
   protected: boolean

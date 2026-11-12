@@ -104,7 +104,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { quotedComposerValue, quotedHtmlComposerValue, withPrefix } from "@/components/mail-content"
@@ -2174,6 +2174,7 @@ export function MailPage() {
           collapsed={sidebarCollapsed}
           name={me.data?.user.displayName || selectedMailbox?.address || "LanQin"}
           email={me.data?.user.email || selectedMailbox?.address}
+          avatarUrl={me.data?.user.avatarUrl}
           darkMode={darkMode}
           onToggleTheme={() => setDarkMode((value) => !value)}
           onSettings={openSettings}
@@ -4930,6 +4931,7 @@ function AccountHeader({
   collapsed,
   name,
   email,
+  avatarUrl,
   darkMode,
   onToggleTheme,
   onSettings,
@@ -4937,6 +4939,7 @@ function AccountHeader({
   collapsed: boolean
   name: string
   email?: string
+  avatarUrl?: string
   darkMode: boolean
   onToggleTheme: () => void
   onSettings: () => void
@@ -4948,6 +4951,7 @@ function AccountHeader({
     return (
       <div className="flex justify-center">
         <Avatar className="size-8 rounded-full">
+          {avatarUrl ? <AvatarImage src={avatarUrl} alt={displayName} /> : null}
           <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
             {accountInitial(displayName, email)}
           </AvatarFallback>
@@ -4959,6 +4963,7 @@ function AccountHeader({
     <div className="flex items-center justify-between gap-2">
       <div className="flex min-w-0 items-center gap-2">
         <Avatar className="size-8 rounded-full">
+          {avatarUrl ? <AvatarImage src={avatarUrl} alt={displayName} /> : null}
           <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
             {accountInitial(displayName, email)}
           </AvatarFallback>

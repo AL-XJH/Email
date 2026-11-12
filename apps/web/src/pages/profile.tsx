@@ -96,7 +96,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
@@ -826,6 +826,7 @@ export function ProfilePage() {
           collapsed={sidebarCollapsed}
           name={user.displayName || selectedMailbox?.address || "LanQin"}
           email={user.email || selectedMailbox?.address}
+          avatarUrl={user.avatarUrl}
           darkMode={darkMode}
           onToggleTheme={() => setDarkMode((v) => !v)}
           onBack={() => navigate("/")}
@@ -1200,6 +1201,7 @@ function ProfileOverview({
   user: {
     email: string
     displayName: string
+    avatarUrl?: string
     role: string
     disabled: boolean
     twoFactorEnabled: boolean
@@ -1230,6 +1232,25 @@ function ProfileOverview({
   onCopy: (text: string) => void
 }) {
   useUiLanguage()
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const avatarInputRef = React.useRef<HTMLInputElement>(null)
+  const uploadAvatar = useMutation({
+    mutationFn: api.updateAvatar,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["me"] })
+      toast({ title: "头像已更新" })
+    },
+    onError: (error) => toast({ title: "头像上传失败", description: errorMessage(error) }),
+  })
+  const removeAvatar = useMutation({
+    mutationFn: api.deleteAvatar,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["me"] })
+      toast({ title: "头像已移除" })
+    },
+    onError: (error) => toast({ title: "移除头像失败", description: errorMessage(error) }),
+  })
   const [setupPassword, setSetupPassword] = React.useState("")
 
   return (
@@ -1270,6 +1291,50 @@ function ProfileOverview({
           <CardTitle>{uiText("账户信息")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
+          <div className="flex flex-wrap items-center gap-4">
+            <Avatar className="h-16 w-16">
+              {user.avatarUrl ? <AvatarImage src={user.avatarUrl} alt={user.displayName} /> : null}
+              <AvatarFallback className="text-xl font-semibold">
+                {user.displayName.slice(0, 1).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => avatarInputRef.current?.click()}
+                  disabled={uploadAvatar.isPending}
+                >
+                  {uploadAvatar.isPending ? "上传中..." : "上传头像"}
+                </Button>
+                {user.avatarUrl && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeAvatar.mutate()}
+                    disabled={removeAvatar.isPending}
+                  >
+                    {removeAvatar.isPending ? "移除中..." : "移除头像"}
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">支持 JPG、PNG、WebP，最大 2 MB</p>
+            </div>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) uploadAvatar.mutate(file)
+                event.currentTarget.value = ""
+              }}
+            />
+          </div>
           <form
             className="space-y-4"
             onSubmit={(e) => {
@@ -5482,6 +5547,7 @@ function AccountHeader({
   collapsed,
   name,
   email,
+  avatarUrl,
   darkMode,
   onToggleTheme,
   onBack,
@@ -5489,6 +5555,7 @@ function AccountHeader({
   collapsed: boolean
   name: string
   email?: string
+  avatarUrl?: string
   darkMode: boolean
   onToggleTheme: () => void
   onBack: () => void
@@ -5500,6 +5567,7 @@ function AccountHeader({
     return (
       <div className="flex justify-center">
         <Avatar className="size-9 rounded-full">
+          {avatarUrl ? <AvatarImage src={avatarUrl} alt={displayName} /> : null}
           <AvatarFallback className="bg-primary text-sm font-semibold text-primary-foreground">
             {accountInitial(displayName, email)}
           </AvatarFallback>
@@ -5510,6 +5578,7 @@ function AccountHeader({
     <div className="flex items-center justify-between gap-2">
       <div className="flex min-w-0 items-center gap-2">
         <Avatar className="size-8 shrink-0 rounded-full">
+          {avatarUrl ? <AvatarImage src={avatarUrl} alt={displayName} /> : null}
           <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
             {accountInitial(displayName, email)}
           </AvatarFallback>
