@@ -73,6 +73,10 @@ export type PermissionGroup = {
   createdAt: string
   updatedAt: string
 }
+export type UserPreferences = {
+  showRemoteImages: boolean
+}
+
 export type User = {
   id: string
   email: string

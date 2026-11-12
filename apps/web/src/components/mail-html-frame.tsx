@@ -1,6 +1,7 @@
 import * as React from "react"
 import { buildMailFrameSrcDoc } from "@/components/mail-content"
 import { translateUiText, uiText, useLanguage } from "@/lib/language"
+import { useMe } from "@/hooks/use-me"
 
 /**
  * Renders untrusted mail HTML inside a sandboxed iframe.
@@ -75,11 +76,13 @@ export function MailHtmlFrame({
   minHeight?: number
 }) {
   const [language] = useLanguage()
+  const me = useMe()
   const iframeRef = React.useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = React.useState(260)
-  const [showRemote, setShowRemote] = React.useState(false)
+  const defaultShowRemote = me.data?.preferences?.showRemoteImages === true
+  const [showRemote, setShowRemote] = React.useState(defaultShowRemote)
   const blocked = React.useMemo(() => stripRemoteContent(bodyHtml || ""), [bodyHtml])
-  React.useEffect(() => setShowRemote(false), [bodyHtml])
+  React.useEffect(() => setShowRemote(defaultShowRemote), [bodyHtml, defaultShowRemote])
   const activeHtml = showRemote ? bodyHtml || "" : blocked.html
   const srcDoc = React.useMemo(() => {
     const built = buildMailFrameSrcDoc(activeHtml, bodyText || "", language)

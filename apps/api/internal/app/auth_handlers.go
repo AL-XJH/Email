@@ -390,8 +390,63 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+const userPreferenceShowRemoteImages = "showRemoteImages"
+
+func userPreferenceShowRemoteImagesKey(userID string) string {
+	return "userPreference:" + userID + ":" + userPreferenceShowRemoteImages
+}
+
+func (a *App) userPreferences(ctx context.Context, userID string) (UserPreferences, error) {
+	var value string
+	err := a.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key=?`, userPreferenceShowRemoteImagesKey(userID)).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserPreferences{}, nil
+	}
+	if err != nil {
+		return UserPreferences{}, err
+	}
+	return UserPreferences{ShowRemoteImages: value == "true"}, nil
+}
+
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]any{"user": currentUser(r)})
+	preferences, err := a.userPreferences(r.Context(), currentUser(r).ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load preferences")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"user": currentUser(r), "preferences": preferences})
+}
+
+func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ShowRemoteImages *bool `json:"showRemoteImages"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if req.ShowRemoteImages == nil {
+		badRequest(w, errors.New("showRemoteImages is required"))
+		return
+	}
+	value := "false"
+	if *req.ShowRemoteImages {
+		value = "true"
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	_, err := a.db.ExecContext(r.Context(), `INSERT INTO system_settings(key,value,updated_at) VALUES(?,?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+		userPreferenceShowRemoteImagesKey(currentUser(r).ID), value, now)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update preferences")
+		return
+	}
+	preferences, err := a.userPreferences(r.Context(), currentUser(r).ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load preferences")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"preferences": preferences})
 }
 
 func (a *App) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
@@ -423,7 +478,12 @@ func (a *App) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to load profile")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"user": updated})
+	preferences, err := a.userPreferences(r.Context(), user.ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load preferences")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"user": updated, "preferences": preferences})
 }
 
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {

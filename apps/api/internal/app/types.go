@@ -24,6 +24,10 @@ type User struct {
 	CreatedAt             time.Time `json:"createdAt"`
 }
 
+type UserPreferences struct {
+	ShowRemoteImages bool `json:"showRemoteImages"`
+}
+
 type AdminUser struct {
 	User
 	Mailboxes []string `json:"mailboxes"`

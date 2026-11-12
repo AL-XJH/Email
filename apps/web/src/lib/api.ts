@@ -2,6 +2,7 @@ import { ApiError, errorMessage } from "./ui-errors"
 import { QUERY_CACHE_KEY } from "./query-cache"
 import type {
   User,
+  UserPreferences,
   AdminUser,
   AdminOverview,
   Domain,
@@ -162,7 +163,7 @@ export const api = {
       body: JSON.stringify({ code }),
     }),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
-  me: () => request<{ user: User }>("/api/me"),
+  me: () => request<{ user: User; preferences?: UserPreferences }>("/api/me"),
   linuxDoIdentity: () => request<LinuxDoIdentity>("/api/me/auth/linuxdo"),
   startLinuxDoLink: (payload: { currentPassword: string; twoFactorCode?: string }) =>
     request<{ url: string }>("/api/me/auth/linuxdo/link", {
@@ -175,7 +176,15 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   updateProfile: (payload: { displayName: string }) =>
-    request<{ user: User }>("/api/me/profile", { method: "POST", body: JSON.stringify(payload) }),
+    request<{ user: User; preferences?: UserPreferences }>("/api/me/profile", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updatePreferences: (payload: { showRemoteImages: boolean }) =>
+    request<{ preferences: UserPreferences }>("/api/me/preferences", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
     request<{ ok: boolean }>("/api/me/password", { method: "POST", body: JSON.stringify(payload) }),
   apiTokens: () => request<ListResponse<APIToken>>("/api/me/api-tokens"),

@@ -47,6 +47,7 @@ func (a *App) Router() http.Handler {
 		r.With(a.requireAuth).Post("/me/auth/linuxdo/link", a.handleLinuxDoLinkStart)
 		r.With(a.requireAuth).Delete("/me/auth/linuxdo", a.handleLinuxDoUnlink)
 		r.With(a.requireAuth).Post("/me/profile", a.handleUpdateProfile)
+		r.With(a.requireAuth).Post("/me/preferences", a.handleUpdatePreferences)
 		r.With(a.requireAuth).Post("/me/password", a.handleChangePassword)
 		r.With(a.requireAuth).Get("/me/api-tokens", a.handleListAPITokens)
 		r.With(a.requireAuth).Post("/me/api-tokens", a.handleCreateAPIToken)

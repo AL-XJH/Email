@@ -77,7 +77,9 @@ import {
   PermissionLimits,
   ShareUser,
   TelegramSettings,
+  User,
   UserNotification,
+  UserPreferences,
 } from "@/lib/api"
 import { cn, formatBytes } from "@/lib/utils"
 import { applyTheme, getInitialTheme } from "@/lib/theme"
@@ -340,6 +342,20 @@ export function ProfilePage() {
       toast({ title: "个人资料已保存" })
     },
     onError: (error) => toast({ title: "保存失败", description: errorMessage(error) }),
+  })
+  const updatePreferences = useMutation({
+    mutationFn: api.updatePreferences,
+    onSuccess: (data) => {
+      qc.setQueryData(
+        ["me"],
+        (current: { user: User; preferences?: UserPreferences } | undefined) =>
+          current ? { ...current, preferences: data.preferences } : current
+      )
+      toast({
+        title: data.preferences.showRemoteImages ? "已默认显示远程图片" : "已关闭默认显示远程图片",
+      })
+    },
+    onError: (error) => toast({ title: "设置失败", description: errorMessage(error) }),
   })
   const password = useMutation({
     mutationFn: (form: FormData) => {
@@ -1152,6 +1168,8 @@ export function ProfilePage() {
         showStats={canViewStats}
         displayMode={displayMode}
         onDisplayModeChange={setDisplayMode}
+        showRemoteImages={me.data?.preferences?.showRemoteImages === true}
+        updatePreferences={updatePreferences}
         twoFactorFormRef={twoFactorFormRef}
         setupTwoFactor={setupTwoFactor}
         enableTwoFactor={enableTwoFactor}
@@ -1171,6 +1189,8 @@ function ProfileOverview({
   showStats,
   displayMode,
   onDisplayModeChange,
+  showRemoteImages,
+  updatePreferences,
   twoFactorFormRef,
   setupTwoFactor,
   enableTwoFactor,
@@ -1193,6 +1213,11 @@ function ProfileOverview({
   showStats: boolean
   displayMode: DisplayMode
   onDisplayModeChange: (mode: DisplayMode) => void
+  showRemoteImages: boolean
+  updatePreferences: {
+    mutate: (payload: { showRemoteImages: boolean }) => void
+    isPending: boolean
+  }
   twoFactorFormRef: React.RefObject<HTMLFormElement>
   setupTwoFactor: {
     data?: { secret: string; otpauthUrl: string }
@@ -1312,6 +1337,22 @@ function ProfileOverview({
               </SelectContent>
             </Select>
           </Field>
+          <Separator />
+          <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">{uiText("默认显示远程图片")}</div>
+              <p className="text-xs text-muted-foreground">
+                {uiText(
+                  "打开邮件时直接加载发件人的图片；关闭时默认拦截，点「显示远程图片」才加载。"
+                )}
+              </p>
+            </div>
+            <Switch
+              checked={showRemoteImages}
+              onCheckedChange={(checked) => updatePreferences.mutate({ showRemoteImages: checked })}
+              disabled={updatePreferences.isPending}
+            />
+          </div>
         </CardContent>
       </Card>
 
