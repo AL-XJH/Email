@@ -1322,7 +1322,7 @@ function ProfileOverview({
         <CardHeader>
           <CardTitle>{uiText("界面设置")}</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <Field label={uiText("显示模式")}>
             <Select
               value={displayMode}
