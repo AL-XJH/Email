@@ -7,7 +7,7 @@
 // 改成「关键词后面一小段窗口内」取值：真验证码永远紧跟在关键词后面
 // （验证码：857149 / code is 638204 / passcode 5521），而营销文里的数字离关键词很远。
 const VERIFICATION_KEYWORD =
-  /(验证码|校验码|动态码|安全码|确认码|verification\s*code|verify\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)/gi
+  /(验证码|校验码|动态码|安全码|确认码|一次性(?:代码|密码|验证码|口令)|临时(?:代码|密码|验证码|口令)|登录(?:代码|密码)|认证代码|verification\s*code|verify\s*code|single[\s-]?use\s*code|security\s*code|login\s*code|sign[\s-]?in\s*code|authentication\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)/gi
 
 // 关键词之后最多看这么多个字符
 const VERIFICATION_WINDOW = 24

@@ -16,7 +16,7 @@ import (
 // （验证码：857149 / code is 638204 / passcode 5521），营销文里的数字离关键词很远。
 // 和前端 apps/web/src/lib/verification-code.ts 保持一致。
 var (
-	verificationKeywordPattern = regexp.MustCompile(`(?i)(验证码|校验码|动态码|安全码|确认码|verification\s*code|verify\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)`)
+	verificationKeywordPattern = regexp.MustCompile(`(?i)(验证码|校验码|动态码|安全码|确认码|一次性(?:代码|密码|验证码|口令)|临时(?:代码|密码|验证码|口令)|登录(?:代码|密码)|认证代码|verification\s*code|verify\s*code|single[\s-]?use\s*code|security\s*code|login\s*code|sign[\s-]?in\s*code|authentication\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)`)
 	verificationNumericPattern = regexp.MustCompile(`\b(\d{4,8})\b`)
 	verificationMixedPattern   = regexp.MustCompile(`\b([0-9A-Za-z]{5,8})\b`)
 )

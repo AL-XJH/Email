@@ -16,6 +16,19 @@ func TestExtractVerificationCode(t *testing.T) {
 			want:    "857149",
 		},
 		{
+			name:    "Microsoft 一次性代码",
+			subject: "你的一次性代码",
+			text: "xjh@alxjh.cn，你好!\n\n我们已收到你要求获得 Microsoft 帐户所用的一次性代码的申请。\n\n" +
+				"你的一次性代码为: 725432\n\n仅在官方网站或应用上输入此代码。",
+			want: "725432",
+		},
+		{
+			name:    "英文 single-use code",
+			subject: "Your single-use code",
+			text:    "Your single-use code is 638204.",
+			want:    "638204",
+		},
+		{
 			name:    "英文 verification code",
 			subject: "Your GitHub verification code",
 			text:    "Your one-time verification code is 638204. It expires in 15 minutes.",
