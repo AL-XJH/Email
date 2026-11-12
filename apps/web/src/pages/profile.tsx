@@ -1322,7 +1322,7 @@ function ProfileOverview({
         <CardHeader>
           <CardTitle>{uiText("界面设置")}</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           <Field label={uiText("显示模式")}>
             <Select
               value={displayMode}
@@ -1337,7 +1337,6 @@ function ProfileOverview({
               </SelectContent>
             </Select>
           </Field>
-          <Separator />
           <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
             <div className="space-y-1">
               <div className="text-sm font-medium">{uiText("默认显示远程图片")}</div>
