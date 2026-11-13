@@ -56,7 +56,7 @@ export function quotedHtmlComposerValue(
   bodyHtml: string,
   bodyText: string
 ): ComposerValue {
-  const safe = sanitizeQuotedMailHtml(bodyHtml || "")
+  const safe = sanitizeQuotedMailHtml(linkifyBareURLsInHtml(bodyHtml || ""))
   const text = bodyText.trim() ? bodyText : stripHtml(safe)
   const quotedText = text
     .replace(/\r\n/g, "\n")
@@ -67,6 +67,60 @@ export function quotedHtmlComposerValue(
     text: `\n\n${headers}\n\n${quotedText}`,
     html: `<p><br></p><blockquote>${plainTextToHtml(headers)}${safe || plainTextToHtml(text)}</blockquote>`,
   }
+}
+
+// 有些老邮件/转发邮件正文里只有裸 URL，没有 <a>。显示和再次转发时补成真正的链接，
+// 否则收件人只能看到一串不可点的文本。
+const bareURLPattern = /https?:\/\/[^\s<>"']+/g
+
+function linkifyBareURLsInDocument(doc: Document) {
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement
+      if (!parent || parent.closest("a, style, script, textarea, pre, code")) {
+        return NodeFilter.FILTER_REJECT
+      }
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  const nodes: Text[] = []
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text)
+  for (const node of nodes) {
+    const text = node.nodeValue || ""
+    bareURLPattern.lastIndex = 0
+    let match: RegExpExecArray | null
+    let last = 0
+    let changed = false
+    const fragment = doc.createDocumentFragment()
+    while ((match = bareURLPattern.exec(text))) {
+      let url = match[0]
+      const trailing = url.match(/[).,;!?]+$/)
+      if (trailing) url = url.slice(0, -trailing[0].length)
+      if (!url) continue
+      const start = match.index
+      const end = start + url.length
+      if (start > last) fragment.append(text.slice(last, start))
+      const anchor = doc.createElement("a")
+      anchor.setAttribute("href", url)
+      anchor.setAttribute("target", "_blank")
+      anchor.setAttribute("rel", "noopener noreferrer")
+      anchor.textContent = url
+      fragment.append(anchor)
+      last = end
+      changed = true
+    }
+    if (!changed) continue
+    if (last < text.length) fragment.append(text.slice(last))
+    node.replaceWith(fragment)
+  }
+}
+
+export function linkifyBareURLsInHtml(value: string): string {
+  if (!value.trim()) return value
+  const wholeDocument = /<html[\s>]/i.test(value)
+  const doc = new DOMParser().parseFromString(value, "text/html")
+  linkifyBareURLsInDocument(doc)
+  return wholeDocument ? doc.documentElement.outerHTML : doc.body.innerHTML
 }
 
 export function plainTextComposerValue(value: string): ComposerValue {
@@ -227,6 +281,7 @@ function foldMailQuotes(html: string, language: Language) {
     siblings.forEach((node) => node.remove())
     if (hasContentBefore(quote)) fold(quote)
   }
+  linkifyBareURLsInDocument(doc)
   return wholeDocument ? doc.documentElement.outerHTML : doc.body.innerHTML
 }
 
