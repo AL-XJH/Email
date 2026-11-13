@@ -58,6 +58,19 @@ func htmlToPlainText(source string) string {
 	return normalizePlainBody(b.String())
 }
 
+var styleSheetSignalPattern = regexp.MustCompile(`(?i)(@media\s|!important|font-family\s*:|text-decoration\s*:|background-color\s*:|border-collapse\s*:)`)
+
+// looksLikeStyleSheet 判断一段 text/plain 是否其实是 HTML 里的 CSS。
+// 有些发件系统会把 <style> 内容塞进 text/plain 部件；直接用这段做摘要，
+// 列表和 Telegram 推送就会变成 "a:hover { ... } @media ..."。
+func looksLikeStyleSheet(value string) bool {
+	if !strings.ContainsAny(value, "{}") {
+		return false
+	}
+	matches := styleSheetSignalPattern.FindAllString(value, -1)
+	return len(matches) >= 2 || strings.Contains(strings.ToLower(value), "@media")
+}
+
 // normalizePlainBody 压掉多余空白：行尾空格、连续空行、行内连续空格。
 func normalizePlainBody(value string) string {
 	lines := strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n")
@@ -89,6 +102,10 @@ func normalizePlainBody(value string) string {
 func emailPlainBody(bodyText, bodyHTML, snippet string) string {
 	text := normalizePlainBody(bodyText)
 	rich := htmlToPlainText(bodyHTML)
+	if rich != "" && looksLikeStyleSheet(text) {
+		// text/plain 是 CSS 垃圾时，HTML 版本才是真正正文。
+		return rich
+	}
 	switch {
 	case rich == "":
 		if text != "" {

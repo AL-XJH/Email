@@ -1005,6 +1005,11 @@ func (a *App) parseMaildirMessage(raw []byte, fallbackTo string) (storedMessage,
 	}
 	bodyHTML := a.policy.Sanitize(parsed.HTML)
 	bodyText := parsed.Text
+	if strings.TrimSpace(bodyHTML) != "" && looksLikeStyleSheet(bodyText) {
+		// 某些邮件把 CSS 塞进 text/plain；从干净 HTML 重新取正文，
+		// 否则摘要/列表/Telegram 都会显示样式代码。
+		bodyText = htmlToPlainText(bodyHTML)
+	}
 	if strings.TrimSpace(bodyText) == "" {
 		bodyText = stripTags(bodyHTML)
 	}

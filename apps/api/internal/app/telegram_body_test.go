@@ -164,3 +164,20 @@ func TestTelegramMessagePartsCollapsesLinkOnlyNewsletter(t *testing.T) {
 		t.Fatalf("17 条链接应该都在，实际 %d 条", strings.Count(parts[0], ">链接</a>"))
 	}
 }
+
+func TestEmailPlainBodyPrefersHTMLWhenPlainTextIsCSS(t *testing.T) {
+	plain := `body { margin: 0; padding: 0; width: 100% !important; }
+@media screen and (max-width: 600px) { .wrap { width: 100% !important; } }
+Outstanding invoice OD-7K2M9R4Q — $84.00 not yet paid.`
+	html := `<html><body><p>Outstanding invoice OD-7K2M9R4Q — $84.00 not yet paid.</p><p>Complete your renewal payment.</p></body></html>`
+	got := emailPlainBody(plain, html, "")
+	if strings.Contains(got, "@media") || strings.Contains(got, "!important") {
+		t.Fatalf("CSS leaked into plain body: %.200q", got)
+	}
+	if !strings.Contains(got, "Outstanding invoice") || !strings.Contains(got, "Complete your renewal payment") {
+		t.Fatalf("HTML body was not used: %.300q", got)
+	}
+	if snippet := snippetFrom(got, html); strings.Contains(snippet, "@media") {
+		t.Fatalf("CSS leaked into snippet: %q", snippet)
+	}
+}

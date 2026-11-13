@@ -898,6 +898,9 @@ func (a *App) migrate(ctx context.Context) error {
 	if err := a.rebuildHTMLOnlyMessageSnippets(ctx); err != nil {
 		return err
 	}
+	if err := a.rebuildStyleSheetMessageBodies(ctx); err != nil {
+		return err
+	}
 	if err := a.ensureMessageSearchFTS(ctx); err != nil {
 		return err
 	}
@@ -1176,6 +1179,56 @@ func (a *App) migrateMessageAuthentication(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// rebuildStyleSheetMessageBodies 修正旧版本已入库的「text/plain 实际是 CSS」
+// 邮件：用 HTML 重新生成本文和摘要。查询先按 CSS 信号过滤，扫不到就直接返回。
+func (a *App) rebuildStyleSheetMessageBodies(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT id,body_text,body_html FROM messages
+		WHERE body_html<>'' AND trim(body_text)<>''
+		AND (body_text LIKE '%@media%' OR body_text LIKE '%!important%' OR body_text LIKE '%font-family:%' OR body_text LIKE '%border-collapse%')`)
+	if err != nil {
+		return err
+	}
+	type update struct {
+		id, text, snippet string
+	}
+	updates := []update{}
+	for rows.Next() {
+		var id, text, bodyHTML string
+		if err := rows.Scan(&id, &text, &bodyHTML); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if !looksLikeStyleSheet(text) {
+			continue
+		}
+		clean := htmlToPlainText(bodyHTML)
+		if clean == "" {
+			continue
+		}
+		updates = append(updates, update{id: id, text: clean, snippet: snippetFrom(clean, bodyHTML)})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	if len(updates) == 0 {
+		return nil
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body_text=?,snippet=?,updated_at=? WHERE id=?`, item.text, item.snippet, now, item.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (a *App) rebuildHTMLOnlyMessageSnippets(ctx context.Context) error {
