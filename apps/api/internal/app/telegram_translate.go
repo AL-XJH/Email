@@ -68,8 +68,12 @@ func (a *App) translateTelegramPayload(ctx context.Context, payload telegramNoti
 	if !needBody && !needSubject {
 		return payload
 	}
-	if clipped, cut := truncateRunes(body, telegramTranslateMaxRunes); cut {
-		body = clipped
+	bodyRunes := []rune(body)
+	translationTail := ""
+	if len(bodyRunes) > telegramTranslateMaxRunes {
+		body = string(bodyRunes[:telegramTranslateMaxRunes])
+		// 超出翻译上限的部分保留原文，后面照样分段发出去，不能因为翻译丢正文。
+		translationTail = string(bodyRunes[telegramTranslateMaxRunes:])
 	}
 	texts := []string{"", body}
 	if needSubject {
@@ -84,7 +88,7 @@ func (a *App) translateTelegramPayload(ctx context.Context, payload telegramNoti
 		changed = true
 	}
 	if len(out) > 1 && strings.TrimSpace(out[1]) != "" && out[1] != body {
-		payload.Body = out[1]
+		payload.Body = out[1] + translationTail
 		changed = true
 	}
 	if err != nil || !changed {

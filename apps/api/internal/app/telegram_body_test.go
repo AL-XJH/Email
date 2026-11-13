@@ -90,31 +90,67 @@ func TestTelegramMessagePartsRespectsBudget(t *testing.T) {
 		body.WriteString("这是一段用于测试的正文内容，长度大约二十个字。\n")
 	}
 	parts := telegramMessageParts("admin@example.test", "sender@example.test", "长邮件", "", body.String(), 0)
-	if len(parts) != 1 {
-		t.Fatalf("现在只发一条，实际 %d 条", len(parts))
+	if len(parts) < 2 {
+		t.Fatalf("长邮件应该拆成多条等长消息，实际 %d 条", len(parts))
 	}
-	if n := len([]rune(parts[0])); n > telegramNotificationTextBudget+40 {
-		t.Fatalf("推送 %d 字，超过预算 %d", n, telegramNotificationTextBudget)
+	minLen, maxLen := len([]rune(parts[0])), len([]rune(parts[0]))
+	for _, part := range parts {
+		n := len([]rune(part))
+		if n > telegramNotificationTextBudget+40 {
+			t.Fatalf("某条推送 %d 字，超过预算 %d", n, telegramNotificationTextBudget)
+		}
+		if n < minLen {
+			minLen = n
+		}
+		if n > maxLen {
+			maxLen = n
+		}
 	}
-	if !strings.Contains(parts[0], "已截断，完整内容请点「打开邮件」") {
-		t.Fatalf("超长邮件应提示去网页看全文:\n%.160q", parts[0])
+	if maxLen-minLen > 80 {
+		t.Fatalf("各条长度不齐：最短 %d，最长 %d", minLen, maxLen)
+	}
+	if strings.Contains(strings.Join(parts, ""), "已截断") {
+		t.Fatalf("未超过最大分段数时不该截断")
 	}
 	if !strings.HasPrefix(parts[0], "<b>长邮件</b>\n") {
 		t.Fatalf("消息头第一行应该是加粗主题:\n%.120q", parts[0])
 	}
+	if strings.Count(strings.Join(parts, ""), "这是一段用于测试的正文内容") != 400 {
+		t.Fatalf("正文没有完整发出")
+	}
 }
 
-func TestTelegramMessagePartsTruncatesAbsurdBody(t *testing.T) {
-	body := strings.Repeat("很长的正文。", 8000) // 48000 字符
+func TestTelegramMessagePartsSplitsAbsurdBody(t *testing.T) {
+	body := strings.Repeat("A", 48000)
 	parts := telegramMessageParts("m@example.test", "s@example.test", "超长", "", body, 0)
-	if len(parts) != 1 {
-		t.Fatalf("截断后仍是一条，实际 %d 条", len(parts))
+	if len(parts) < 2 {
+		t.Fatalf("超长正文应该拆成多条，实际 %d 条", len(parts))
 	}
-	if n := len([]rune(parts[0])); n > telegramNotificationTextBudget+40 {
-		t.Fatalf("推送 %d 字，超过预算 %d", n, telegramNotificationTextBudget)
+	if len(parts) > telegramNotificationMaxParts {
+		t.Fatalf("分段数 %d 超过上限 %d", len(parts), telegramNotificationMaxParts)
 	}
-	if !strings.Contains(parts[0], "已截断") {
-		t.Fatalf("超长正文应提示已截断:\n%.120q", parts[0][len(parts[0])-80:])
+	minLen, maxLen := len([]rune(parts[0])), len([]rune(parts[0]))
+	joined := strings.Join(parts, "")
+	for _, part := range parts {
+		n := len([]rune(part))
+		if n > telegramNotificationTextBudget+40 {
+			t.Fatalf("某条推送 %d 字，超过预算 %d", n, telegramNotificationTextBudget)
+		}
+		if n < minLen {
+			minLen = n
+		}
+		if n > maxLen {
+			maxLen = n
+		}
+	}
+	if maxLen-minLen > 80 {
+		t.Fatalf("各条长度不齐：最短 %d，最长 %d", minLen, maxLen)
+	}
+	if strings.Count(joined, "A") != 48000 {
+		t.Fatalf("正文没有完整发出，实际 A 数 %d", strings.Count(joined, "A"))
+	}
+	if strings.Contains(joined, "已截断") {
+		t.Fatalf("48k 正文还在分段上限内，不该截断")
 	}
 }
 

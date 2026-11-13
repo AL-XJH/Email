@@ -28,9 +28,12 @@ const (
 	telegramNotificationMaxAttempts  = 10
 	telegramNotificationTextMaxRunes = 4000
 	telegramNotificationTestCooldown = 10 * time.Second
-	// Telegram 单条消息上限是 4096 个字符。这里按平台长度上限截断，
-	// 不再用 650 字的摘要额度；正常邮件整封推完，只有超过 4000 字才截断。
+	// Telegram 单条消息上限是 4096 个字符。这里按平台长度上限切分，
+	// 不再用 650 字的摘要额度；普通邮件整封推送，长邮件拆成多条等长消息。
 	telegramNotificationTextBudget = 4000
+	// 最多拆这么多条，防止超大正文把 Telegram 刷屏；超过才在末尾提示去网页。
+	telegramNotificationMaxParts = 20
+	telegramTruncatedHint        = "…（已截断，完整内容请点「打开邮件」）"
 )
 
 var (
@@ -432,63 +435,126 @@ func telegramHeaderHTML(mailbox, from, subject, code string) string {
 	return first + "\n" + telegramEscapeText(strings.Join(lines[1:], "\n"))
 }
 
-// telegramMessageParts 把邮件拼成推送文本：消息头 + 正文摘要，总长不超过
-// telegramNotificationTextBudget。超长时截断并留一句引导去网页看全文。
+// telegramMessageParts 把邮件拼成多条等长消息：消息头只放第一条，
+// 正文按 Telegram 单条长度上限切成大小接近的几段，整封邮件都发出去，
+// 不再因为字数额度截断。只有邮件长到超过 telegramNotificationMaxParts
+// 时，才在最后补一句去网页看全文。
 func telegramMessageParts(mailbox, from, subject, code, body string, budget int) []string {
 	if budget <= 0 {
 		budget = telegramNotificationTextBudget
 	}
 	header := telegramHeaderHTML(mailbox, from, subject, code)
 	body, links := protectLongLinks(normalizePlainBody(body))
+	body = strings.TrimSpace(body)
 	if body == "" {
 		return []string{header}
 	}
-	const hint = "…（已截断，完整内容请点「打开邮件」）"
-	available := budget - len([]rune(header)) - 2
-	if available < 200 {
-		available = 200
+	headerLen := len([]rune(header))
+	bodyRunes := []rune(body)
+	total := headerLen + 2 + len(bodyRunes)
+	if total <= budget {
+		return []string{header + "\n\n" + telegramChunkHTML(body, links)}
 	}
-	if len([]rune(body)) > available {
-		body, _ = cutPlainText(body, available-len([]rune(hint))-2)
-		body += "\n\n" + hint
+
+	partCount := (total + budget - 1) / budget
+	if partCount > telegramNotificationMaxParts {
+		partCount = telegramNotificationMaxParts
 	}
-	// 预算按纯文本算，但 & < > 转义后会膨胀；按转义后的实际长度再收。
-	for i := 0; i < 8; i++ {
-		if len([]rune(telegramChunkHTML(body, links))) <= available {
-			break
+	if partCount < 2 {
+		partCount = 2
+	}
+	// 让每一段的总长度尽量相同；第一段要给消息头留位置，所以正文少一点。
+	target := (total + partCount - 1) / partCount
+	if target > budget {
+		target = budget
+	}
+	if target < headerLen+3 {
+		target = headerLen + 3
+	}
+
+	parts := make([]string, 0, partCount)
+	remaining := bodyRunes
+	for len(remaining) > 0 && len(parts) < telegramNotificationMaxParts {
+		partLimit := target
+		prefix := ""
+		if len(parts) == 0 {
+			partLimit = target - headerLen - 2
+			prefix = header + "\n\n"
 		}
-		runes := []rune(body)
-		if len(runes) <= 40 {
-			break
+		if partLimit < 80 {
+			partLimit = 80
 		}
-		body, _ = cutPlainText(body, len(runes)*4/5)
+		chunk, rest := takeTelegramChunk(remaining, partLimit)
+		if strings.TrimSpace(chunk) == "" {
+			remaining = rest
+			continue
+		}
+		chunk = strings.TrimSpace(chunk)
+		html := telegramChunkHTML(chunk, links)
+		// 纯文本里的 & < > 转义后会膨胀；只对这种异常段回缩，保证不超过平台上限。
+		for len([]rune(prefix+html)) > budget && len([]rune(chunk)) > 1 {
+			shrink := len([]rune(chunk)) * 4 / 5
+			if shrink < 1 {
+				shrink = 1
+			}
+			var tail []rune
+			chunk, tail = takeTelegramChunk([]rune(chunk), shrink)
+			rest = append(tail, rest...)
+			chunk = strings.TrimSpace(chunk)
+			html = telegramChunkHTML(chunk, links)
+		}
+		parts = append(parts, prefix+html)
+		remaining = rest
 	}
-	return []string{header + "\n\n" + telegramChunkHTML(body, links)}
+	if len(remaining) > 0 {
+		if len(parts) == 0 {
+			parts = append(parts, header)
+		}
+		parts[len(parts)-1] += "\n\n" + telegramTruncatedHint
+	}
+	return parts
 }
 
-// cutPlainText 按 rune 数切一段，尽量落在换行处（不早于 60%），返回 (本段, 余下)。
-func cutPlainText(value string, max int) (string, string) {
-	runes := []rune(value)
-	if len(runes) <= max {
-		return strings.TrimSpace(value), ""
+// takeTelegramChunk 按 rune 数切一段，返回本段和剩余部分。
+// 切点如果落在长链接占位符内部，就退到占位符开头，避免把 \x01L0\x01 劈坏。
+func takeTelegramChunk(value []rune, max int) (string, []rune) {
+	if max <= 0 {
+		max = 1
+	}
+	if len(value) <= max {
+		return strings.TrimSpace(string(value)), nil
 	}
 	cut := max
-	for i := max - 1; i > max*3/5; i-- {
-		if runes[i] == '\n' {
-			cut = i
+	// 切点别落在一个链接占位符里。
+	lastSentinel := -1
+	for i := cut - 1; i >= 0; i-- {
+		if value[i] == '\x01' {
+			lastSentinel = i
 			break
 		}
 	}
-	// 别把一条长链接从中间劈开：切点落在一个 token 内部时，往后挪到下一个空白。
-	if cut > 0 && cut < len(runes) && !unicode.IsSpace(runes[cut]) && !unicode.IsSpace(runes[cut-1]) {
-		for i := cut; i < len(runes) && i < cut+500; i++ {
-			if unicode.IsSpace(runes[i]) {
-				cut = i
+	if lastSentinel >= 0 && lastSentinel+2 < len(value) && value[lastSentinel+1] == 'L' {
+		for i := lastSentinel + 2; i < len(value) && i < lastSentinel+12; i++ {
+			if value[i] == '\x01' {
+				if cut < i {
+					cut = lastSentinel
+				}
+				break
+			}
+			if !unicode.IsDigit(value[i]) {
 				break
 			}
 		}
 	}
-	return strings.TrimSpace(string(runes[:cut])), strings.TrimSpace(string(runes[cut:]))
+	if cut <= 0 {
+		cut = max
+	}
+	chunk := strings.TrimSpace(string(value[:cut]))
+	rest := value[cut:]
+	for len(rest) > 0 && unicode.IsSpace(rest[0]) {
+		rest = rest[1:]
+	}
+	return chunk, rest
 }
 
 func (a *App) telegramMessageURL(mailboxID, messageID string) string {
