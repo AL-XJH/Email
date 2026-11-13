@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -257,6 +259,39 @@ func (a *App) handleTestTelegramSettings(w http.ResponseWriter, r *http.Request)
 	}
 	_, _ = a.db.ExecContext(r.Context(), `UPDATE telegram_notification_settings SET last_delivered_at=?,last_error='',updated_at=? WHERE user_id=?`, nowText, nowText, user.ID)
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleResendTelegramNotification 手动把某一封已有邮件重新推进 Telegram 队列。
+// 只允许邮箱主人、且具备收件规则权限；事件 key 用一次性 ruleID，避免与原
+// 规则已经发过的 outbox 行冲突。
+func (a *App) handleResendTelegramNotification(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(a.config().NotificationSecretKey) == "" {
+		respondError(w, http.StatusServiceUnavailable, "Telegram notifications are not available")
+		return
+	}
+	user := currentUser(r)
+	messageID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if messageID == "" {
+		badRequest(w, errors.New("message id is required"))
+		return
+	}
+	var mailboxID string
+	err := a.db.QueryRowContext(r.Context(), `SELECT m.mailbox_id FROM messages m
+		JOIN mailboxes mb ON mb.id=m.mailbox_id
+		WHERE m.id=? AND mb.user_id=?`, messageID, user.ID).Scan(&mailboxID)
+	if errors.Is(err, sql.ErrNoRows) {
+		respondError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load message")
+		return
+	}
+	if err := a.enqueueTelegramNotification(r.Context(), user.ID, mailboxID, messageID, newID("manual")); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to enqueue Telegram notification")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) telegramSettingsSnapshot(ctx context.Context, userID string) (TelegramSettings, error) {

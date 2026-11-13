@@ -132,6 +132,7 @@ func (a *App) Router() http.Handler {
 			r.With(a.requirePermission(PermissionMailRead)).Get("/mail/messages/{id}", a.handleMailMessage)
 			r.With(a.requirePermission(PermissionMailRead)).Get("/mail/messages/{id}/thread", a.handleMailMessageThread)
 			r.With(a.requirePermission(PermissionMailRead)).Post("/mail/messages/{id}/translate", a.handleTranslateMailMessage)
+			r.With(a.requirePermission(PermissionMailRules)).Post("/mail/messages/{id}/telegram", a.handleResendTelegramNotification)
 			r.With(a.requirePermission(PermissionMailRead), a.requireExternalIMAPEnabled).Get("/mail/external-accounts", a.handleMailExternalAccounts)
 			r.With(a.requirePermission(PermissionMailRead), a.requireExternalIMAPEnabled).Get("/mail/external-accounts/{id}/folders", a.handleExternalIMAPFolders)
 			r.With(a.requirePermission(PermissionMailRead), a.requireExternalIMAPEnabled).Get("/mail/external-accounts/{id}/messages", a.handleExternalIMAPMessages)
