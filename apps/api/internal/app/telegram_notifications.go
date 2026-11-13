@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -39,6 +40,7 @@ const (
 var (
 	telegramBotTokenPattern = regexp.MustCompile(`^[0-9]{5,20}:[A-Za-z0-9_-]{20,100}$`)
 	telegramChatIDPattern   = regexp.MustCompile(`^(?:-?[0-9]{1,20}|@[A-Za-z0-9_]{5,32})$`)
+	telegramHTMLTagPattern  = regexp.MustCompile(`<[^>]*>`)
 )
 
 type TelegramSettings struct {
@@ -435,6 +437,14 @@ func telegramHeaderHTML(mailbox, from, subject, code string) string {
 	return first + "\n" + telegramEscapeText(strings.Join(lines[1:], "\n"))
 }
 
+// telegramVisibleRuneLen 数 Telegram 解析后真正显示出来的字符：
+// 去掉 HTML 标签、还原 &amp; 这类实体。Telegram 的 4096 上限按这个长度算，
+// 不是按我们拼出来的原始 HTML 长度算。
+func telegramVisibleRuneLen(value string) int {
+	plain := telegramHTMLTagPattern.ReplaceAllString(value, "")
+	return len([]rune(html.UnescapeString(plain)))
+}
+
 // telegramMessageParts 把邮件拼成多条等长消息：消息头只放第一条，
 // 正文按 Telegram 单条长度上限切成大小接近的几段，整封邮件都发出去，
 // 不再因为字数额度截断。只有邮件长到超过 telegramNotificationMaxParts
@@ -449,9 +459,9 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 	if body == "" {
 		return []string{header}
 	}
-	headerLen := len([]rune(header))
+	headerLen := telegramVisibleRuneLen(header)
 	bodyRunes := []rune(body)
-	total := headerLen + 2 + len(bodyRunes)
+	total := headerLen + 2 + telegramVisibleRuneLen(telegramChunkHTML(body, links))
 	if total <= budget {
 		return []string{header + "\n\n" + telegramChunkHTML(body, links)}
 	}
@@ -491,8 +501,8 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 		}
 		chunk = strings.TrimSpace(chunk)
 		html := telegramChunkHTML(chunk, links)
-		// 纯文本里的 & < > 转义后会膨胀；只对这种异常段回缩，保证不超过平台上限。
-		for len([]rune(prefix+html)) > budget && len([]rune(chunk)) > 1 {
+		// 只按 Telegram 解析后的可见字符数回缩，HTML 标签和实体本身不计入上限。
+		for telegramVisibleRuneLen(prefix+html) > budget && len([]rune(chunk)) > 1 {
 			shrink := len([]rune(chunk)) * 4 / 5
 			if shrink < 1 {
 				shrink = 1
