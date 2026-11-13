@@ -456,7 +456,7 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 	}
 	headerLen := telegramVisibleRuneLen(header)
 	hintLen := telegramVisibleRuneLen(telegramTruncatedHint)
-	available := budget - headerLen - 2
+	available := budget - headerLen - 4
 	if available < hintLen+20 {
 		available = hintLen + 20
 	}
@@ -465,7 +465,7 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 	}
 	bodyRunes := []rune(body)
 	if len(bodyRunes) > available {
-		cutLen := available - hintLen - 2
+		cutLen := available - hintLen - 3
 		if cutLen < 1 {
 			cutLen = 1
 		}
@@ -502,6 +502,15 @@ func takeTelegramChunk(value []rune, max int) (string, []rune) {
 				break
 			}
 			if !unicode.IsDigit(value[i]) {
+				break
+			}
+		}
+	}
+	// 200 字截断时尽量停在空白处，别把 "84.00 n" 这种半个单词留下。
+	if cut > 0 && cut < len(value) && !unicode.IsSpace(value[cut]) {
+		for i := cut - 1; i > cut*4/5 && i > 0; i-- {
+			if unicode.IsSpace(value[i]) {
+				cut = i
 				break
 			}
 		}
