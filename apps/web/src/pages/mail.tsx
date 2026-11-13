@@ -177,6 +177,18 @@ type PendingConfirm = {
   confirmText: string
   onConfirm: () => void
 }
+function showSystemNotification(title: string, options: NotificationOptions): Notification | null {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return null
+  try {
+    return new Notification(title, options)
+  } catch {
+    // 移动端 Chrome 只允许 ServiceWorkerRegistration.showNotification，
+    // 直接 new Notification 会抛 TypeError 并让整页进入错误边界。
+    // 应用内 toast 已经提示，系统通知失败不能影响页面。
+    return null
+  }
+}
+
 type MailNotificationState = { latestId: string; latestReceivedAt: string }
 type MessageContextMenuState = { message: MailMessage; x: number; y: number }
 type SidebarContextMenuState = { item: MailMenuItem; x: number; y: number }
@@ -1210,7 +1222,7 @@ export function MailPage() {
         if (ctx.state === "suspended") void ctx.resume()
       }
       if ("Notification" in window && Notification.permission === "default") {
-        void Notification.requestPermission()
+        void Notification.requestPermission().catch(() => undefined)
       }
     }
     window.addEventListener("pointerdown", unlock, { once: true })
@@ -1275,11 +1287,11 @@ export function MailPage() {
       tabIndex: 0,
     })
     playIncomingMailSound(mailAudioContextRef)
-    if ("Notification" in window && Notification.permission === "granted") {
-      const notification = new Notification(uiText(title), {
-        body: uiText(description),
-        tag: `lanqin-mail-${activeMailboxId}`,
-      })
+    const notification = showSystemNotification(uiText(title), {
+      body: uiText(description),
+      tag: `lanqin-mail-${activeMailboxId}`,
+    })
+    if (notification) {
       notification.onclick = () => {
         window.focus()
         openFirstMessage()
