@@ -27,14 +27,11 @@ import (
 const (
 	defaultTelegramAPIBaseURL        = "https://api.telegram.org"
 	telegramNotificationMaxAttempts  = 10
-	telegramNotificationTextMaxRunes = 4000
+	telegramNotificationTextMaxRunes = 200
 	telegramNotificationTestCooldown = 10 * time.Second
-	// Telegram 单条消息上限是 4096 个字符。这里按平台长度上限切分，
-	// 不再用 650 字的摘要额度；普通邮件整封推送，长邮件拆成多条等长消息。
-	telegramNotificationTextBudget = 4000
-	// 最多拆这么多条，防止超大正文把 Telegram 刷屏；超过才在末尾提示去网页。
-	telegramNotificationMaxParts = 20
-	telegramTruncatedHint        = "…（已截断，完整内容请点「打开邮件」）"
+	// 推送总长度（消息头 + 正文）最多 200 字；超出部分截断并提示打开邮件。
+	telegramNotificationTextBudget = 200
+	telegramTruncatedHint          = "…（已截断，完整内容请点「打开邮件」）"
 )
 
 var (
@@ -445,10 +442,8 @@ func telegramVisibleRuneLen(value string) int {
 	return len([]rune(html.UnescapeString(plain)))
 }
 
-// telegramMessageParts 把邮件拼成多条等长消息：消息头只放第一条，
-// 正文按 Telegram 单条长度上限切成大小接近的几段，整封邮件都发出去，
-// 不再因为字数额度截断。只有邮件长到超过 telegramNotificationMaxParts
-// 时，才在最后补一句去网页看全文。
+// telegramMessageParts 把邮件拼成一条推送：消息头 + 正文，总长度不超过
+// telegramNotificationTextBudget（默认 200 字）。超出时截断并提示打开邮件。
 func telegramMessageParts(mailbox, from, subject, code, body string, budget int) []string {
 	if budget <= 0 {
 		budget = telegramNotificationTextBudget
@@ -460,69 +455,24 @@ func telegramMessageParts(mailbox, from, subject, code, body string, budget int)
 		return []string{header}
 	}
 	headerLen := telegramVisibleRuneLen(header)
+	hintLen := telegramVisibleRuneLen(telegramTruncatedHint)
+	available := budget - headerLen - 2
+	if available < hintLen+20 {
+		available = hintLen + 20
+	}
+	if available < 40 {
+		available = 40
+	}
 	bodyRunes := []rune(body)
-	total := headerLen + 2 + telegramVisibleRuneLen(telegramChunkHTML(body, links))
-	if total <= budget {
-		return []string{header + "\n\n" + telegramChunkHTML(body, links)}
-	}
-
-	partCount := (total + budget - 1) / budget
-	if partCount > telegramNotificationMaxParts {
-		partCount = telegramNotificationMaxParts
-	}
-	if partCount < 2 {
-		partCount = 2
-	}
-	// 让每一段的总长度尽量相同；第一段要给消息头留位置，所以正文少一点。
-	target := (total + partCount - 1) / partCount
-	if target > budget {
-		target = budget
-	}
-	if target < headerLen+3 {
-		target = headerLen + 3
-	}
-
-	parts := make([]string, 0, partCount)
-	remaining := bodyRunes
-	for len(remaining) > 0 && len(parts) < telegramNotificationMaxParts {
-		partLimit := target
-		prefix := ""
-		if len(parts) == 0 {
-			partLimit = target - headerLen - 2
-			prefix = header + "\n\n"
+	if len(bodyRunes) > available {
+		cutLen := available - hintLen - 2
+		if cutLen < 1 {
+			cutLen = 1
 		}
-		if partLimit < 80 {
-			partLimit = 80
-		}
-		chunk, rest := takeTelegramChunk(remaining, partLimit)
-		if strings.TrimSpace(chunk) == "" {
-			remaining = rest
-			continue
-		}
-		chunk = strings.TrimSpace(chunk)
-		html := telegramChunkHTML(chunk, links)
-		// 只按 Telegram 解析后的可见字符数回缩，HTML 标签和实体本身不计入上限。
-		for telegramVisibleRuneLen(prefix+html) > budget && len([]rune(chunk)) > 1 {
-			shrink := len([]rune(chunk)) * 4 / 5
-			if shrink < 1 {
-				shrink = 1
-			}
-			var tail []rune
-			chunk, tail = takeTelegramChunk([]rune(chunk), shrink)
-			rest = append(tail, rest...)
-			chunk = strings.TrimSpace(chunk)
-			html = telegramChunkHTML(chunk, links)
-		}
-		parts = append(parts, prefix+html)
-		remaining = rest
+		chunk, _ := takeTelegramChunk(bodyRunes, cutLen)
+		body = chunk + "\n\n" + telegramTruncatedHint
 	}
-	if len(remaining) > 0 {
-		if len(parts) == 0 {
-			parts = append(parts, header)
-		}
-		parts[len(parts)-1] += "\n\n" + telegramTruncatedHint
-	}
-	return parts
+	return []string{header + "\n\n" + telegramChunkHTML(body, links)}
 }
 
 // takeTelegramChunk 按 rune 数切一段，返回本段和剩余部分。
