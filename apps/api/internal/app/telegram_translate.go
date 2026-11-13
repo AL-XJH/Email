@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	// 推送正文最多翻这么多字：最终只发 650 字，翻到尾巴上纯属浪费上游配额和时间。
-	telegramTranslateMaxRunes = 1200
+	// 推送正文最多翻这么多字：最终按 Telegram 单条长度上限发送，
+	// 超过 4000 字的部分本来也到不了用户手里，不用浪费上游配额。
+	telegramTranslateMaxRunes = telegramNotificationTextBudget
 	// 翻译最多等这么久；超时就发原文，不能把推送队列堵死。
 	telegramTranslateTimeout = 15 * time.Second
 )

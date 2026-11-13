@@ -26,11 +26,11 @@ import (
 const (
 	defaultTelegramAPIBaseURL        = "https://api.telegram.org"
 	telegramNotificationMaxAttempts  = 10
-	telegramNotificationTextMaxRunes = 3500
+	telegramNotificationTextMaxRunes = 4000
 	telegramNotificationTestCooldown = 10 * time.Second
-	// 一条推送最多这么多字（消息头 + 正文）。之前是 1300，用户反馈还是太长，
-	// 再砍一半到 650；更长的邮件只推开头，剩下的点「打开邮件」看。
-	telegramNotificationTextBudget = 650
+	// Telegram 单条消息上限是 4096 个字符。这里按平台长度上限截断，
+	// 不再用 650 字的摘要额度；正常邮件整封推完，只有超过 4000 字才截断。
+	telegramNotificationTextBudget = 4000
 )
 
 var (

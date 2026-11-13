@@ -70,6 +70,20 @@ func TestTelegramMessagePartsShortBodySingleMessage(t *testing.T) {
 	}
 }
 
+func TestTelegramMessagePartsKeepsFullBodyBelowTelegramLimit(t *testing.T) {
+	body := strings.Repeat("这是一段正常的邮件正文。", 80) // 约 960 字，旧 650 预算会截断
+	parts := telegramMessageParts("admin@example.test", "sender@example.test", "完整正文", "", body, 0)
+	if len(parts) != 1 {
+		t.Fatalf("正常邮件应该一条发完，实际 %d 条", len(parts))
+	}
+	if strings.Contains(parts[0], "已截断") {
+		t.Fatalf("未超过 Telegram 长度上限时不该截断，实际末尾: %q", parts[0][len(parts[0])-80:])
+	}
+	if !strings.Contains(parts[0], body) {
+		t.Fatalf("正文不完整，期望 %d 字", len([]rune(body)))
+	}
+}
+
 func TestTelegramMessagePartsRespectsBudget(t *testing.T) {
 	var body strings.Builder
 	for i := 0; i < 400; i++ {
