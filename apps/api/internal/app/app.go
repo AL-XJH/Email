@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"lanqin-email-api/internal/backup/storage"
 )
 
 // config 返回当前配置快照。配置在运行期只有「管理员改设置」这一处会整体替换，
@@ -60,34 +62,59 @@ func (a *App) updateConfig(mutate func(cfg *Config)) {
 	a.setConfig(next)
 }
 
+// newAppWithConfigOnly builds an App shell for offline restore helpers that
+// need config and clock but must not start workers or open the main database.
+func newAppWithConfigOnly(cfg Config) *App {
+	a := &App{}
+	a.setConfig(cfg)
+	a.setNow(time.Now)
+	return a
+}
+
 type App struct {
-	collectionMu       sync.Mutex
-	cfgPtr             atomic.Pointer[Config]
-	db                 *sql.DB
-	log                *slog.Logger
-	nowFn              atomic.Pointer[func() time.Time]
-	policy             *HTMLPolicy
-	workerCancel       context.CancelFunc
-	workerWG           sync.WaitGroup
-	health             *appHealthState
-	maildirHealth      *maildirSyncHealthTracker
-	maildirSyncMu      sync.Mutex
-	maildirDirs        map[string]maildirDirectorySignature
-	maildirRuns        uint64
-	syncEventsMu       sync.Mutex
-	syncEventClients   map[chan struct{}]string
-	sseConnections     map[string]int
-	externalIMAP       externalIMAPClientFactory
-	linuxDoOAuth       linuxDoOAuthClient
-	telegramAPIBaseURL string
-	messageSearchFTS   bool
-	workerID           string
+	collectionMu                   sync.Mutex
+	cfgPtr                         atomic.Pointer[Config]
+	db                             *sql.DB
+	log                            *slog.Logger
+	nowFn                          atomic.Pointer[func() time.Time]
+	policy                         *HTMLPolicy
+	workerCancel                   context.CancelFunc
+	workerWG                       sync.WaitGroup
+	health                         *appHealthState
+	maildirHealth                  *maildirSyncHealthTracker
+	maildirSyncMu                  sync.Mutex
+	maildirDirs                    map[string]maildirDirectorySignature
+	maildirRuns                    uint64
+	syncEventsMu                   sync.Mutex
+	syncEventClients               map[chan struct{}]string
+	sseConnections                 map[string]int
+	externalIMAP                   externalIMAPClientFactory
+	linuxDoOAuth                   linuxDoOAuthClient
+	telegramAPIBaseURL             string
+	messageSearchFTS               bool
+	workerID                       string
+	backupWake                     chan struct{}
+	backupRestoreRequests          chan backupRestoreExecution
+	backupDownloadFile             func(context.Context, storage.Destination, string, string, string, storage.Options, storage.Credentials) (storage.DownloadReceipt, error)
+	backupDiscoverIndexes          func(context.Context, storage.Destination, []byte, storage.Credentials) ([]storage.RecoveryIndexEntry, error)
+	backupDriveOAuthClient         *http.Client
+	backupPrepareSnapshot          func(context.Context, Config, string, OnlineBackupOptions) (*PreparedOnlineBackup, error)
+	backupUploadFile               func(context.Context, *os.File, string, storage.Config, storage.Options, func(string) (storage.Credentials, error)) (storage.Report, error)
+	backupVerifyRemote             func(context.Context, storage.Destination, string, string, int64, storage.Credentials) error
+	backupDeleteRemote             func(context.Context, storage.Destination, string, string, int64, storage.Credentials, func(context.Context) error) error
+	backupAbortTransfer            func(context.Context, storage.Destination, storage.Checkpoint, string, int64, storage.Credentials) error
+	backupMaintenanceClientFactory func(string) backupMaintenanceClient
 }
 
 func New(cfg Config, logger *slog.Logger) (*App, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	cfg = normalizeDatabaseConfig(cfg)
+	if err := checkRestoreActivation(cfg.DataDir); err != nil {
+		return nil, err
+	}
+
 	if strings.TrimSpace(cfg.SiteTitle) == "" {
 		cfg.SiteTitle = "LanQin Email"
 	}
@@ -112,6 +139,15 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	a.setConfig(cfg)
 	a.setNow(time.Now)
 	a.externalIMAP = a
+	a.backupWake = make(chan struct{}, 1)
+	a.backupRestoreRequests = make(chan backupRestoreExecution, 1)
+	a.backupDownloadFile = storage.Download
+	a.backupDiscoverIndexes = storage.DiscoverRecoveryIndexes
+	a.backupUploadFile = storage.UploadFile
+	a.backupVerifyRemote = storage.VerifyRemote
+	a.backupDeleteRemote = storage.DeleteVerifiedGuarded
+	a.backupAbortTransfer = storage.AbortCheckpoint
+	a.backupPrepareSnapshot = PrepareOnlineBackup
 	a.linuxDoOAuth = newLinuxDoHTTPClient()
 	if err := a.configureSQLite(context.Background()); err != nil {
 		db.Close()
@@ -120,6 +156,12 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if cfg.DBDriver != databaseDriverSQLite {
+		if err := checkNativeRestoreActivation(context.Background(), db, cfg.DBDriver, cfg.DataDir, cfg.MaildirRoot); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	if err := a.ensureDefaultMailTemplates(context.Background()); err != nil {
 		db.Close()
@@ -148,6 +190,10 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	a.startWorker(func() { a.externalIMAPWorker(workerCtx) })
 	a.startWorker(func() { a.smtpEventsCleanupWorker(workerCtx) })
 	a.startWorker(func() { a.sessionCleanupWorker(workerCtx) })
+	if _, err := a.backupCipher(); err == nil {
+		a.startWorker(func() { a.backupUploadWorker(workerCtx) })
+		a.startWorker(func() { a.backupScheduleWorker(workerCtx) })
+	}
 	if strings.TrimSpace(a.config().StatusWebhookURL) != "" {
 		a.startWorker(func() { a.statusWebhookWorker(workerCtx) })
 	}
@@ -197,6 +243,14 @@ func (a *App) Close() error {
 	case <-done:
 	case <-time.After(15 * time.Second):
 		a.log.Warn("timed out waiting for background workers to stop", "timeout", "15s")
+	}
+	for a.backupRestoreRequests != nil {
+		select {
+		case execution := <-a.backupRestoreRequests:
+			clear(execution.Identity)
+		default:
+			return a.db.Close()
+		}
 	}
 	return a.db.Close()
 }

@@ -12,6 +12,12 @@ const defaultMaildirScanSeconds = 5
 type Config struct {
 	Addr                            string
 	DBPath                          string
+	DBDriver                        string
+	DBDSN                           string
+	DBMaxOpenConns                  int
+	DBMaxIdleConns                  int
+	DBConnMaxLifetimeSeconds        int
+	DBConnMaxIdleTimeSeconds        int
 	DBConnectTimeoutSeconds         int
 	DataDir                         string
 	CookieName                      string
@@ -66,6 +72,15 @@ type Config struct {
 	MailTranslateEnabled            bool
 	MailTranslateMaxChars           int
 	NotificationSecretKey           string
+	BackupSecretKey                 string
+	BackupArtifactDir               string
+	BackupWorkspace                 string
+	BackupRestoreDir                string
+	BackupRecipient                 string
+	BackupDriveClientID             string
+	BackupDriveClientSecret         string
+	BackupNetworkAllowlistJSON      string
+	BackupMaintenanceSocket         string
 	DeliveryWebhookSecret           string
 	StatusWebhookURL                string
 	StatusWebhookSecret             string
@@ -77,6 +92,12 @@ func LoadConfig() Config {
 	return Config{
 		Addr:                            getenv("LANQIN_ADDR", ":8080"),
 		DBPath:                          getenv("LANQIN_DB_PATH", filepath.Join(dataDir, "lanqin.db")),
+		DBDriver:                        getenv("LANQIN_DB_DRIVER", databaseDriverSQLite),
+		DBDSN:                           getenv("LANQIN_DB_DSN", ""),
+		DBMaxOpenConns:                  getenvInt("LANQIN_DB_MAX_OPEN_CONNS", 20),
+		DBMaxIdleConns:                  getenvInt("LANQIN_DB_MAX_IDLE_CONNS", 10),
+		DBConnMaxLifetimeSeconds:        getenvInt("LANQIN_DB_CONN_MAX_LIFETIME_SECONDS", 1800),
+		DBConnMaxIdleTimeSeconds:        getenvInt("LANQIN_DB_CONN_MAX_IDLE_TIME_SECONDS", 300),
 		DBConnectTimeoutSeconds:         getenvInt("LANQIN_DB_CONNECT_TIMEOUT_SECONDS", 10),
 		DataDir:                         dataDir,
 		CookieName:                      getenv("LANQIN_COOKIE_NAME", "lanqin_session"),
@@ -131,6 +152,15 @@ func LoadConfig() Config {
 		MailTranslateEnabled:            getenvBool("LANQIN_MAIL_TRANSLATE_ENABLED", true),
 		MailTranslateMaxChars:           getenvInt("LANQIN_MAIL_TRANSLATE_MAX_CHARS", 8000),
 		NotificationSecretKey:           getenv("LANQIN_NOTIFICATION_SECRET_KEY", ""),
+		BackupSecretKey:                 getenv("LANQIN_BACKUP_SECRET_KEY", ""),
+		BackupArtifactDir:               getenv("LANQIN_BACKUP_ARTIFACT_DIR", ""),
+		BackupWorkspace:                 getenv("LANQIN_BACKUP_WORKSPACE", ""),
+		BackupRestoreDir:                getenv("LANQIN_BACKUP_RESTORE_DIR", ""),
+		BackupRecipient:                 getenv("LANQIN_BACKUP_RECIPIENT", ""),
+		BackupDriveClientID:             getenv("LANQIN_BACKUP_DRIVE_CLIENT_ID", ""),
+		BackupDriveClientSecret:         getenv("LANQIN_BACKUP_DRIVE_CLIENT_SECRET", ""),
+		BackupNetworkAllowlistJSON:      getenv("LANQIN_BACKUP_NETWORK_ALLOWLIST_JSON", ""),
+		BackupMaintenanceSocket:         getenv("LANQIN_BACKUP_MAINTENANCE_SOCKET", ""),
 		DeliveryWebhookSecret:           getenv("LANQIN_DELIVERY_WEBHOOK_SECRET", ""),
 		StatusWebhookURL:                getenv("LANQIN_STATUS_WEBHOOK_URL", ""),
 		StatusWebhookSecret:             getenv("LANQIN_STATUS_WEBHOOK_SECRET", ""),

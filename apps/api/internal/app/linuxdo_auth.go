@@ -243,6 +243,10 @@ func (a *App) handleLinuxDoLinkStart(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
 			return
 		}
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, r.RemoteAddr); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "密码或双因素验证码错误")
 		return
 	}
@@ -614,6 +618,10 @@ func (a *App) handleLinuxDoUnlink(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
 			return
 		}
+		if recordErr := a.recordReauthFailure(r.Context(), user.Email, r.RemoteAddr); errors.Is(recordErr, errReauthRateLimited) {
+			respondError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+			return
+		}
 		respondError(w, http.StatusUnauthorized, "密码或双因素验证码错误")
 		return
 	}
@@ -676,9 +684,6 @@ func (a *App) verifyLinuxDoReauthentication(ctx context.Context, userID, passwor
 		return err
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
-		if err := a.recordReauthFailure(ctx, email, clientIP); err != nil {
-			return err
-		}
 		return errors.New("invalid password")
 	}
 	plainSecret, err := a.decryptTOTPSecret(secret)
@@ -686,9 +691,6 @@ func (a *App) verifyLinuxDoReauthentication(ctx context.Context, userID, passwor
 		return err
 	}
 	if intBool(enabled) && !a.consumeTOTP(ctx, userID, plainSecret, code) {
-		if err := a.recordReauthFailure(ctx, email, clientIP); err != nil {
-			return err
-		}
 		return errors.New("invalid two-factor code")
 	}
 	if err := a.clearLoginAccountFailures(ctx, email); err != nil {

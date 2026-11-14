@@ -5874,3 +5874,13 @@ func clearMailboxMessagesForTest(t *testing.T, a *App, mailboxID string) {
 		t.Fatal(err)
 	}
 }
+
+// cloneTestApp creates a second App shell sharing the test database and clock.
+// It intentionally does not call New, so no workers or migrations start.
+func cloneTestApp(a *App) *App {
+	n := newAppWithConfigOnly(*a.config())
+	n.db = a.db
+	n.log = a.log
+	n.setNow(a.now)
+	return n
+}
