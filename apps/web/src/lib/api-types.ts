@@ -278,6 +278,7 @@ export type MailMessage = {
   sentAt: string
   receivedAt: string
   snippet: string
+  verificationCode?: string
   bodyText?: string
   bodyHtml?: string
   isRead: boolean

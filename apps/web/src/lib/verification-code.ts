@@ -9,6 +9,13 @@
 const VERIFICATION_KEYWORD =
   /(验证码|校验码|动态码|安全码|确认码|一次性(?:代码|密码|验证码|口令)|临时(?:代码|密码|验证码|口令)|登录(?:代码|密码)|认证代码|verification\s*code|verify\s*code|single[\s-]?use\s*code|security\s*code|login\s*code|sign[\s-]?in\s*code|authentication\s*code|passcode|one[\s-]?time\s*(?:code|password)|\botp\b|\bcode\b)/gi
 
+// 有些服务把说明写成一句话，验证码放在句末：
+// "Please enter the code to verify your account. 264248"
+// 通用窗口只有 24 字，够不到句末数字；只在明确的
+// enter ... code ... verify/account 结构里放宽窗口，避免营销邮件误判。
+const VERIFICATION_INSTRUCTION =
+  /\b(?:enter|input|type|use|submit)\b[^\n]{0,40}?\bcode\b[^\n]{0,80}?\b(?:verify|verification|confirm|account|login|sign[\s-]?in)\b[^\n]{0,40}?\b(\d{4,8})\b/i
+
 // 关键词之后最多看这么多个字符
 const VERIFICATION_WINDOW = 24
 
@@ -39,6 +46,8 @@ export function extractVerificationCode(subject: string, text: string): string {
   if (!body) return ""
   for (const line of body.split(/\r?\n/)) {
     if (!/\d/.test(line)) continue
+    const instruction = line.match(VERIFICATION_INSTRUCTION)
+    if (instruction) return instruction[1]
     VERIFICATION_KEYWORD.lastIndex = 0
     let keyword: RegExpExecArray | null
     while ((keyword = VERIFICATION_KEYWORD.exec(line))) {

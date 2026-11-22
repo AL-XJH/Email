@@ -459,7 +459,7 @@ func (a *App) handleMailThreads(w http.ResponseWriter, r *http.Request) {
 	threadArgs = append(threadArgs, shareArgs...)
 	threadArgs = append(threadArgs, anchorShareArgs...)
 	threadArgs = append(threadArgs, limit)
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id<>'' AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND m2.thread_id<>'' AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id)`+anchorShareClause+` ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC LIMIT ?`, threadArgs...)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id<>'' AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` AND m.id=(SELECT m2.id FROM messages m2 WHERE m2.mailbox_id=m.mailbox_id AND m2.thread_id=m.thread_id AND m2.thread_id<>'' AND NOT EXISTS (SELECT 1 FROM external_imap_messages em2 WHERE em2.local_message_id=m2.id)`+anchorShareClause+` ORDER BY m2.received_at DESC,m2.id DESC LIMIT 1) ORDER BY m.received_at DESC,m.id DESC LIMIT ?`, threadArgs...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load threads")
 		return
@@ -504,7 +504,7 @@ func (a *App) handleMailMessageThread(w http.ResponseWriter, r *http.Request) {
 	}
 	shareClause, shareArgs := a.mailShareVisibilitySQL(access, "m")
 	threadArgs := append([]any{msg.MailboxID, msg.ThreadID}, shareArgs...)
-	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` ORDER BY m.received_at,m.id`, threadArgs...)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id AND NOT EXISTS (SELECT 1 FROM external_imap_messages emt WHERE emt.local_message_id=mt.id)) FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE m.mailbox_id=? AND m.thread_id=? AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`+shareClause+` ORDER BY m.received_at,m.id`, threadArgs...)
 	if err != nil {
 		respondError(w, 500, "failed to load thread")
 		return
@@ -623,7 +623,7 @@ func (a *App) respondMailMessageListInternal(w http.ResponseWriter, r *http.Requ
 		args = append(args, cursorReceivedAt, cursorID)
 	}
 	args = append(args, limit+1)
-	query := `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id)
+	query := `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id)
 		FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE ` + where + ` ORDER BY m.received_at DESC,m.id DESC LIMIT ?`
 	if offset > 0 {
 		query += ` OFFSET ?`
@@ -3190,7 +3190,8 @@ func scanMessageSummary(row messageSummaryScanner) (MailMessage, error) {
 	var msg MailMessage
 	var toJSON, ccJSON, bccJSON, sent, received string
 	var read, starred, hasAtt int
-	err := row.Scan(&msg.ID, &msg.MailboxID, &msg.FolderID, &msg.Folder, &msg.MessageUID, &msg.IMAPUID, &msg.IMAPModSeq, &msg.MessageID, &msg.ThreadID, &msg.Subject, &msg.From, &msg.FromName, &toJSON, &ccJSON, &bccJSON, &sent, &received, &msg.Snippet, &read, &starred, &hasAtt, &msg.SizeBytes, &msg.ThreadCount)
+	var bodyText string
+	err := row.Scan(&msg.ID, &msg.MailboxID, &msg.FolderID, &msg.Folder, &msg.MessageUID, &msg.IMAPUID, &msg.IMAPModSeq, &msg.MessageID, &msg.ThreadID, &msg.Subject, &msg.From, &msg.FromName, &toJSON, &ccJSON, &bccJSON, &sent, &received, &msg.Snippet, &read, &starred, &hasAtt, &msg.SizeBytes, &bodyText, &msg.ThreadCount)
 	if err != nil {
 		return msg, err
 	}
@@ -3198,6 +3199,10 @@ func scanMessageSummary(row messageSummaryScanner) (MailMessage, error) {
 	msg.To, msg.CC, msg.BCC = jsonDecodeSlice(toJSON), jsonDecodeSlice(ccJSON), jsonDecodeSlice(bccJSON)
 	msg.SentAt, msg.ReceivedAt = parseTime(sent), parseTime(received)
 	msg.IsRead, msg.IsStarred, msg.HasAttachments = intBool(read), intBool(starred), intBool(hasAtt)
+	if bodyText == "" {
+		bodyText = msg.Snippet
+	}
+	msg.VerificationCode = extractVerificationCode(msg.Subject, bodyText)
 	return msg, nil
 }
 

@@ -41,6 +41,12 @@ func TestExtractVerificationCode(t *testing.T) {
 			want:    "5521",
 		},
 		{
+			name:    "英文说明句后的验证码",
+			subject: "Verification Code from Alibaba Group",
+			text:    "Please enter the code to verify your account. 264248 Note: After your account is verified, you can modify your password.",
+			want:    "264248",
+		},
+		{
 			name:    "订单号不当验证码",
 			subject: "【京东】您的订单已签收",
 			text:    "订单 2837461928 已由本人签收，感谢您在京东购物。",

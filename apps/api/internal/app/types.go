@@ -187,6 +187,7 @@ type MailMessage struct {
 	SentAt            time.Time          `json:"sentAt"`
 	ReceivedAt        time.Time          `json:"receivedAt"`
 	Snippet           string             `json:"snippet"`
+	VerificationCode  string             `json:"verificationCode,omitempty"`
 	BodyText          string             `json:"bodyText,omitempty"`
 	BodyHTML          string             `json:"bodyHtml,omitempty"`
 	IsRead            bool               `json:"isRead"`

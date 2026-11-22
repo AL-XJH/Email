@@ -222,7 +222,8 @@ export const MessageRow = React.memo(function MessageRow({
   const visibleLabels = (message.labels || []).slice(0, 2)
   const hiddenLabelCount = Math.max((message.labels?.length || 0) - visibleLabels.length, 0)
   const senderName = senderDisplayName(message)
-  const verificationCode = extractVerificationCode(message.subject, message.snippet)
+  const verificationCode =
+    message.verificationCode || extractVerificationCode(message.subject, message.snippet)
   const [codeCopied, setCodeCopied] = React.useState(false)
   const codeCopiedTimer = React.useRef<number | undefined>(undefined)
   React.useEffect(() => () => window.clearTimeout(codeCopiedTimer.current), [])
