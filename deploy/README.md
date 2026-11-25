@@ -96,7 +96,7 @@ chmod 644 /etc/cron.d/lanqin-backup
 
 ### 丢主机后恢复到新目录
 
-先在目标机安装 Docker、Compose、Python；拉取原集合 `manifest.json` 中的 `image`（只查看镜像名，不要打印 `compose.json`，其中可能有密钥）。恢复要求该镜像与备份记录的 image ID 相同，避免直接使用漂移的 `latest`。镜像不随数据集打包，需保留固定 tag/digest 或另存离线镜像；宿主 DNS 递归解析器、防火墙、证书自动续期账户/定时器和镜像仓库凭据仍需按目标机环境重配，当前证书内容已包含在集合中。
+先在目标机安装 Docker、Compose、Python；拉取原集合 `manifest.json` 中的 `image`（只查看镜像名，不要打印 `compose.json`，其中可能有密钥）。恢复按集合记录的稳定 RepoDigest 与平台身份校验镜像；没有 RepoDigest 时验证 config 内容摘要。不同 Docker 存储引擎的本地 image ID 可能不同，不能据此判定内容不同；也不能直接接受已经漂移的 `latest`。镜像不随数据集打包，需保留固定 tag/digest 或另存离线镜像；宿主 DNS 递归解析器、防火墙、证书自动续期账户/定时器和镜像仓库凭据仍需按目标机环境重配，当前证书内容已包含在集合中。
 
 **`--app-dir` 无默认值，必须不存在或为空；脚本不会覆盖旧目录，也不会自动停止现有容器。** 原地恢复前显式停止原应用，保留整个旧目录作回滚点；不能用一个备份覆盖仍被单文件 bind mount 占用的 inode：
 
@@ -123,6 +123,15 @@ docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.restor
 ```
 
 全新主机无需执行 `down/mv`，直接对不存在或空的目标目录运行 `lanqin-restore.sh`。恢复会先完整核对 SHA256、格式与归档路径；拒绝绝对路径、`..`、重复成员、symlink/hardlink 和设备条目。所有文件先放隔离 staging；SQLite `integrity_check`、Redis 恢复和路径类型验证全部通过才移入目标目录。现有目录或活跃挂载不会被覆盖，恢复失败不会留下可被误启用的半成品应用目录。
+
+**旧 v2 集合自带的工具不会随应用升级自动更新。** 恢复升级前的集合时，先在目标机安装当前版本的 `lanqin-backup.py`、`lanqin-backup`、`lanqin-restore`，保留集合全部文件及原 SHA256 清单不变，再运行：
+
+```bash
+python3 /usr/local/bin/lanqin-backup.py verify --backup-dir "$SET"
+/usr/local/bin/lanqin-restore --backup-dir "$SET" --app-dir "$APP_DIR"
+```
+
+这样使用新版的 Redis TTL 和跨 Docker 镜像身份校验，仍严格验证旧集合本身；不要直接覆盖归档内 helper 或重算清单。上述空目录和停服务要求保持不变。旧版 `config.tgz/mail.tgz` 集合不属于 v2，不适用这条兼容入口。
 
 `docker-compose.restore.json` 是运行配置快照，内部含解析后的环境值，权限 `0600`。之后修改运行环境需同时维护该文件或把重映射后的挂载合回原 compose，再检查并重新创建容器；仅编辑 `.env` 不会覆盖已解析进该文件的变量。原始 `.env` 根密钥不得重新生成。单文件 bind 的后续配置更新应原地覆写，或用 `up -d --force-recreate` 重新挂载；不能只 `mv` 新文件后 reload。
 
