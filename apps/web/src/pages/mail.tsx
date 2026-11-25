@@ -291,6 +291,8 @@ export function MailPage() {
   const [compactSelectedIds, setCompactSelectedIds] = React.useState<string[]>([])
   const [composeOpen, setComposeOpen] = React.useState(false)
   const [composeDraft, setComposeDraft] = React.useState<ComposeDraft | undefined>()
+  const composeGenerationRef = React.useRef(0)
+  const composeGeneration = composeGenerationRef.current
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mailFilter, setMailFilter] = React.useState<MailFilter>("all")
   const [selectedMailboxId, setSelectedMailboxId] = React.useState(
@@ -1675,6 +1677,7 @@ export function MailPage() {
   function openCompose(draft?: ComposeDraft) {
     if (draft?.isDraft && !canManageSelectedDrafts) return
     if (!draft?.isDraft && !canSendSelectedMailbox) return
+    composeGenerationRef.current += 1
     setComposeDraft(draft || { key: `new-${Date.now()}` })
     setComposeOpen(true)
   }
@@ -3140,8 +3143,11 @@ export function MailPage() {
               if (!open) setComposeDraft(undefined)
             }}
             onSent={() => {
-              setComposeOpen(false)
-              setComposeDraft(undefined)
+              // 已关闭的 A 仍可能完成发送；它不能关闭后来新建的 B。
+              if (composeGeneration === composeGenerationRef.current) {
+                setComposeOpen(false)
+                setComposeDraft(undefined)
+              }
               qc.invalidateQueries({ queryKey: ["messages"] })
               qc.invalidateQueries({ queryKey: ["folders"] })
               qc.invalidateQueries({ queryKey: ["mail-stats"] })

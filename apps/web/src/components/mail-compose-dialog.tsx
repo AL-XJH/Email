@@ -172,9 +172,10 @@ export function ComposeDialog({
 
   const { toast } = useToast()
   const qc = useQueryClient()
-  const [files, setFiles] = React.useState<File[]>([])
-  const [draftAttachments, setDraftAttachments] = React.useState<SendPayload["attachments"]>([])
-  const [attachmentsTouched, setAttachmentsTouched] = React.useState(false)
+  const [files, setFiles] = React.useState<File[]>(draft?.files || [])
+  const [attachmentsTouched, setAttachmentsTouched] = React.useState(
+    !draft?.id && Boolean(draft?.files?.length)
+  )
   const [draftId, setDraftId] = React.useState(draft?.id || "")
   const [toValue, setToValue] = React.useState(draft?.to || "")
   const [ccValue, setCcValue] = React.useState(draft?.cc || "")
@@ -191,7 +192,12 @@ export function ComposeDialog({
   const sentRecipientsRef = React.useRef<Set<string>>(new Set())
   const lastSavedPayloadRef = React.useRef("")
   const draftIdRef = React.useRef(draft?.id || "")
-  const latestDraftRef = React.useRef<{ payload: DraftPayload; hasContent: boolean } | null>(null)
+  const latestDraftRef = React.useRef<{
+    payload: DraftPayload
+    hasContent: boolean
+    attachmentFiles?: File[]
+  } | null>(null)
+  const lastSavedFilesRef = React.useRef<File[] | undefined>(undefined)
   const savingRef = React.useRef(false)
   const pendingSaveRef = React.useRef(false)
   const maxWaitTimerRef = React.useRef<number | null>(null)
@@ -232,7 +238,6 @@ export function ComposeDialog({
       text: quotedText ? `${body.text}\n\n${quotedText}` : body.text,
       html: [body.html || plainTextToHtml(body.text), quotedHtml].filter(Boolean).join(""),
       clientToken: draftClientTokenRef.current,
-      ...(attachmentsTouched ? { attachments: draftAttachments } : {}),
     }),
     [
       activeMailboxId,
@@ -245,8 +250,6 @@ export function ComposeDialog({
       body,
       quotedHtml,
       quotedText,
-      attachmentsTouched,
-      draftAttachments,
     ]
   )
   const hasDraftContent =
@@ -281,7 +284,11 @@ export function ComposeDialog({
     const latest = latestDraftRef.current
     if (!latest || !latest.hasContent) return
     const key = JSON.stringify({ ...latest.payload, draftId: draftIdRef.current })
-    if (key === lastSavedPayloadRef.current) return
+    if (
+      key === lastSavedPayloadRef.current &&
+      (!latest.attachmentFiles || latest.attachmentFiles === lastSavedFilesRef.current)
+    )
+      return
     if (savingRef.current) {
       pendingSaveRef.current = true
       return
@@ -289,7 +296,16 @@ export function ComposeDialog({
     savingRef.current = true
     try {
       setDraftStatus("saving")
-      const saved = await api.saveDraft(latest.payload, draftIdRef.current || undefined)
+      // 关闭窗口也必须等这份文件快照编码完成，不能先把空附件数组存下去。
+      // 既有草稿未动附件时继续省略字段，让服务端保留原附件。
+      const payload = latest.attachmentFiles
+        ? {
+            ...latest.payload,
+            attachments: await Promise.all(latest.attachmentFiles.map(fileToAttachment)),
+          }
+        : latest.payload
+      if (sendStartedRef.current) return
+      const saved = await api.saveDraft(payload, draftIdRef.current || undefined)
       if (sendStartedRef.current) {
         // 保存和发送撞在一起：这次写出来的是「正在发送的那封」的副本，删掉。
         await api.deleteDraft(saved.id).catch(() => {})
@@ -298,6 +314,7 @@ export function ComposeDialog({
       draftIdRef.current = saved.id
       setDraftId(saved.id)
       lastSavedPayloadRef.current = JSON.stringify({ ...latest.payload, draftId: saved.id })
+      lastSavedFilesRef.current = latest.attachmentFiles
       setLastSavedAt(new Date())
       setDraftStatus("saved")
       dirtyRef.current = false
@@ -322,8 +339,7 @@ export function ComposeDialog({
   }, [open, canManageDrafts, qc])
 
   function requestClose() {
-    // 先发起保存再关闭：async 函数在第一个 await 前是同步执行的，
-    // api.saveDraft 已经带着当前内容发出去了，组件卸载不会取消请求。
+    // 先捕获最后一次保存，再关闭；附件编码和请求会在卸载后继续完成。
     if (!sendStartedRef.current) void flushDraft()
     onOpenChange(false)
   }
@@ -404,6 +420,7 @@ export function ComposeDialog({
     const nextQuotedText = nextSplit.quotedText
     draftIdRef.current = draft?.id || ""
     latestDraftRef.current = null
+    lastSavedFilesRef.current = undefined
     dirtyRef.current = false
     if (maxWaitTimerRef.current) {
       window.clearTimeout(maxWaitTimerRef.current)
@@ -435,8 +452,7 @@ export function ComposeDialog({
     setShowBcc(nextShowBcc)
     setSendSeparately(false)
     setFiles(draft?.files || [])
-    setDraftAttachments([])
-    setAttachmentsTouched(false)
+    setAttachmentsTouched(!draft?.id && Boolean(draft?.files?.length))
     // 只按草稿身份重置编辑器；正文/主题是用户输入，故意不放进依赖数组。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -454,24 +470,19 @@ export function ComposeDialog({
   ])
 
   React.useEffect(() => {
-    let cancelled = false
-    Promise.all(files.map(fileToAttachment)).then((attachments) => {
-      if (!cancelled) setDraftAttachments(attachments)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [files])
-
-  React.useEffect(() => {
     if (!open) return
     latestDraftRef.current = {
       payload: composePayload,
-      hasContent: draftPayloadHasContent(composePayload),
+      hasContent: draftPayloadHasContent(composePayload) || files.length > 0,
+      attachmentFiles: attachmentsTouched ? files : undefined,
     }
     if (!hasDraftContent || !canManageDrafts || sendStartedRef.current) return
     const payloadKey = JSON.stringify({ ...composePayload, draftId: draftIdRef.current })
-    if (payloadKey === lastSavedPayloadRef.current) return
+    if (
+      payloadKey === lastSavedPayloadRef.current &&
+      (!attachmentsTouched || files === lastSavedFilesRef.current)
+    )
+      return
     dirtyRef.current = true
     // 连续打字会不断重置 5 秒防抖，以前可以一整天不落盘；这里加一条
     // 从第一次未保存改动起算的硬上限，最多 15 秒一定存一次。
@@ -483,7 +494,15 @@ export function ComposeDialog({
     }
     const timer = window.setTimeout(() => void flushDraft(), 5000)
     return () => window.clearTimeout(timer)
-  }, [open, hasDraftContent, composePayload, canManageDrafts, flushDraft])
+  }, [
+    open,
+    hasDraftContent,
+    composePayload,
+    canManageDrafts,
+    flushDraft,
+    files,
+    attachmentsTouched,
+  ])
 
   // 有未保存内容时关标签页要拦一下，别让浏览器静默丢掉整封信。
   React.useEffect(() => {
