@@ -208,7 +208,19 @@ def check_config(config):
 SNAPSHOT_WORKER = r'''set -eu
 umask 077
 test -f /data/lanqin.db
-sqlite3 /data/lanqin.db ".backup '/snapshot/lanqin.db'"
+# A stopped source can retain an uncheckpointed WAL. SQLite may need to create
+# SHM even for reads; never open the live read-only bind directly. Copy the
+# stopped DB/WAL into private writable scratch and ignore the rebuildable SHM.
+mkdir -p /snapshot/sqlite-work
+cp /data/lanqin.db /snapshot/sqlite-work/lanqin.db
+if test -f /data/lanqin.db-wal; then
+ cp /data/lanqin.db-wal /snapshot/sqlite-work/lanqin.db-wal
+fi
+sqlite3 /snapshot/sqlite-work/lanqin.db ".backup '/snapshot/lanqin.db'"
+# Recovery artifact is standalone: remove the WAL header so a read-only
+# integrity check does not need to create a fresh -shm file beside it.
+test "$(sqlite3 /snapshot/lanqin.db 'PRAGMA journal_mode=DELETE;')" = delete
+rm -rf /snapshot/sqlite-work
 chmod 600 /snapshot/lanqin.db
 test "$(sqlite3 /snapshot/lanqin.db 'PRAGMA quick_check;')" = ok
 test "$(sqlite3 /snapshot/lanqin.db "SELECT count(*) FROM sqlite_master WHERE type='table';")" -gt 0

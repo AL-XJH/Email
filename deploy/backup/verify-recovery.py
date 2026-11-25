@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import time
 
@@ -160,6 +161,11 @@ def main():
     command(["docker", "run", "--rm", "--network", "none", "--mount",
              f"type=bind,source={app / 'data'},target=/data", "--entrypoint", "/bin/sh", args.image,
              "-c", "sqlite3 /data/lanqin.db 'CREATE TABLE fixture(id INTEGER PRIMARY KEY,value TEXT); INSERT INTO fixture VALUES(1,char(112,114,101,115,101,114,118,101,100));'"])
+    # Leave committed rows in WAL with no live SQLite connection: reproduces
+    # production's stopped DB. The snapshot worker sees /data read-only and must
+    # rebuild SHM only in its private writable copy.
+    command([sys.executable, "-c", "import os,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA wal_autocheckpoint=0'); c.execute('CREATE TABLE wal_fixture(value TEXT)'); c.execute(\"INSERT INTO wal_fixture VALUES('wal-preserved')\"); c.commit(); os._exit(0)", str(app / "data/lanqin.db")])
+    assert (app / "data/lanqin.db-wal").is_file()
     compose = ["docker", "compose", "--project-name", name, "--project-directory", str(app),
                "-f", str(app / "docker-compose.yml"), "-f", str(app / "docker-compose.override.yml")]
     cid = ""
@@ -217,7 +223,8 @@ def main():
         assert command(["docker", "exec", restored_cid, "redis-cli", "-n", "3", "hget", "audit:hash", "field"]) == "preserved"
         assert command(["docker", "exec", restored_cid, "nginx", "-t"]) == ""
         assert command(["docker", "exec", restored_cid, "sqlite3", "/data/lanqin.db", "SELECT value FROM fixture;"]) == "preserved"
-        print("PASS real bind mounts, nginx TLS config, avatar/key files, SQLite row, Redis string+hash (DB0/DB3) after normal AOF=yes startup")
+        assert command(["docker", "exec", restored_cid, "sqlite3", "/data/lanqin.db", "SELECT value FROM wal_fixture;"]) == "wal-preserved"
+        print("PASS real bind mounts, nginx TLS config, avatar/key files, SQLite WAL row, Redis string+hash (DB0/DB3) after normal AOF=yes startup")
         command(["docker", "rm", "-f", restored_cid])
         restored_cid = ""
         # Tampering is detected before APP_DIR gets created.
