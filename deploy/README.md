@@ -52,49 +52,103 @@ docker compose up -d
 docker compose down
 ```
 
-## 备份（强烈建议配）
+## 备份与恢复（宿主 cron 完整恢复集）
 
-`deploy/backup/lanqin-backup.sh` 做一份完整快照：SQLite 一致性备份（用 `sqlite3 .backup`，
-不是直接 cp，避免拿到半个事务）+ `.env` + `dkim` 私钥 + `docker-compose.yml` + 附件 + maildir。
+这里维护的是 `deploy/backup/` 的 **shell/cron 备份链**，与后台的 age 加密、多地点原生备份是两套独立机制。宿主需要 root、Python 3.9+ 标准库、Docker 和支持 `config --format json` 的 Compose 插件；不需要 PyYAML、宿主 sqlite3 或 redis。只支持当前单容器、SQLite + 内嵌 Redis 布局；发现具名卷、外部 secret/network、遗漏挂载或部署配置与运行态漂移时会报错，不生成“成功但不完整”的恢复集。
 
-装到服务器上每天 04:10 跑一次：
+### 安装并手动跑一份
+
+仓库更新不会自动更新 `/usr/local/bin`，下列三个文件必须一起安装：
 
 ```bash
-install -m 755 deploy/backup/lanqin-backup.sh /usr/local/bin/lanqin-backup
+install -m 700 deploy/backup/lanqin-backup.py /usr/local/bin/lanqin-backup.py
+install -m 700 deploy/backup/lanqin-backup.sh /usr/local/bin/lanqin-backup
+install -m 700 deploy/backup/lanqin-restore.sh /usr/local/bin/lanqin-restore
+APP_DIR=/opt/lanqin-email CONTAINER=lanqin-email-lanqin-email-1 \
+  BACKUP_DIR=/root/lanqin-backups KEEP_DAYS=14 /usr/local/bin/lanqin-backup
+# 将成功输出的实际目录填入；不输出 .env 或解析后的 Compose 内容。
+SET=/root/lanqin-backups/<时间戳>
+python3 /usr/local/bin/lanqin-backup.py verify --backup-dir "$SET"
+(cd "$SET" && sha256sum -c SHA256SUMS)
+```
+
+默认目录为 `/root/lanqin-backups/YYYYmmdd-HHMMSS/`、保留 14 天。滚动清理只删除本格式校验通过的旧集合；旧版集合和其他文件不会被清理。备份根目录必须在应用目录外，目录权限 `0700`、恢复集内全部文件 `0600`。它包含明文密钥与全部邮件，应把**整个集合**复制到受保护的异机位置；同机副本不能防宿主磁盘丢失。SHA256 用于检测损坏，不提供加密或来源认证，只恢复自己保存且可信的集合。
+
+每天 04:10 的配置：
+
+```bash
 cat > /etc/cron.d/lanqin-backup <<'CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 10 4 * * * root /usr/local/bin/lanqin-backup >> /var/log/lanqin-backup.log 2>&1
 CRON
+chmod 644 /etc/cron.d/lanqin-backup
 ```
 
-默认放在 `/root/lanqin-backups/<时间戳>/`，保留 14 天（`KEEP_DAYS` 可调），
-每次约等于数据库大小。备份前会先跑 `PRAGMA quick_check`，坏了就不落盘并返回非零。
+### 备份包含什么、快照边界是什么
 
-恢复：
+- 从运行容器的 Compose 文件标签、`compose config --format json` 和实际 mounts 收集全部 bind source，并核对运行态。包含 `.env`（通知、备份等根密钥）、实际 compose 与 override、nginx 的 80/443 配置、证书和 DKIM 私钥、整个运行数据目录（头像、附件、auth-policy-secret 等）、maildir，以及其他已挂载的运行文件。
+- 证书等 symlink 会物化为目标内容，不把对旧主机 `/etc/letsencrypt/...` 的悬空链接留给恢复机。外部 bind source 收入 `_host/`，恢复时重新映射；保留文件/目录类型、UID/GID 和运行文件权限，避免单文件挂载被 Docker 自动创建成目录。
+- `backups/{work,artifacts,restore}` 只保留空目录及权限；不会递归打包原生备份历史/临时数据。SQLite 历史 `lanqin.db.*` 回滚副本、WAL/SHM 不打包。Redis 的活动 AOF 不直接归档，而是从停止后的持久化状态生成独立 RDB。原生备份历史如需保留，应使用其自身的异地备份管理。
+- **这是短暂停机冷备**：发现和预检完成后停止唯一业务容器；容器停止后才执行 SQLite `.backup` 和 `quick_check`、从 Redis 私有副本生成 RDB，再归档 maildir/附件/配置等全部依赖。容器必须正常退出；容器层 Postfix 队列仍有已接受但未投递邮件时会拒绝发布备份并恢复源容器，需先排空队列再重跑，不能把队列外的邮件漏掉却宣称零丢失。归档完成并校验后恢复原容器。数据库不再先在线快照、邮件稍后在线打包，因此不存在把两者宣称为同一时间点的问题。停机持续时间取决于数据量；SMTP 客户端/上游在此窗口需正常重试。
+- 不得同时运行其他写入者、原生备份任务、证书续期或外部脚本修改这些目录。文件与目录元数据会在归档前后核对；发生变化、依赖缺失、任一快照/校验失败或容器意外重启都会返回非零并不发布时间戳目录。正常失败会尝试恢复源容器；宿主断电或 `kill -9` 无法执行清理，需检查容器并手动启动。未完成目录以 `.incomplete-` 开头，不是有效恢复集。
+- 恢复集自带恢复工具与严格 SHA256 清单、依赖路径清单、原始解析配置及 `runtime.tar.gz`；不是旧版 `config.tgz/mail.tgz` 格式。旧版缺失依赖的集合不会被自动当作完整备份恢复。
+
+### 丢主机后恢复到新目录
+
+先在目标机安装 Docker、Compose、Python；拉取原集合 `manifest.json` 中的 `image`（只查看镜像名，不要打印 `compose.json`，其中可能有密钥）。恢复要求该镜像与备份记录的 image ID 相同，避免直接使用漂移的 `latest`。镜像不随数据集打包，需保留固定 tag/digest 或另存离线镜像；宿主 DNS 递归解析器、防火墙、证书自动续期账户/定时器和镜像仓库凭据仍需按目标机环境重配，当前证书内容已包含在集合中。
+
+**`--app-dir` 无默认值，必须不存在或为空；脚本不会覆盖旧目录，也不会自动停止现有容器。** 原地恢复前显式停止原应用，保留整个旧目录作回滚点；不能用一个备份覆盖仍被单文件 bind mount 占用的 inode：
 
 ```bash
+APP_DIR=/opt/lanqin-email
+SET=/root/lanqin-backups/<时间戳>
+# 确保 APP_DIR/SET 为你要恢复的绝对路径。
+# 先校验，再停服务；此命令使用现有部署的 base + 自动加载 override。
+python3 "$SET/lanqin-backup.py" verify --backup-dir "$SET"
+cd "$APP_DIR"
 docker compose down
-# WAL/SHM 是数据库的一部分：不删掉，SQLite 会把备份之后的新 WAL
-# 回放到旧库上，轻则数据混在一起，重则 database disk image is malformed。
-rm -f data/lanqin.db-wal data/lanqin.db-shm
-cp /root/lanqin-backups/<时间戳>/lanqin.db data/lanqin.db
-tar -C . -xzf /root/lanqin-backups/<时间戳>/config.tgz   # .env
-tar -C . -xzf /root/lanqin-backups/<时间戳>/dkim.tgz
-# maildir 与附件才是邮件本体，数据库只是索引：只恢复 lanqin.db
-# 会得到「所有邮箱都在、里面全是空的」。
-[ -f /root/lanqin-backups/<时间戳>/mail.tgz ] && tar -C . -xzf /root/lanqin-backups/<时间戳>/mail.tgz
-[ -f /root/lanqin-backups/<时间戳>/attachments.tgz ] && tar -C data -xzf /root/lanqin-backups/<时间戳>/attachments.tgz
-# Redis 备份的是一致性 RDB。AOF 优先于 RDB，必须先清掉旧的 AOF 目录，
-# 否则恢复后加载的还是备份之后那套撕裂的追加日志。
-if [ -f /root/lanqin-backups/<时间戳>/redis-dump.rdb ]; then
-  rm -rf data/redis/appendonly data/redis/appendonlydir
-  cp /root/lanqin-backups/<时间戳>/redis-dump.rdb data/redis/dump.rdb
-fi
-docker compose up -d
-# 起来后先验完整性，再对外放流量。
-docker exec lanqin-email-lanqin-email-1 sqlite3 /data/lanqin.db "PRAGMA integrity_check;"
+cd /
+# 此目录名需尚不存在；整个目录保留，禁止删库/清 WAL 后在旧目录上覆盖。
+mv "$APP_DIR" "${APP_DIR}.before-restore"
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$SET/manifest.json"
+# docker pull <上一行镜像名>；离线环境用 docker load 导入相同镜像。
+bash "$SET/lanqin-restore.sh" --backup-dir "$SET" --app-dir "$APP_DIR"
+# 恢复程序生成已重映射全部 bind/config/secret 路径的配置；以后使用这份文件。
+# 原 compose/override 也保留供审查，但可能含旧主机的绝对路径，勿直接启动它们。
+docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.restore.json" config -q
+docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.restore.json" up -d --no-build
+# 等待 healthy 后，检查就绪、TLS/IMAP/SMTP 和头像/邮件/附件，完成后再恢复公网流量。
+docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.restore.json" ps
 ```
+
+全新主机无需执行 `down/mv`，直接对不存在或空的目标目录运行 `lanqin-restore.sh`。恢复会先完整核对 SHA256、格式与归档路径；拒绝绝对路径、`..`、重复成员、symlink/hardlink 和设备条目。所有文件先放隔离 staging；SQLite `integrity_check`、Redis 恢复和路径类型验证全部通过才移入目标目录。现有目录或活跃挂载不会被覆盖，恢复失败不会留下可被误启用的半成品应用目录。
+
+`docker-compose.restore.json` 是运行配置快照，内部含解析后的环境值，权限 `0600`。之后修改运行环境需同时维护该文件或把重映射后的挂载合回原 compose，再检查并重新创建容器；仅编辑 `.env` 不会覆盖已解析进该文件的变量。原始 `.env` 根密钥不得重新生成。单文件 bind 的后续配置更新应原地覆写，或用 `up -d --force-recreate` 重新挂载；不能只 `mv` 新文件后 reload。
+
+### Redis：RDB 恢复后必须先生成 AOF，再启动完整应用
+
+当前配置是 `appendonly yes`。只清旧 AOF、复制 `dump.rdb` 然后直接启动，会使 Redis 优先创建/加载空 AOF 并忽略 RDB，表现为应用 healthy 但 Bayes/灰名单全部清空。恢复脚本实际执行以下流程，不要求操作者临时改生产配置：
+
+1. 从经过校验的集合提取 Redis RDB，确保恢复目录没有旧 AOF；在 `--network none` 的临时容器中执行 `redis-check-rdb`。
+2. 临时 Redis 使用原镜像配置，显式 `appendonly no` 启动，加载 RDB；记录所有 DB 的 keyspace 与数据 digest（不打印键值）。
+3. `CONFIG SET appendonly yes` 触发首次 AOF rewrite，等待 `aof_rewrite_in_progress=0`、`aof_rewrite_scheduled=0`、`aof_last_bgrewrite_status=ok`；核对内存数据仍相同。
+4. 关闭临时 Redis，再按 `appendonly yes` 重启一次，核对 digest/keyspace 与 RDB 初次加载一致，关闭后保留生成的 AOF。恢复文件归属还原为原 Redis 目录 UID/GID。
+5. 上述验证及 SQLite 检查成功后才发布恢复目录；完整应用正常的 `appendonly yes` 启动会加载已验证的 AOF。
+
+恢复程序从未启动完整邮件服务或开放端口；正式启动仍由操作者在验收窗口完成。过期键自然按 Redis 的绝对过期时间处理，备份不能延长 TTL。
+
+### 可复用的隔离演练
+
+下面脚本创建全新的合成 fixture，所有临时容器均 `--network none`、不发布端口，不读取 demo 或生产数据；保留证据目录，完成后删除自己创建的容器。目录必须尚不存在，镜像应已在测试机上：
+
+```bash
+# 把 deploy/backup/ 四个文件复制到测试 VM 的独立目录后：
+python3 -u /srv/fix117-backup-code/verify-recovery.py \
+  --work-dir /srv/fix117-backup-verification --image lanqin-email:latest-stack
+```
+
+成功标准为 `ALL PASS`：完整备份 → `sha256sum -c` → 空目录恢复 → 真正启动恢复后的全部 bind mounts → nginx TLS 配置通过、SQLite 记录和 Redis DB0/DB3 合成键保留；并验证头像/附件/通知密钥/备份密钥/override 存在、证书 symlink 已物化、原生备份目录为空、篡改/逃逸/链接/危险覆盖被拒绝，以及快照失败后源容器恢复且无假成功集合。生产安装后仍须由运维手动执行一次备份并校验，测试 fixture 通过不代替生产恢复演练。
 
 ## GHCR 镜像权限
 
