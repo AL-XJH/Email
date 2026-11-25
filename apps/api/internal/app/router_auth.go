@@ -330,6 +330,7 @@ func (a *App) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Lanqin-Session")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		}
@@ -345,9 +346,14 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, err := a.authenticateRequest(r)
 		if err != nil {
+			w.Header().Set("X-Lanqin-Session", "expired")
 			respondError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		// A handler may return 401 for a wrong current password or verification
+		// code while this cookie is still authenticated. Let the UI distinguish
+		// business reauthentication errors from a genuinely expired session.
+		w.Header().Set("X-Lanqin-Session", "valid")
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey, user)))
 	})
 }

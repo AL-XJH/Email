@@ -31,6 +31,7 @@ const knownErrors: Record<string, string> = {
     "请选择启用的站内邮箱，目标不能配置别名转发",
   "collection target cannot be a forwarding alias": "统一收件目标不能设置别名转发",
   unauthorized: "登录会话已失效，请重新登录",
+  "invalid verification code": "验证码错误",
   forbidden: "无权执行此操作",
   "permission required": "无权执行此操作",
   "external imap is disabled": "外部 IMAP 未启用",

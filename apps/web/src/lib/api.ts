@@ -115,7 +115,11 @@ async function request<T>(
     })
     if (!res.ok) {
       // 会话没了：把本地缓存快照也清掉，别让下次打开先画出上一个会话的邮件。
-      if (res.status === 401 && !path.startsWith("/api/auth/")) {
+      if (
+        res.status === 401 &&
+        !path.startsWith("/api/auth/") &&
+        res.headers.get("X-Lanqin-Session") !== "valid"
+      ) {
         expireAuthSession(generation, () => unauthorizedHandler?.())
       }
       let message = `${res.status} ${res.statusText}`

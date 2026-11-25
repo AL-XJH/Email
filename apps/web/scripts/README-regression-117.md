@@ -41,6 +41,17 @@ ssh lanqin-test 'docker exec \
 
 To compare the same browser regression against the old build, change `BASE_URL` to `http://127.0.0.1:18081` and use a separate report path. Failures there are expected.
 
+## .118 再认证回归
+
+`reauth-session-regression.cjs` 使用相同浏览器环境，验证设置页输错当前密码、两步认证校验失败时仍留在当前登录且可以重试；真正会话过期仍跳到登录页。后端 `requireAuth` 用 `X-Lanqin-Session: valid/expired` 区分业务 401 与会话失效，不按中文错误文案或路径猜测。API 未提供该标记的 401 仍按旧协议当作会话失效处理。
+
+```sh
+BASE_URL=http://127.0.0.1:18084 \
+PLAYWRIGHT_MODULE=/work/tests/node_modules/playwright \
+CHROMIUM_PATH=/work/browser/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell \
+node scripts/reauth-session-regression.cjs
+```
+
 ## Coverage
 
 - Empty and hydrated anonymous sessions, expiration from concurrent protected requests, successful login and preserved return path, failed login without navigation loops, login racing an old `/api/me` response, and failed `/api/me` refetch with cached identity.

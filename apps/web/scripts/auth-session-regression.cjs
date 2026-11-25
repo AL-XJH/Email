@@ -25,8 +25,11 @@ const { QueryClient, QueryObserver } = projectRequire("@tanstack/react-query")
 const { api, setUnauthorizedHandler } = require(`${source}/src/lib/api.ts`)
 const auth = require(`${source}/src/lib/auth-session.ts`)
 const { QUERY_CACHE_KEY } = require(`${source}/src/lib/query-cache.ts`)
-const response = (status, data) =>
-  new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } })
+const response = (status, data, headers = {}) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  })
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 let clears = 0
 setUnauthorizedHandler(() => {
@@ -75,6 +78,34 @@ const seed = () => {
   await api.login({ email: "synthetic@example.test", password: "synthetic" }).catch(() => {})
   assert.equal(auth.authSessionGeneration(), beforeLoginError, "login 401 is a form error")
   assert.equal(clears, 1)
+
+  // A handler's reauthentication error is not an expired session. This must
+  // work for all protected operations, without matching translated error text.
+  const beforeReauthError = auth.authSessionGeneration()
+  for (const [operation, message, expected] of [
+    [
+      () => api.changePassword({ currentPassword: "mistyped", newPassword: "Replacement123!" }),
+      "当前密码错误",
+      "当前密码错误",
+    ],
+    [() => api.setupTwoFactor("mistyped"), "当前密码错误", "当前密码错误"],
+    [() => api.unlinkLinuxDo({ currentPassword: "mistyped" }), "当前密码错误", "当前密码错误"],
+    [
+      () => api.enableTwoFactor("000000", "fixture-password"),
+      "invalid verification code",
+      "验证码错误",
+    ],
+  ]) {
+    seed()
+    global.fetch = async () => response(401, { error: message }, { "X-Lanqin-Session": "valid" })
+    const error = await operation().catch((error) => error)
+    assert.equal(error.status, 401)
+    assert.equal(error.message, expected)
+    assert.equal(auth.authSessionGeneration(), beforeReauthError)
+    assert.deepEqual(client.getQueryData(["mailboxes"]), { secret: "old-account" })
+    assert.equal(storage.get(QUERY_CACHE_KEY), "old-account")
+    assert.equal(clears, 1, "reauth failure keeps the authenticated session")
+  }
 
   // Observe the production failure mechanism directly with a real QueryObserver.
   auth.startAuthSession(client)
