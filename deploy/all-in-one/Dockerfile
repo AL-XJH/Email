@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS api-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm AS api-build
 WORKDIR /src/apps/api
 COPY apps/api/go.mod apps/api/go.sum ./
 # Keep modules in the layer: registry cache does not persist cache mounts.
@@ -13,11 +13,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/lanqin-backup ./cmd/backup
 
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-build
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS web-build
 WORKDIR /src
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+RUN corepack enable && corepack prepare pnpm@12.23.0 --activate
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --filter lanqin-email-web...
 COPY apps/web apps/web
@@ -25,10 +25,9 @@ ARG VITE_APP_VERSION=""
 ARG VITE_RELEASE_URL=""
 RUN pnpm --dir apps/web run build
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
-# Rspamd 从官方仓库装。Debian bookworm 自带的是 2022 年的 3.4，而反垃圾是
-# 规则型软件，版本号本身就等于检测能力；4.x 还带原生 autolearn（Bayes 训练）。
+# Rspamd 从官方仓库装；trixie 套件里是当前 4.x。
 ARG RSPAMD_REPO=https://rspamd.com/apt-stable
 # 单容器模式把 Redis 也塞进同一个镜像，省掉一个 sidecar 容器。
 ARG REDIS_REPO=https://packages.redis.io/deb
@@ -39,9 +38,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
   mkdir -p /etc/apt/keyrings && \
   curl -fsSL "$RSPAMD_REPO/gpg.key" | gpg --dearmor > /etc/apt/keyrings/rspamd.gpg && \
-  echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ bookworm main" > /etc/apt/sources.list.d/rspamd.list && \
+  echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ trixie main" > /etc/apt/sources.list.d/rspamd.list && \
   curl -fsSL "https://packages.redis.io/gpg" | gpg --dearmor > /etc/apt/keyrings/redis.gpg && \
-  echo "deb [signed-by=/etc/apt/keyrings/redis.gpg] $REDIS_REPO bookworm main" > /etc/apt/sources.list.d/redis.list && \
+  echo "deb [signed-by=/etc/apt/keyrings/redis.gpg] $REDIS_REPO trixie main" > /etc/apt/sources.list.d/redis.list && \
   apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl sqlite3 supervisor nginx \
     postfix postfix-sqlite \

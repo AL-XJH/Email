@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
-# Rspamd 走官方仓库（Debian bookworm 自带的是 2022 年的 3.4）。
+# Rspamd 走官方仓库；trixie 套件里是当前 4.x。
 ARG RSPAMD_REPO=https://rspamd.com/apt-stable
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL "$RSPAMD_REPO/gpg.key" | gpg --dearmor > /etc/apt/keyrings/rspamd.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ bookworm main" > /etc/apt/sources.list.d/rspamd.list && \
+    echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ trixie main" > /etc/apt/sources.list.d/rspamd.list && \
     apt-get update && apt-get install -y --no-install-recommends rspamd sqlite3 ca-certificates
 COPY local.d/ /etc/rspamd/local.d/
 COPY override.d/ /etc/rspamd/override.d/

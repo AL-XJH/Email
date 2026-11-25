@@ -45,8 +45,8 @@ if [ -n "$LANQIN_TLS_CERT_FILE" ] || [ -n "$LANQIN_TLS_KEY_FILE" ]; then
 		echo "warning: LANQIN_TLS_CERT_FILE/LANQIN_TLS_KEY_FILE not readable; using snakeoil localhost certificate" >&2
 	fi
 fi
-sed -i "s#^ssl_cert = <.*#ssl_cert = <${TLS_CERT}#" /etc/dovecot/dovecot.conf
-sed -i "s#^ssl_key = <.*#ssl_key = <${TLS_KEY}#" /etc/dovecot/dovecot.conf
+sed -i "s#^ssl_server_cert_file = .*#ssl_server_cert_file = ${TLS_CERT}#" /etc/dovecot/dovecot.conf
+sed -i "s#^ssl_server_key_file = .*#ssl_server_key_file = ${TLS_KEY}#" /etc/dovecot/dovecot.conf
 sed -i "s#^auth_policy_hash_nonce = .*#auth_policy_hash_nonce = ${AUTH_POLICY_HASH_NONCE}#" /etc/dovecot/dovecot.conf
 sed -i "s#^auth_policy_server_url = .*#auth_policy_server_url = ${AUTH_POLICY_URL}${AUTH_POLICY_SEP}key=${AUTH_POLICY_SECRET_SED}#" /etc/dovecot/dovecot.conf
 # Printed so an operator can confirm the address is right for their topology: a
