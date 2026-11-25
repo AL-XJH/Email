@@ -4,7 +4,7 @@ FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS build
 WORKDIR /src
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
-RUN corepack enable && corepack prepare pnpm@12.23.0 --activate
+RUN npm install --global pnpm@12.23.0
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --filter lanqin-email-web...
 COPY apps/web apps/web
