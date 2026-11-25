@@ -73,7 +73,7 @@ COPY --from=sqlite-build /usr/local/bin/sqlite3 /usr/local/bin/sqlite3
 COPY --from=web-build /src/apps/web/dist /usr/share/nginx/html
 
 COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/lanqin.conf
-COPY deploy/all-in-one/nginx.conf /etc/nginx/sites-enabled/default
+COPY deploy/all-in-one/nginx.conf /etc/nginx/conf.d/default.conf
 COPY deploy/all-in-one/redis.conf /etc/redis-lanqin.conf
 COPY deploy/all-in-one/entrypoint.sh /entrypoint.sh
 
