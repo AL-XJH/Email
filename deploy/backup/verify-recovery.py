@@ -107,6 +107,69 @@ def image_identity_cases(root, backup, tools, image):
         command(["docker", "image", "rm", alias])
 
 
+def redis_expiry_cases(root, tools, image):
+    spec = importlib.util.spec_from_file_location("backup_expiry", tools / "lanqin-backup.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    seed = r'''set -eu
+mkdir -p /data/redis /restore
+redis-server /etc/redis-lanqin.conf --dir /restore --port 17379 --bind 127.0.0.1 --daemonize yes --logfile /restore/seed.log --pidfile /restore/seed.pid --appendonly no
+trap 'redis-cli -p 17379 shutdown nosave >/dev/null 2>&1 || true' EXIT
+until test "$(redis-cli -p 17379 ping 2>/dev/null)" = PONG; do sleep .01; done
+redis-cli -p 17379 hset BAYES_SYNTHETIC token 123 >/dev/null
+redis-cli -p 17379 sadd audit:set b a >/dev/null
+redis-cli -p 17379 lpush audit:list b a >/dev/null
+redis-cli -p 17379 zadd audit:zset 2 b 1 a >/dev/null
+redis-cli -p 17379 xadd audit:stream '*' field value >/dev/null
+redis-cli -p 17379 -n 3 hset audit:db3 field preserved >/dev/null
+# Binary key/value including NUL and CRLF, passed as RESP, never shell argv.
+printf '*3\r\n$3\r\nSET\r\n$4\r\nk\000\r\n\r\n$4\r\nv\000\r\n\r\n' | redis-cli -p 17379 --pipe >/dev/null
+redis-cli -p 17379 set audit:live preserved PX 60000 >/dev/null
+redis-cli -p 17379 set audit:expiry cached PX __TTL__ >/dev/null
+redis-cli -p 17379 save >/dev/null
+redis-cli -p 17379 shutdown nosave >/dev/null
+trap - EXIT
+rm -f /restore/seed.log /restore/seed.pid
+'''
+
+    def exercise(label, script, *, ttl=200, refused=False):
+        destination = root / ("redis-" + label)
+        destination.mkdir()
+        result = subprocess.run(["docker", "run", "--rm", "-i", "--network", "none",
+                                 "--mount", f"type=bind,source={destination},target=/restore",
+                                 "--entrypoint", "/bin/sh", image, "-s"],
+                                input=seed.replace("__TTL__", str(ttl)) + script,
+                                text=True, capture_output=True, timeout=40)
+        (destination / "result.json").write_text(json.dumps({"exit": result.returncode,
+                                                            "stderr": result.stderr}))
+        assert (result.returncode != 0) == refused, label + ": " + result.stderr
+        if refused:
+            assert "RuntimeError: Redis" in result.stderr or "unexpected Redis keys" in result.stderr, result.stderr
+        else:
+            assert (destination / "appendonly").is_dir()
+        print("PASS Redis", label, "rejected" if refused else "expiry-aware RDB→AOF→restart")
+
+    # Force natural expiry after the baseline, covering rewrite and restart.
+    for ttl in (200, 1000):
+        for attempt in range(3):
+            baseline_check = "python3 -c \"import json; s=json.load(open('/restore/.expected')); assert '0:61756469743a657870697279' in s\"\n"
+            worker = module.RESTORE_WORKER.replace("# Enabling AOF starts", baseline_check + "sleep " + str(ttl / 1000 + .1) + "\n# Enabling AOF starts", 1)
+            exercise(f"ttl-{ttl}-{attempt}", worker, ttl=ttl)
+    for label, mutation in (
+        ("value-change", "hset BAYES_SYNTHETIC token changed"),
+        ("permanent-missing", "del BAYES_SYNTHETIC"),
+        ("live-missing", "del audit:live"),
+        ("live-value-change", "set audit:live changed KEEPTTL"),
+        ("ttl-extended", "pexpire audit:live 120000"),
+        ("unexpected-db3-key", "-n 3 set audit:unexpected value"),
+    ):
+        worker = module.RESTORE_WORKER.replace("fingerprint check\n", "redis-cli -p 16379 " + mutation + " >/dev/null\nfingerprint check\n", 1)
+        exercise(label, worker, refused=True)
+    worker = module.RESTORE_WORKER.replace("start yes\n", "start yes\nredis-cli -p 16379 flushall >/dev/null\n", 1)
+    exercise("restart-state-missing", worker, refused=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", default="/srv/fix117-backup")
@@ -284,6 +347,7 @@ def main():
                 expected="Postfix has queued mail")
         assert command(["docker", "inspect", cid, "--format", "{{.State.Running}}"] ) == "true"
         assert len([p for p in (root / "sets").iterdir() if p.is_dir()]) == 1
+        redis_expiry_cases(root, tools, args.image)
         print("PASS missing bind fail-closed; failed snapshot/queued mail resumes source; no incomplete recovery set")
         print(f"ALL PASS; evidence: {root}; valid recovery set: {backup}")
     finally:

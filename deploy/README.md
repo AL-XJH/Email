@@ -131,9 +131,9 @@ docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.restor
 当前配置是 `appendonly yes`。只清旧 AOF、复制 `dump.rdb` 然后直接启动，会使 Redis 优先创建/加载空 AOF 并忽略 RDB，表现为应用 healthy 但 Bayes/灰名单全部清空。恢复脚本实际执行以下流程，不要求操作者临时改生产配置：
 
 1. 从经过校验的集合提取 Redis RDB，确保恢复目录没有旧 AOF；在 `--network none` 的临时容器中执行 `redis-check-rdb`。
-2. 临时 Redis 使用原镜像配置，显式 `appendonly no` 启动，加载 RDB；记录所有 DB 的 keyspace 与数据 digest（不打印键值）。
-3. `CONFIG SET appendonly yes` 触发首次 AOF rewrite，等待 `aof_rewrite_in_progress=0`、`aof_rewrite_scheduled=0`、`aof_last_bgrewrite_status=ok`；核对内存数据仍相同。
-4. 关闭临时 Redis，再按 `appendonly yes` 重启一次，核对 digest/keyspace 与 RDB 初次加载一致，关闭后保留生成的 AOF。恢复文件归属还原为原 Redis 目录 UID/GID。
+2. 临时 Redis 使用原镜像配置，显式 `appendonly no` 启动，加载 RDB；分批扫描所有 DB，记录逐键 `DEBUG DIGEST-VALUE` 和 `PEXPIRETIME` 绝对到期时间（不打印键值，不导出整份值；校验只依赖镜像自带 Python 标准库）。
+3. `CONFIG SET appendonly yes` 触发首次 AOF rewrite，等待 `aof_rewrite_in_progress=0`、`aof_rewrite_scheduled=0`、`aof_last_bgrewrite_status=ok`；核对永久键、仍存在键的值摘要与绝对到期时间不变，只允许已经到期的键消失，拒绝额外键或未到期键丢失。
+4. 关闭临时 Redis，再按 `appendonly yes` 重启一次，执行同一逐键校验，关闭后保留生成的 AOF。不会延长 TTL 或删除全部过期类键；恢复文件归属还原为原 Redis 目录 UID/GID。
 5. 上述验证及 SQLite 检查成功后才发布恢复目录；完整应用正常的 `appendonly yes` 启动会加载已验证的 AOF。
 
 恢复程序从未启动完整邮件服务或开放端口；正式启动仍由操作者在验收窗口完成。过期键自然按 Redis 的绝对过期时间处理，备份不能延长 TTL。
@@ -148,7 +148,7 @@ python3 -u /srv/fix117-backup-code/verify-recovery.py \
   --work-dir /srv/fix117-backup-verification --image lanqin-email:latest-stack
 ```
 
-成功标准为 `ALL PASS`：完整备份 → `sha256sum -c` → 空目录恢复 → 真正启动恢复后的全部 bind mounts → nginx TLS 配置通过、SQLite 记录和 Redis DB0/DB3 合成键保留；并验证头像/附件/通知密钥/备份密钥/override 存在、证书 symlink 已物化、原生备份目录为空、篡改/逃逸/链接/危险覆盖被拒绝，以及快照失败后源容器恢复且无假成功集合。生产安装后仍须由运维手动执行一次备份并校验，测试 fixture 通过不代替生产恢复演练。
+成功标准为 `ALL PASS`：完整备份 → `sha256sum -c` → 空目录恢复 → 真正启动恢复后的全部 bind mounts → nginx TLS 配置通过、SQLite 记录和 Redis DB0/DB3 合成键保留；并验证头像/附件/通知密钥/备份密钥/override 存在、证书 symlink 已物化、原生备份目录为空、篡改/逃逸/链接/危险覆盖被拒绝，以及快照失败后源容器恢复且无假成功集合。Redis 另测 200ms/1s 自然到期、二进制键值与多种数据类型，并确认值损坏、永久键或活键缺失、TTL 延长、额外键、AOF 重启后丢状态仍会被拒绝。生产安装后仍须由运维手动执行一次备份并校验，测试 fixture 通过不代替生产恢复演练。
 
 ## GHCR 镜像权限
 

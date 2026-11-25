@@ -241,6 +241,89 @@ cp /snapshot/redis-work/snapshot.rdb /snapshot/redis-dump.rdb
 chmod 600 /snapshot/redis-dump.rdb
 '''
 
+# Canonical per-value Redis digests avoid DUMP's hash/set serialization order.
+# Only key names and fixed-size metadata cross RESP; large values stay in Redis.
+REDIS_FINGERPRINT = r'''
+import json
+from pathlib import Path
+import socket
+import sys
+
+with socket.create_connection(("127.0.0.1", 16379), timeout=10) as sock:
+    stream = sock.makefile("rb")
+
+    def response():
+        line = stream.readline()
+        if not line.endswith(b"\r\n"):
+            raise RuntimeError("incomplete Redis response")
+        kind, body = line[:1], line[1:-2]
+        if kind == b"+":
+            return body
+        if kind == b":":
+            return int(body)
+        if kind == b"$":
+            size = int(body)
+            if size == -1:
+                return None
+            value = stream.read(size)
+            if len(value) != size or stream.read(2) != b"\r\n":
+                raise RuntimeError("incomplete Redis bulk response")
+            return value
+        if kind == b"*":
+            return [response() for _ in range(int(body))]
+        raise RuntimeError("unexpected Redis response")
+
+    def send(commands):
+        for args in commands:
+            parts = [x if isinstance(x, bytes) else str(x).encode() for x in args]
+            sock.sendall(b"*%d\r\n" % len(parts) + b"".join(
+                b"$%d\r\n" % len(x) + x + b"\r\n" for x in parts))
+
+    def call(*args):
+        send([args])
+        return response()
+
+    state = {}
+    databases = int(call("CONFIG", "GET", "databases")[1])
+    for db in range(databases):
+        call("SELECT", db)
+        cursor = b"0"
+        while True:
+            cursor, keys = call("SCAN", cursor, "COUNT", 256)
+            if keys:
+                # EXEC freezes expiration checks across each TTL/digest pair.
+                commands = [("MULTI",)]
+                for key in keys:
+                    commands.extend([("PEXPIRETIME", key), ("DEBUG", "DIGEST-VALUE", key)])
+                commands.append(("EXEC",))
+                send(commands)
+                for _ in commands[:-1]:
+                    response()  # OK / QUEUED
+                values = response()
+                for i, key in enumerate(keys):
+                    expiry, digest = values[i * 2:i * 2 + 2]
+                    if expiry != -2:  # Expired between SCAN and EXEC.
+                        state[str(db) + ":" + key.hex()] = [digest[0].decode("ascii"), expiry]
+            if cursor == b"0":
+                break
+    seconds, micros = call("TIME")
+    now = int(seconds) * 1000 + int(micros) // 1000
+
+path = Path("/restore/.expected")
+if sys.argv[1] == "save":
+    path.write_text(json.dumps(state))
+else:
+    expected = json.loads(path.read_text())
+    if state.keys() - expected.keys():
+        raise RuntimeError("unexpected Redis keys after AOF conversion")
+    for key, value in expected.items():
+        if key in state:
+            if state[key] != value:
+                raise RuntimeError("Redis value or absolute expiry changed")
+        elif value[1] == -1 or value[1] > now:
+            raise RuntimeError("Redis key disappeared before expiry")
+'''
+
 RESTORE_WORKER = r'''set -eu
 umask 077
 mkdir -p /data/redis
@@ -255,12 +338,13 @@ start() {
  done
 }
 fingerprint() {
- redis-cli -p 16379 --raw debug digest
- redis-cli -p 16379 --raw info keyspace | tr -d '\r' | grep '^db' | sed 's/,avg_ttl=.*//' || test "$(redis-cli -p 16379 dbsize)" = 0
+ python3 - "$1" <<'PY'
+''' + REDIS_FINGERPRINT + r'''
+PY
 }
 # RDB must be loaded with AOF disabled. Starting with appendonly=yes ignores it.
 start no
-fingerprint > /restore/.expected
+fingerprint save
 # Enabling AOF starts the initial rewrite; wait for a complete manifest/base.
 test "$(redis-cli -p 16379 config set appendonly yes)" = OK
 n=0
@@ -271,16 +355,15 @@ while :; do
     printf '%s\n' "$info" | grep -q '^aof_last_bgrewrite_status:ok$'; then break; fi
  n=$((n+1)); test "$n" -lt 300; sleep .1
 done
-fingerprint > /restore/.actual
-cmp /restore/.expected /restore/.actual
+fingerprint check
 redis-cli -p 16379 shutdown nosave
-# Prove the next ordinary appendonly=yes start reads exactly the loaded state.
+# Prove the next ordinary appendonly=yes start reads the surviving state,
+# preserving every value and absolute expiry (naturally expired keys may vanish).
 start yes
-fingerprint > /restore/.actual
-cmp /restore/.expected /restore/.actual
+fingerprint check
 redis-cli -p 16379 shutdown nosave
 trap - EXIT
-rm -f /restore/.expected /restore/.actual /restore/recovery.pid /restore/recovery.log
+rm -f /restore/.expected /restore/recovery.pid /restore/recovery.log
 '''
 
 
@@ -645,7 +728,7 @@ def restore(backup_dir, app):
             if app.exists():
                 app.rmdir()  # empty only; never delete/overlay existing application files
             staging.rename(app)
-            print(f"restore done: {app}; all SHA256 verified; SQLite integrity ok; Redis RDB→AOF→restart digest/keyspace verified")
+            print(f"restore done: {app}; all SHA256 verified; SQLite integrity ok; Redis RDB→AOF→restart per-key digest/absolute-expiry verified")
             print(f"Start explicitly: docker compose --project-directory '{app}' -f '{app}/docker-compose.restore.json' up -d --no-build")
         finally:
             if staging.exists():
