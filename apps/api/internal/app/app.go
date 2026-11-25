@@ -929,6 +929,9 @@ func (a *App) migrate(ctx context.Context) error {
 	if err := a.migrateDraftTokens(ctx); err != nil {
 		return err
 	}
+	if err := a.backfillMessageReplyTo(ctx); err != nil {
+		return err
+	}
 	if err := a.migrateMailLabelSortOrder(ctx); err != nil {
 		return err
 	}

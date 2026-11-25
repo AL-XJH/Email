@@ -334,6 +334,12 @@ func sendSMTPMessage(client *smtp.Client, auth smtp.Auth, from string, recipient
 		return result, err
 	}
 	if err := wc.Close(); err != nil {
+		// 明确的 SMTP 应答仍按状态码分类：4xx 重试、5xx 永久失败。
+		// 只有没收到应答的传输错误才无法确定对方是否已收信。
+		var smtpErr *textproto.Error
+		if errors.As(err, &smtpErr) {
+			return result, err
+		}
 		return result, fmt.Errorf("%w: %v", errDeliveryUnknown, err)
 	}
 	// 走到这里服务器已经返回 250，邮件确定被接受。QUIT 只是礼貌收尾：
