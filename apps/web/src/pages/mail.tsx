@@ -18,7 +18,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query"
 import { useNavigate, useSearchParams } from "react-router-dom"
-import type { ImperativePanelHandle } from "react-resizable-panels"
+import type { PanelImperativeHandle } from "react-resizable-panels"
 import {
   Archive,
   ArrowLeft,
@@ -364,7 +364,7 @@ export function MailPage() {
   const [folderDropTarget, setFolderDropTarget] = React.useState<FolderDropTarget | null>(null)
   const [draggingLabelId, setDraggingLabelId] = React.useState("")
   const [labelDropTarget, setLabelDropTarget] = React.useState<LabelDropTarget | null>(null)
-  const sidebarPanelRef = React.useRef<ImperativePanelHandle>(null)
+  const sidebarPanelRef = React.useRef<PanelImperativeHandle>(null)
   const themeMountedRef = React.useRef(false)
   const mailNotifyStateRef = React.useRef<Record<string, MailNotificationState>>({})
   const mailAudioContextRef = React.useRef<AudioContext | null>(null)
@@ -2543,7 +2543,7 @@ export function MailPage() {
   )
   function toggleSidebar() {
     if (sidebarCollapsed) {
-      sidebarPanelRef.current?.expand(12)
+      sidebarPanelRef.current?.expand()
       setSidebarCollapsed(false)
     } else {
       sidebarPanelRef.current?.collapse()
@@ -3106,19 +3106,18 @@ export function MailPage() {
         ) : (
           <ResizablePanelGroup direction="horizontal" className="h-full min-h-0 w-full">
             <ResizablePanel
-              ref={sidebarPanelRef}
+              panelRef={sidebarPanelRef}
               collapsible
-              collapsedSize={4}
-              defaultSize={12}
-              minSize={10}
-              maxSize={18}
-              onCollapse={() => setSidebarCollapsed(true)}
-              onExpand={() => setSidebarCollapsed(false)}
+              collapsedSize="4%"
+              defaultSize="12%"
+              minSize="10%"
+              maxSize="18%"
+              onResize={({ asPercentage }) => setSidebarCollapsed(asPercentage <= 5)}
             >
               {sidebarContent}
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize={85} minSize={60}>
+            <ResizablePanel defaultSize="85%" minSize="60%">
               <section className="flex h-full min-h-0 flex-col">{contentView}</section>
             </ResizablePanel>
           </ResizablePanelGroup>

@@ -19,7 +19,6 @@ import {
   Copy,
   ExternalLink,
   GitBranch,
-  Github,
   Globe2,
   Mailbox,
   MoreHorizontal,
@@ -3664,7 +3663,7 @@ function AboutProjectCard() {
               asChild
             >
               <a href={projectRepositoryUrl} target="_blank" rel="noreferrer">
-                <Github className="h-5 w-5" />
+                <GitBranch className="h-5 w-5" />
                 GitHub
               </a>
             </Button>

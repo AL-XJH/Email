@@ -13,6 +13,19 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/lanqin-backup ./cmd/backup
 
+FROM debian:trixie-slim AS sqlite-build
+ARG SQLITE_VERSION=3540100
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && \
+    curl -fsSL "https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_VERSION}.tar.gz" -o /tmp/sqlite.tar.gz && \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp && \
+    cd "/tmp/sqlite-autoconf-${SQLITE_VERSION}" && \
+    ./configure --prefix=/usr/local && \
+    make -j"$(nproc)" && \
+    make install && \
+    rm -rf /tmp/sqlite.tar.gz "/tmp/sqlite-autoconf-${SQLITE_VERSION}"
+
 FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS web-build
 WORKDIR /src
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -31,6 +44,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG RSPAMD_REPO=https://rspamd.com/apt-stable
 # 单容器模式把 Redis 也塞进同一个镜像，省掉一个 sidecar 容器。
 ARG REDIS_REPO=https://packages.redis.io/deb
+ARG NGINX_REPO=https://nginx.org/packages/mainline/debian
+ARG DOVECOT_REPO=https://repo.dovecot.org/ce-2.4-latest/debian/trixie
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
   rm -f /etc/apt/apt.conf.d/docker-clean && \
@@ -41,6 +56,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   echo "deb [signed-by=/etc/apt/keyrings/rspamd.gpg] $RSPAMD_REPO/ trixie main" > /etc/apt/sources.list.d/rspamd.list && \
   curl -fsSL "https://packages.redis.io/gpg" | gpg --dearmor > /etc/apt/keyrings/redis.gpg && \
   echo "deb [signed-by=/etc/apt/keyrings/redis.gpg] $REDIS_REPO trixie main" > /etc/apt/sources.list.d/redis.list && \
+  curl -fsSL "https://nginx.org/keys/nginx_signing.key" | gpg --dearmor > /etc/apt/keyrings/nginx.gpg && \
+  echo "deb [signed-by=/etc/apt/keyrings/nginx.gpg] $NGINX_REPO trixie nginx" > /etc/apt/sources.list.d/nginx.list && \
+  curl -fsSL "https://repo.dovecot.org/DOVECOT-REPO-GPG-2.4" | gpg --dearmor > /etc/apt/keyrings/dovecot.gpg && \
+  echo "deb [signed-by=/etc/apt/keyrings/dovecot.gpg] $DOVECOT_REPO trixie main" > /etc/apt/sources.list.d/dovecot.list && \
   apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl sqlite3 supervisor nginx \
     postfix postfix-sqlite \
@@ -50,6 +69,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY --from=api-build /out/lanqin-api /usr/local/bin/lanqin-api
 COPY --from=api-build /out/lanqin-backup /usr/local/bin/lanqin-backup
+COPY --from=sqlite-build /usr/local/bin/sqlite3 /usr/local/bin/sqlite3
 COPY --from=web-build /src/apps/web/dist /usr/share/nginx/html
 
 COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/lanqin.conf

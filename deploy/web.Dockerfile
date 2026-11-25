@@ -12,7 +12,7 @@ ARG VITE_APP_VERSION=""
 ARG VITE_RELEASE_URL=""
 RUN pnpm --dir apps/web run build
 
-FROM nginx:1.29-alpine
+FROM nginx:1.31-alpine
 COPY --from=build /src/apps/web/dist /usr/share/nginx/html
 COPY deploy/nginx/web.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80

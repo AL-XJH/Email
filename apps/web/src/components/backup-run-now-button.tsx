@@ -30,7 +30,9 @@ export function BackupRunNowButton({
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState("")
   const busy = React.useRef(false)
-  const attempt = React.useRef<{ requestId: string; revision: string; recipient: string }>()
+  const attempt = React.useRef<
+    { requestId: string; revision: string; recipient: string } | undefined
+  >(undefined)
   const available =
     editable &&
     !destination.disabled &&

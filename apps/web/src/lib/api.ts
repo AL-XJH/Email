@@ -142,11 +142,13 @@ async function request<T>(
     return res.json() as Promise<T>
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("请求超时，请检查后端服务是否正常")
+      throw new Error("请求超时，请检查后端服务是否正常", { cause: error })
     }
     throw error instanceof ApiError
       ? error
-      : new Error(error instanceof TypeError ? "网络请求失败" : errorMessage(error))
+      : new Error(error instanceof TypeError ? "网络请求失败" : errorMessage(error), {
+          cause: error,
+        })
   } finally {
     window.clearTimeout(timeout)
   }

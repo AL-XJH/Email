@@ -23,8 +23,32 @@ export default [
   },
   forSourceFiles(eslint.configs.recommended),
   ...typescriptEslint.configs["flat/recommended"].map(forSourceFiles),
-  forSourceFiles(reactHooks.configs["recommended-latest"]),
+  forSourceFiles(reactHooks.configs.flat["recommended-latest"]),
   forSourceFiles(reactRefresh.configs.vite),
+  {
+    files: sourceFiles,
+    rules: {
+      // 这些规则来自 React Compiler 的新推荐集，现有代码没有接编译器；
+      // 保留 rules-of-hooks / exhaustive-deps 这类核心规则，避免把 lint 变成全仓重写。
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/purity": "off",
+      "react-hooks/static-components": "off",
+      "react-hooks/refs": "off",
+      "react-hooks/immutability": "off",
+      "react-hooks/globals": "off",
+      "react-hooks/error-boundaries": "off",
+      "react-hooks/set-state-in-render": "off",
+      "react-hooks/preserve-manual-memoization": "off",
+      "react-hooks/gating": "off",
+      "react-hooks/config": "warn",
+    },
+  },
+  {
+    files: ["src/main.tsx"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
   {
     files: sourceFiles,
     languageOptions: {
@@ -92,6 +116,12 @@ export default [
           ],
         },
       ],
+    },
+  },
+  {
+    files: ["src/main.tsx"],
+    rules: {
+      "react-refresh/only-export-components": "off",
     },
   },
 ];

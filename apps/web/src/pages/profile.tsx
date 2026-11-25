@@ -11,7 +11,7 @@ import { MailStatistics } from "@/components/mail-statistics"
 
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import type { ImperativePanelHandle } from "react-resizable-panels"
+import type { PanelImperativeHandle } from "react-resizable-panels"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import {
   ArrowLeft,
@@ -194,7 +194,7 @@ export function ProfilePage() {
   const { toast } = useToast()
   const passwordFormRef = React.useRef<HTMLFormElement>(null)
   const twoFactorFormRef = React.useRef<HTMLFormElement>(null)
-  const sidebarPanelRef = React.useRef<ImperativePanelHandle>(null)
+  const sidebarPanelRef = React.useRef<PanelImperativeHandle>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mailboxId, setMailboxId] = React.useState(
     () => localStorage.getItem("lanqin:selected-mailbox") || ""
@@ -799,7 +799,7 @@ export function ProfilePage() {
   }
   function toggleSidebar() {
     if (sidebarCollapsed) {
-      sidebarPanelRef.current?.expand(14)
+      sidebarPanelRef.current?.expand()
       setSidebarCollapsed(false)
     } else {
       sidebarPanelRef.current?.collapse()
@@ -928,19 +928,18 @@ export function ProfilePage() {
         ) : (
           <ResizablePanelGroup direction="horizontal" className="h-full min-h-0 w-full">
             <ResizablePanel
-              ref={sidebarPanelRef}
+              panelRef={sidebarPanelRef}
               collapsible
-              collapsedSize={4}
-              defaultSize={15}
-              minSize={11}
-              maxSize={24}
-              onCollapse={() => setSidebarCollapsed(true)}
-              onExpand={() => setSidebarCollapsed(false)}
+              collapsedSize="4%"
+              defaultSize="15%"
+              minSize="11%"
+              maxSize="24%"
+              onResize={({ asPercentage }) => setSidebarCollapsed(asPercentage <= 5)}
             >
               {sidebarContent}
             </ResizablePanel>
             <ResizableHandle withHandle />
-            <ResizablePanel defaultSize={85} minSize={60}>
+            <ResizablePanel defaultSize="85%" minSize="60%">
               <section className="flex h-full min-h-0 flex-col">
                 <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b px-5">
                   <div className="text-sm font-semibold">{uiText(tabs[tab].label)}</div>
@@ -1210,7 +1209,7 @@ function ProfileOverview({
   }
   profile: { mutate: (form: FormData) => void; isPending: boolean }
   password: { mutate: (form: FormData) => void; isPending: boolean }
-  passwordFormRef: React.RefObject<HTMLFormElement>
+  passwordFormRef: React.RefObject<HTMLFormElement | null>
   stats?: MailStats
   showStats: boolean
   displayMode: DisplayMode
@@ -1220,7 +1219,7 @@ function ProfileOverview({
     mutate: (payload: { showRemoteImages: boolean }) => void
     isPending: boolean
   }
-  twoFactorFormRef: React.RefObject<HTMLFormElement>
+  twoFactorFormRef: React.RefObject<HTMLFormElement | null>
   setupTwoFactor: {
     data?: { secret: string; otpauthUrl: string }
     mutate: (currentPassword: string) => void

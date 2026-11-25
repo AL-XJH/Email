@@ -26,13 +26,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Enable pnpm
-        run: corepack enable
+          node-version: '26'
 
       - name: Install pnpm
-        run: corepack prepare pnpm@10.28.2 --activate
+        run: npm install --global pnpm@12.23.0
 
       - name: Check npm vulnerabilities
         run: |
