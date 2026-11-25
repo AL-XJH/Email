@@ -7,6 +7,7 @@ import { ArrowLeft, ArrowRight, UserPlus } from "lucide-react"
 import { api } from "@/lib/api"
 import type { PublicDomain } from "@/lib/api"
 import { useMe } from "@/hooks/use-me"
+import { startAuthSession } from "@/lib/auth-session"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -88,14 +89,15 @@ export function RegisterPage() {
       })
     },
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["me"] })
+      startAuthSession(qc)
+      await qc.fetchQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 0 })
       toast({ title: linuxDoRegistration ? "Linux.do 账号注册成功" : "注册成功" })
       navigate("/profile", { replace: true })
     },
     onError: (e) => toast({ title: "注册失败", description: errorMessage(e) }),
   })
   const turnstileRequired = !!publicSettings.data?.turnstileEnabled
-  if (me.data?.user) return <Navigate to="/" replace />
+  if (!me.isError && me.data?.user && me.isFetchedAfterMount) return <Navigate to="/" replace />
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-10">
       <div className="w-full max-w-[420px]">

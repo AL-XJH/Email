@@ -5,7 +5,7 @@ import { Link, Navigate, useLocation, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowRight, KeyRound, Link2, LockKeyhole } from "lucide-react"
 import { api } from "@/lib/api"
-import { clearQueryCacheSnapshot } from "@/lib/query-cache"
+import { startAuthSession } from "@/lib/auth-session"
 import { useMe } from "@/hooks/use-me"
 import { TurnstileBox } from "@/components/turnstile-box"
 import { PasswordInput } from "@/components/ui/password-input"
@@ -41,9 +41,8 @@ export function LoginPage() {
         return
       }
       // 换账号登录：先把上一个人留下的缓存快照和内存数据清掉
-      clearQueryCacheSnapshot()
-      qc.clear()
-      await qc.invalidateQueries({ queryKey: ["me"] })
+      startAuthSession(qc)
+      await qc.fetchQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 0 })
     },
     onError: (e) => toast({ title: "登录失败", description: errorMessage(e) }),
   })
@@ -52,7 +51,8 @@ export function LoginPage() {
     mutationFn: (form: FormData) => api.linuxDoTwoFactor(String(form.get("twoFactorCode") || "")),
     onSuccess: async () => {
       setParams({}, { replace: true })
-      await qc.invalidateQueries({ queryKey: ["me"] })
+      startAuthSession(qc)
+      await qc.fetchQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 0 })
     },
     onError: (e) => toast({ title: "验证失败", description: errorMessage(e) }),
   })
@@ -83,7 +83,8 @@ export function LoginPage() {
     requestedPath.startsWith("/") && !requestedPath.startsWith("//") ? requestedPath : "/"
   const turnstileRequired = !!publicSettings.data?.turnstileEnabled
   // 同样不能相信 hydrate 回来的 me：等挂载后的校验完成再跳转。
-  if (me.data?.user && me.isFetchedAfterMount) return <Navigate to={returnTo} replace />
+  if (!me.isError && me.data?.user && me.isFetchedAfterMount)
+    return <Navigate to={returnTo} replace />
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-10">
       <div className="w-full max-w-[420px]">

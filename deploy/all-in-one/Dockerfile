@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     curl -fsSL "https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_VERSION}.tar.gz" -o /tmp/sqlite.tar.gz && \
     tar -xzf /tmp/sqlite.tar.gz -C /tmp && \
     cd "/tmp/sqlite-autoconf-${SQLITE_VERSION}" && \
-    ./configure --prefix=/usr/local && \
+    ./configure --prefix=/usr/local --enable-fts5 && \
     make -j"$(nproc)" && \
     make install && \
     rm -rf /tmp/sqlite.tar.gz "/tmp/sqlite-autoconf-${SQLITE_VERSION}"
@@ -76,6 +76,7 @@ COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/lanqin.conf
 COPY deploy/all-in-one/nginx.conf /etc/nginx/conf.d/default.conf
 COPY deploy/all-in-one/redis.conf /etc/redis-lanqin.conf
 COPY deploy/all-in-one/entrypoint.sh /entrypoint.sh
+COPY deploy/all-in-one/healthcheck.sh /usr/local/bin/lanqin-healthcheck
 
 COPY deploy/postfix/main.cf /etc/postfix/main.cf
 COPY deploy/postfix/master.cf /etc/postfix/master.cf
@@ -92,14 +93,9 @@ COPY deploy/rspamd/sync-dkim.sh /usr/local/bin/lanqin-rspamd-sync-dkim
 RUN sievec /etc/dovecot/sieve/spam.sieve && \
     chmod 644 /etc/dovecot/sieve/spam.sieve /etc/dovecot/sieve/spam.svbin
 
-RUN chmod +x /entrypoint.sh /usr/local/bin/lanqin-rspamd-sync-dkim /usr/local/bin/lanqin-postfix-configure-db /usr/local/bin/lanqin-dovecot-configure-db && mkdir -p /run/nginx /run/rspamd /var/mail/vhosts /data /var/lib/rspamd/dkim
+RUN chmod +x /entrypoint.sh /usr/local/bin/lanqin-healthcheck /usr/local/bin/lanqin-rspamd-sync-dkim /usr/local/bin/lanqin-postfix-configure-db /usr/local/bin/lanqin-dovecot-configure-db && mkdir -p /run/nginx /run/rspamd /var/mail/vhosts /data /var/lib/rspamd/dkim
 
 EXPOSE 80 443 25 465 587 993 995
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 \
-  CMD curl --fail --silent --show-error http://127.0.0.1/readyz >/dev/null \
-    && postfix status >/dev/null 2>&1 \
-    && doveadm service status >/dev/null 2>&1 \
-    && rspamadm control stat >/dev/null 2>&1 \
-    && redis-cli ping >/dev/null 2>&1 \
-    || exit 1
+  CMD ["/usr/local/bin/lanqin-healthcheck"]
 CMD ["/entrypoint.sh"]

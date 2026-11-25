@@ -127,6 +127,12 @@ jobs:
             doveconf -n >/dev/null &&
             test -s /usr/share/nginx/html/index.html
           "
+          docker run --rm --network none --entrypoint sh \
+            -v "$PWD/deploy/all-in-one/tests/sqlite-fts5.sh:/test.sh:ro" \
+            lanqin-email:ci /test.sh
+
+      - name: Check healthcheck failure semantics
+        run: python3 deploy/all-in-one/tests/healthcheck_test.py -v
 
   compose-config:
     name: Validate compose files

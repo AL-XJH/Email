@@ -1,6 +1,23 @@
 @import "tailwindcss";
 @config "../tailwind.config.cjs";
 
+/* App chrome uses one radius at every Tailwind size, including former circles.
+   Mail HTML/iframe styles are intentionally independent of these utilities. */
+@theme inline {
+  --radius-xs: var(--radius);
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
+}
+
+@utility rounded-full {
+  border-radius: var(--radius);
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -22,7 +39,7 @@
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
     --ring: 240 5.9% 10%;
-    --radius: 0.5rem;
+    --radius: 6px;
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;

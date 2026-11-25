@@ -1,8 +1,8 @@
 # 自建邮箱
 
 ![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)
-![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript)
+![React](https://img.shields.io/badge/React-19.3-61DAFB?logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker)
 ![Postfix](https://img.shields.io/badge/Postfix-5E3C2B?logo=maildotru)
@@ -18,7 +18,7 @@
 
 ### 界面与交互
 
-- 按 seek.li 的密度重排 网页邮箱：列表行高 73px、侧栏 36px 节奏、统一 12/8/4/full 四档圆角。
+- 按 seek.li 的密度重排网页邮箱：列表行高 73px、侧栏 36px 节奏，应用控件、卡片、菜单和头像的正圆角统一为 6px；邮件原文样式保持独立。
 - 手机上从阅读页侧滑返回列表；切换文件夹/筛选自动回到列表顶部，刷新不闪。
 - 标签/文件夹分组折叠、右键菜单独立滚动、紧凑模式支持键盘操作。
 - 个人资料页支持上传头像（JPG/PNG/WebP，最大 2 MB）；侧栏同步显示，未设置时回退首字母。
@@ -43,7 +43,7 @@
 ### Telegram 通知
 
 - 一封邮件一条消息，第一行加粗主题，第二行收件人/验证码信息。
-- 正文最多 1300 字，超长链接收成可点击「链接」，英文邮件自动翻译后再推送。
+- 推送消息最多 200 个可见字符，超长内容带截断提示和「打开邮件」入口；英文邮件自动翻译后再推送。
 - 识别到验证码时附「复制验证码」按钮，点一下直接进剪贴板。
 - Bot Token 加密保存；通知 outbox 有重试和失败记录。
 
@@ -68,9 +68,9 @@
 
 | 层 | 技术 |
 | --- | --- |
-| 前端 | React 18、TypeScript、Vite、shadcn/ui、TanStack Query |
-| 后端 | Go 1.27、SQLite、Maildir 同步、SMTP/IMAP 客户端 |
-| 邮件栈 | Postfix、Dovecot、Rspamd、Redis 8 |
+| 前端 | React 19、TypeScript 7、Vite 8、Tailwind 4、shadcn/ui、TanStack Query |
+| 后端 | Go 1.27、SQLite 3.54（含 FTS5）、Maildir 同步、SMTP/IMAP 客户端 |
+| 邮件栈 | Postfix 3.10、Dovecot 2.4、Rspamd 4.3、Redis 8、Nginx 1.31 |
 | 部署 | Docker Compose，单容器 all-in-one（可选多容器 stack） |
 
 ## 目录结构
@@ -89,8 +89,8 @@
 ### 开发
 
 - Go 1.27+
-- Node.js 20+
-- pnpm 10.28.2（可用 corepack 启用）
+- Node.js 26+
+- pnpm 12.23.0（`npm install -g pnpm@12.23.0`；Node 26 不再内置 Corepack）
 
 ### 部署
 
@@ -117,8 +117,7 @@ go run ./cmd/server
 
 ```bash
 cd apps/web
-corepack enable
-corepack prepare pnpm@10.28.2 --activate
+npm install -g pnpm@12.23.0
 pnpm install
 pnpm run dev
 ```
@@ -148,7 +147,7 @@ docker compose up -d
 ghcr.io/al-xjh/lanqin-email:latest
 ```
 
-也可以固定到某个发布标签，例如 `ghcr.io/al-xjh/lanqin-email:v1.2.5-lanqin.92`。生产升级前先备份 `.env`，回滚时改回上一版镜像再 `docker compose up -d`。
+也可以固定到某个发布标签，例如 `ghcr.io/al-xjh/lanqin-email:v1.3.0-lanqin.117`。生产升级前先备份 `.env`，回滚时改回上一版镜像再 `docker compose up -d`。
 
 ### 从源码构建
 

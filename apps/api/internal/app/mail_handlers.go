@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1274,68 +1275,94 @@ func (a *App) checkAndRecordProtocolRate(ctx context.Context, user *User, mb *Ma
 	return tx.Commit()
 }
 
-// handleAuthPolicy answers Dovecot's auth policy lookups.
-//
-// It is registered outside /api and carries no session, because Dovecot has no
-// credentials to present. The bundled nginx configurations do not proxy it and the
-// API port is never published, so it is reachable only from inside the deployment;
-// LANQIN_AUTH_POLICY_SECRET adds a shared secret for setups that expose 8080
-// directly. Responses deliberately do not distinguish "no such user" from
-// "disabled" so the endpoint cannot be used to enumerate mailboxes.
+// dovecotAuthPolicyRequest includes the default attributes sent by both Dovecot
+// 2.3 and 2.4, even when auth_policy_request_attributes adds custom attributes.
+// Keep this protocol model local; other API requests still use decodeJSON.
+type dovecotAuthPolicyRequest struct {
+	Login        string `json:"login"`
+	Protocol     string `json:"protocol"`
+	Username     string `json:"username"`
+	IP           string `json:"ip"`
+	Remote       string `json:"remote"`
+	DeviceID     string `json:"device_id"`
+	FailType     string `json:"fail_type"`
+	PasswordHash string `json:"pwhash"`
+	SessionID    string `json:"session_id"`
+	TLS          *bool  `json:"tls"`
+	Success      *bool  `json:"success"`
+	PolicyReject *bool  `json:"policy_reject"`
+}
+
+// handleAuthPolicy answers authenticated Dovecot allow/report requests. Any
+// malformed request or unavailable policy state rejects authentication.
 func (a *App) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
-	// 没有 secret 就等于任何人都能清/植登录锁定。entrypoint 会在 /data 里生成
-	// 一个共享 secret；读不到时宁可拒绝 Dovecot 登录，也不放开这个端点。
-	secret := strings.TrimSpace(a.config().AuthPolicySecret)
-	key := r.URL.Query().Get("key")
-	// Dovecot 的 auth_policy 客户端会在 URL 后面直接追加 "?command=allow"。
-	// 如果配置里已经有 "?key=..."，查询串就会变成
-	// "key=<secret>?command=allow"，这里只取 key 的第一段。
-	if before, _, ok := strings.Cut(key, "?"); ok {
-		key = before
-	}
-	if secret == "" || subtle.ConstantTimeCompare([]byte(key), []byte(secret)) != 1 {
+	reject := func() {
 		respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
+	}
+	// Dovecot appends ?command=allow/report even to a URL containing ?key=.
+	// Parse that delimiter as a query separator, without accepting duplicate or
+	// conflicting commands. Do not change global URL or JSON parsing behavior.
+	query, err := url.ParseQuery(strings.Replace(r.URL.RawQuery, "?command=", "&command=", 1))
+	if err != nil || len(query["key"]) != 1 || len(query["command"]) != 1 {
+		reject()
 		return
 	}
-	var req struct {
-		Login        string `json:"login"`
-		Protocol     string `json:"protocol"`
-		Username     string `json:"username"`
-		IP           string `json:"ip"`
-		Remote       string `json:"remote"`
-		Success      *bool  `json:"success"`
-		PolicyReject *bool  `json:"policy_reject"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		respondJSON(w, http.StatusOK, map[string]int{"status": 0})
+	secret := strings.TrimSpace(a.config().AuthPolicySecret)
+	command := query.Get("command")
+	if secret == "" || subtle.ConstantTimeCompare([]byte(query.Get("key")), []byte(secret)) != 1 || (command != "allow" && command != "report") {
+		reject()
 		return
 	}
-	var user *User
-	var mailbox *Mailbox
+	// Policy requests contain only small metadata. Decode the entire bounded
+	// body, including trailing bytes, so an oversized or second JSON value can
+	// never become an allow response.
+	defer r.Body.Close()
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	var req dovecotAuthPolicyRequest
+	if err := dec.Decode(&req); err != nil {
+		reject()
+		return
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		reject()
+		return
+	}
 	login := normalizeEmail(req.Login)
 	if login == "" {
 		login = normalizeEmail(req.Username)
 	}
-	if login != "" {
-		clientIP := strings.TrimSpace(req.IP)
-		if clientIP == "" {
-			clientIP = strings.TrimSpace(req.Remote)
-		}
-		// Dovecot 的每分鐘計數會隨時間重置，密碼猜測可以無限持續；
-		// 接到 webmail/SMTP 同一套 5 次/15 分鐘鎖定上。
-		if _, err := a.checkLoginRateLimit(r.Context(), login, clientIP); err != nil {
-			respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
+	if login == "" || (command == "allow" && (req.Success != nil || req.PolicyReject != nil || req.FailType != "")) {
+		reject()
+		return
+	}
+	clientIP := strings.TrimSpace(req.IP)
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(req.Remote)
+	}
+	if retryAfter, err := a.checkLoginRateLimit(r.Context(), login, clientIP); err != nil || retryAfter > 0 {
+		reject()
+		return
+	}
+	if command == "report" {
+		// Policy rejections are not bad-password attempts. A contradictory success
+		// must not clear failures; an explicit fail_type always outweighs success.
+		if req.PolicyReject != nil && *req.PolicyReject {
+			reject()
 			return
 		}
-		if req.Success != nil && !*req.Success {
+		if (req.Success != nil && !*req.Success) || req.FailType != "" {
 			_, _ = a.recordLoginFailure(r.Context(), login, clientIP)
-			respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
+			reject()
 			return
 		}
-		if req.Success != nil && *req.Success {
-			_ = a.clearLoginAccountFailures(r.Context(), login)
+		if req.Success == nil || !*req.Success {
+			reject()
+			return
 		}
 	}
+	var user *User
+	var mailbox *Mailbox
 	if login != "" {
 		if mb, err := a.mailboxByAddress(r.Context(), login); err == nil {
 			mailbox = mb
@@ -1351,12 +1378,25 @@ func (a *App) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]any{"status": -1, "msg": "policy rejected"})
 		return
 	}
+	if command == "report" {
+		// A successful report must not charge another protocol attempt. Delete
+		// only unlocked account history; a concurrent failure may have installed
+		// a lock after the check above. IP history is never cleared by success.
+		_, err := a.db.ExecContext(r.Context(), `DELETE FROM login_rate_limits
+			WHERE scope=? AND subject_hash=? AND (blocked_until='' OR blocked_until<=?)`,
+			loginRateLimitAccountScope, loginRateLimitHash(loginRateLimitAccountScope, login), a.now().UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			reject()
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]int{"status": 0})
+		return
+	}
 	if user.Role == "admin" {
 		respondJSON(w, http.StatusOK, map[string]int{"status": 0})
 		return
 	}
 	limits := user.Limits
-	var err error
 	switch strings.ToLower(req.Protocol) {
 	case "imap":
 		if limits.IMAPMinuteLimit > 0 {

@@ -17,14 +17,7 @@ services:
       # 生产环境如需第三方客户端校验证书，请取消下面挂载，并在 .env 配置：
       # - /etc/letsencrypt:/etc/letsencrypt:ro
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          curl --fail --silent --show-error http://127.0.0.1/readyz >/dev/null
-          && kill -0 "$(cat /var/spool/postfix/pid/master.pid)"
-          && doveadm service status >/dev/null 2>&1
-          && rspamadm control stat >/dev/null 2>&1
-          && redis-cli ping >/dev/null 2>&1
+      test: ["CMD", "/usr/local/bin/lanqin-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 6

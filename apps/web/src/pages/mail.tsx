@@ -2700,7 +2700,7 @@ export function MailPage() {
     />
   ) : (
     <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
-      <ResizablePanel defaultSize={28} minSize={22} maxSize={38}>
+      <ResizablePanel defaultSize="28%" minSize="22%" maxSize="38%">
         <div className="flex h-full min-h-0 flex-col">
           <div className="relative z-20 shrink-0 px-4 pb-3 pt-3">
             <div className="flex items-center gap-2">
@@ -2884,7 +2884,7 @@ export function MailPage() {
       </ResizablePanel>
       <ResizableHandle />
 
-      <ResizablePanel defaultSize={68} minSize={44}>
+      <ResizablePanel defaultSize="68%" minSize="44%">
         <section className="h-full min-h-0">
           {!selectedId && (
             <div className="flex h-full items-center justify-center text-muted-foreground">

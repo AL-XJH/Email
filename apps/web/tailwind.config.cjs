@@ -49,11 +49,13 @@ module.exports = {
   				ring: 'hsl(var(--sidebar-ring))'
   			}
   		},
-  		borderRadius: {
-  			lg: 'var(--radius)',
-  			md: 'calc(var(--radius) - 2px)',
-  			sm: 'calc(var(--radius) - 4px)'
-  		}
+    borderRadius: {
+      DEFAULT: 'var(--radius)',
+      lg: 'var(--radius)',
+      md: 'var(--radius)',
+      sm: 'var(--radius)',
+      full: 'var(--radius)'
+    }
   	}
   },
   plugins: [require("tailwindcss-animate")],
