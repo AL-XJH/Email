@@ -190,11 +190,11 @@ export function buildMailFrameSrcDoc(
     const withBase = hasHead
       ? sanitized.replace(
           /<head([^>]*)>/i,
-          `<head$1><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_self">${mailFrameBaseStyle()}`
+          `<head$1><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_self">${mailFrameBaseStyle()}`
         )
       : sanitized.replace(
           /<html([^>]*)>/i,
-          `<html$1><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_self">${mailFrameBaseStyle()}</head>`
+          `<html$1><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_self">${mailFrameBaseStyle()}</head>`
         )
     return /<!doctype/i.test(withBase) ? withBase : `<!doctype html>${withBase}`
   }
@@ -202,6 +202,7 @@ export function buildMailFrameSrcDoc(
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <base target="_self">
 ${mailFrameBaseStyle()}

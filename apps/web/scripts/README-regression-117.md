@@ -65,6 +65,18 @@ BASE_URL=http://127.0.0.1:18089 PLAYWRIGHT_MODULE=/work/tests/node_modules/playw
   node scripts/compose-async-regression.cjs
 ```
 
+## .122 邮件正文 Referer 回归
+
+`mail-referrer-regression.cjs` 覆盖「远程图片不能带 Referer」：Chrome 对 `srcdoc` 文档忽略 `<iframe referrerPolicy>`，框架里的图片请求仍带 `Referer: https://<host>/`，开了防盗链的发信方（Trakt 的 CDN 实测带 Referer 返回 403、不带返回 200）就会一直破图。修复方式是帧文档自身带 `<meta name="referrer" content="no-referrer">`。脚本起一个 https 探针服务（带 Referer 返回 403，不带返回 1x1 PNG），走 mock API 打开一封含探针图的邮件，断言帧文档声明了该 meta、图片真的加载成功、且解析用的那次请求不带 Referer。探针必须是 https：站点 CSP 为 `img-src 'self' data: blob: https:`，http 探针会先被 CSP 拦掉。`from` 在 mock 里是字符串（`"Sender <a@b>"`）、`to` 是字符串数组、folders/labels 返回数组，否则前端会 `e.trim is not a function` 崩掉。
+
+```sh
+BASE_URL=http://127.0.0.1:18089 PLAYWRIGHT_MODULE=/work/tests/node_modules/playwright \
+  CHROMIUM_PATH=/work/browser/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell \
+  node scripts/mail-referrer-regression.cjs
+```
+
+旧构建上该脚本变红（`frame document must declare <meta name="referrer" ...>`），新构建 1/1 通过。
+
 ## Coverage
 
 - Empty and hydrated anonymous sessions, expiration from concurrent protected requests, successful login and preserved return path, failed login without navigation loops, login racing an old `/api/me` response, and failed `/api/me` refetch with cached identity.
