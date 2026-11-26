@@ -624,7 +624,7 @@ func (a *App) respondMailMessageListInternal(w http.ResponseWriter, r *http.Requ
 		args = append(args, cursorReceivedAt, cursorID)
 	}
 	args = append(args, limit+1)
-	query := `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id)
+	query := `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(CASE WHEN m.thread_id='' THEN 0 ELSE (SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id) END)
 		FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE ` + where + ` ORDER BY m.received_at DESC,m.id DESC LIMIT ?`
 	if offset > 0 {
 		query += ` OFFSET ?`
@@ -910,8 +910,13 @@ func (a *App) handleMailMessage(w http.ResponseWriter, r *http.Request) {
 	access, _ := a.mailboxReadAccessWithID(r, msg.MailboxID)
 	if access != nil && access.Owner && r.URL.Query().Get("markRead") != "0" && !msg.IsRead && userHasPermission(currentUser(r), PermissionMailOrganize) {
 		read := true
+		// 只有 maildir 侧真的写成功（或本来就没有磁盘副本）才把库里标成已读：
+		// 反过来做的话，rename 失败会让库显示已读、文件仍缺 S 标志，下一轮
+		// maildir 同步按文件名把它翻回未读——用户看到的就是「点了已读又变未读」。
 		if err := a.updateMessageMaildirFlags(r.Context(), msg.ID, &read, nil); err != nil {
 			a.log.Warn("failed to update maildir read flag", "message_id", msg.ID, "error", err)
+			respondJSON(w, http.StatusOK, msg)
+			return
 		}
 		if modSeq, err := a.updateMessageModSeq(r.Context(), msg.ID, msg.FolderID); err == nil && modSeq > 0 {
 			_, _ = a.db.ExecContext(r.Context(), `UPDATE messages SET is_read=1, imap_modseq=?, updated_at=? WHERE id=?`, modSeq, a.now().UTC().Format(time.RFC3339Nano), msg.ID)

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import React, { useState } from "react"
 import { Archive, HardDrive, Inbox, Paperclip, Send } from "lucide-react"
 import type { MailStats } from "@/lib/api"
 import { uiText, useLanguage } from "@/lib/language"
@@ -16,9 +16,15 @@ export function MailStatistics({
 }) {
   const [language] = useLanguage()
   const [metric, setMetric] = useState<"count" | "bytes">("count")
-  const number = (value: number) => new Intl.NumberFormat(language).format(value)
-  const percent = (value: number) =>
-    new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 1 }).format(value)
+  // Intl formatters are expensive to construct; this panel formats ~9 values
+  // per render and re-renders on every metric toggle.
+  const numberFormat = React.useMemo(() => new Intl.NumberFormat(language), [language])
+  const percentFormat = React.useMemo(
+    () => new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 1 }),
+    [language]
+  )
+  const number = (value: number) => numberFormat.format(value)
+  const percent = (value: number) => percentFormat.format(value)
   const folders = [...stats.byFolder].sort((a, b) => b[metric] - a[metric])
   const total = stats.totalMessages
   const read = Math.max(0, total - stats.unreadMessages)

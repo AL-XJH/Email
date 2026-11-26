@@ -81,7 +81,13 @@ export function MailHtmlFrame({
   const [height, setHeight] = React.useState(260)
   const defaultShowRemote = me.data?.preferences?.showRemoteImages === true
   const [showRemote, setShowRemote] = React.useState(defaultShowRemote)
-  const blocked = React.useMemo(() => stripRemoteContent(bodyHtml || ""), [bodyHtml])
+  // Stripping parses the whole message with DOMParser. Skip it entirely while
+  // remote images are allowed: the result is only used for the "显示远程图片"
+  // button and the blocked HTML, and that button never renders in this state.
+  const blocked = React.useMemo(
+    () => (showRemote ? { html: bodyHtml || "", count: 0 } : stripRemoteContent(bodyHtml || "")),
+    [bodyHtml, showRemote]
+  )
   React.useEffect(() => setShowRemote(defaultShowRemote), [bodyHtml, defaultShowRemote])
   const activeHtml = showRemote ? bodyHtml || "" : blocked.html
   const srcDoc = React.useMemo(() => {
@@ -89,7 +95,9 @@ export function MailHtmlFrame({
     return !showRemote && blocked.count > 0 ? blockRemoteCSP(built) : built
   }, [activeHtml, blocked.count, bodyText, language, showRemote])
 
-  const resize = React.useCallback(() => {
+  const rafRef = React.useRef<number | null>(null)
+
+  const measureFrame = React.useCallback(() => {
     const frame = iframeRef.current
     const doc = frame?.contentDocument
     if (!frame || !doc) return
@@ -113,6 +121,17 @@ export function MailHtmlFrame({
     setHeight(nextHeight)
   }, [minHeight])
 
+  // ResizeObserver + image load events can fire dozens of times while a heavy
+  // newsletter lays out; each measurement forces a synchronous reflow (height
+  // 0 -> read scrollHeight -> restore). Coalesce them into one per frame.
+  const resize = React.useCallback(() => {
+    if (rafRef.current !== null) return
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null
+      measureFrame()
+    })
+  }, [measureFrame])
+
   React.useEffect(() => {
     setHeight(260)
     const frame = iframeRef.current
@@ -132,7 +151,13 @@ export function MailHtmlFrame({
       if (!anchor) return
       const frame = iframeRef.current
       const doc = anchor.ownerDocument
-      const id = decodeURIComponent((anchor.getAttribute("href") || "").slice(1))
+      const raw = (anchor.getAttribute("href") || "").slice(1)
+      let id = raw
+      try {
+        id = decodeURIComponent(raw)
+      } catch {
+        // `#%E0%A4%A` 之类的坏转义会让 decodeURIComponent 抛异常，别让整次点击冒泡成页面错误。
+      }
       const destination = id ? doc.getElementById(id) : null
       event.preventDefault()
       if (!frame || !destination) return
@@ -203,6 +228,10 @@ export function MailHtmlFrame({
       observedDocument?.removeEventListener("toggle", resize, true)
       observedDocument?.removeEventListener("click", handleFragmentClick, true)
       timers.forEach((timer) => window.clearTimeout(timer))
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
     }
   }, [resize, srcDoc])
 
