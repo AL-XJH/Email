@@ -96,7 +96,7 @@ chmod 644 /etc/cron.d/lanqin-backup
 
 ### 丢主机后恢复到新目录
 
-先在目标机安装 Docker、Compose、Python；拉取原集合 `manifest.json` 中的 `image`（只查看镜像名，不要打印 `compose.json`，其中可能有密钥）。恢复按集合记录的稳定 RepoDigest 与平台身份校验镜像；没有 RepoDigest 时验证 config 内容摘要。不同 Docker 存储引擎的本地 image ID 可能不同，不能据此判定内容不同；也不能直接接受已经漂移的 `latest`。镜像不随数据集打包，需保留固定 tag/digest 或另存离线镜像；宿主 DNS 递归解析器、防火墙、证书自动续期账户/定时器和镜像仓库凭据仍需按目标机环境重配，当前证书内容已包含在集合中。
+先在目标机安装 Docker、Compose、Python；拉取原集合 `manifest.json` 中的 `image`（只查看镜像名，不要打印 `compose.json`，其中可能有密钥）。恢复按集合记录的稳定 RepoDigest 与平台身份校验镜像；没有 RepoDigest 时验证 config 内容摘要。不同 Docker 存储引擎的本地 image ID 可能不同，不能据此判定内容不同；也不能直接接受已经漂移的 `latest`。镜像不随数据集打包，需保留固定 tag/digest 或另存离线镜像；防火墙、证书自动续期账户/定时器和镜像仓库凭据仍需按目标机环境重配，当前证书内容已包含在集合中。新版单容器的递归 DNS 随镜像提供，缓存及运行期信任锚可重建，不依赖宿主 Unbound；恢复旧配置里显式的外部 `LANQIN_RSPAMD_DNS` 时，应核对该地址或改用容器内默认值。
 
 **`--app-dir` 无默认值，必须不存在或为空；脚本不会覆盖旧目录，也不会自动停止现有容器。** 原地恢复前显式停止原应用，保留整个旧目录作回滚点；不能用一个备份覆盖仍被单文件 bind mount 占用的 inode：
 
@@ -233,7 +233,7 @@ docker compose -f docker-compose.stack.yml -f docker-compose.stack.build.yml up 
 
 默认镜像里的 Rspamd 是「只签名、不拦信」的配置，而且有两个会让它**看起来完全没工作**的问题，这个分支把它们修掉了。
 
-### 1. DNS 解析器必须指向本地递归解析器
+### 1. 单容器内置递归 DNS
 
 Spamhaus（`zen.spamhaus.org` / `dbl.spamhaus.org`）和 URIBL 都拒绝来自公共 DNS（1.1.1.1 / 8.8.8.8 / 9.9.9.9）的查询，返回的是 `127.255.255.254`、`127.0.0.1` 这类错误码。Rspamd 识别到这种返回值会把对应黑名单标记为不可靠并停用，日志里只有一句：
 
@@ -242,22 +242,26 @@ rspamd_monitored_dns_cb: DNS reply returned 'no error' for zen.spamhaus.org whil
 'no records with this name' was expected ... (likely DNS spoofing or BL internal issues)
 ```
 
-结果是**所有 DNSBL 静默失效**，垃圾邮件评分只剩内容规则那几分，永远够不到阈值。转发型的 DNS（smartdns、dnsmasq 转发公共上游）同样不行——Spamhaus 看到的是上游的 IP。
+这会使相应 DNSBL 查询失效；SPF、DKIM、DMARC 查询超时也会削弱判定。转发型的 DNS（smartdns、dnsmasq 转发公共上游）无法解决公共解析器访问限制——黑名单看到的仍是上游的 IP。
 
 配置项：
 
 ```dotenv
-# 单容器：docker0 网关上的本地递归解析器
-LANQIN_RSPAMD_DNS=172.17.0.1:53
+# 单容器默认值；可不填。不依赖宿主网桥或额外安装。
+LANQIN_RSPAMD_DNS=127.0.0.1:5353
 ```
 
-宿主机上起一个 unbound（或 knot-resolver / 自建 BIND 递归），只监听 docker 网桥网关或 `127.0.0.1`，并在 `access-control` 里放行 docker 网段即可。改完重启容器，用这条命令验收：
+Unbound 随 all-in-one 镜像安装，由 supervisord 在 Rspamd 前启动并在异常退出后重启；只监听容器 `127.0.0.1:5353`，没有宿主 DNS 端口映射，也不修改宿主 DNS 或 `/etc/resolv.conf`。使用镜像自带根提示、DNSSEC 根信任锚，从权威服务器真正递归，不向公共解析器转发。缓存与 `/run/unbound` 可随容器重建，不新增宿主数据卷。
+
+健康检查向内置解析器请求带 DNSSEC 的根 NS，要求有效应答及 AD 标记；配置外部递归覆盖时也会额外检查该地址。此为有界实时查询，缓存命中正常，不承诺每 10 秒向互联网冷查。容器必须允许出站 UDP/TCP 53，受限网络会保持不健康而非悄悄回落公共 DNS。首次冷启动需等待递归预热。验收：
 
 ```bash
-docker exec <container> getent hosts 2.0.0.127.zen.spamhaus.org
-# 正常：返回 127.0.0.2 / 127.0.0.10 之类的真实错误码
-# 被拒：返回 127.255.255.254
+docker exec <container> /usr/local/bin/lanqin-dns-check
+docker exec <container> /usr/local/bin/lanqin-healthcheck
+# Rspamd 的 configdump options 中 nameserver 应为 127.0.0.1:5353。
 ```
+
+从旧版本升级：把 `.env` 中显式的宿主网桥 DNS 地址改为 `127.0.0.1:5353` 后重建容器；确认内置递归、DNSSEC 与 RBL 查询可用后，才停用旧专用宿主 Unbound，并保留配置作回退。不要停止无关 SmartDNS。split stack 不使用 all-in-one 的内置进程，仍需通过 `LANQIN_STACK_RSPAMD_DNS` 配置独立递归服务，不能照抄 loopback。
 
 ### 2. 判定结果要写进邮件头
 

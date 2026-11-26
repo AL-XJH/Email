@@ -14,8 +14,8 @@ set -eu
 : "${LANQIN_MAILDIR_ROOT:=/var/mail/vhosts}"
 : "${LANQIN_TLS_CERT_FILE:=}"
 : "${LANQIN_TLS_KEY_FILE:=}"
-# Rspamd 的 DNS 解析器：必须是本地递归解析器，公共 DNS 会让 DNSBL 全部失效。
-: "${LANQIN_RSPAMD_DNS:=127.0.0.11:53}"
+# 默认使用同容器 Unbound 的真正递归解析，不依赖宿主或公共 DNS 转发。
+: "${LANQIN_RSPAMD_DNS:=127.0.0.1:5353}"
 # Rspamd 的后端存储（Bayes / 灰名单 / ratelimit）。留空则这些模块保持禁用。
 : "${LANQIN_REDIS_ADDR:=127.0.0.1:6379}"
 
@@ -25,6 +25,14 @@ export LANQIN_DATA_DIR LANQIN_DB_PATH LANQIN_DB_DRIVER LANQIN_ADDR LANQIN_SMTP_H
 addgroup --system --gid 5000 vmail 2>/dev/null || true
 adduser --system --uid 5000 --gid 5000 --home /var/mail/vhosts --no-create-home vmail 2>/dev/null || true
 mkdir -p /data /var/mail/vhosts /var/lib/rspamd/dkim /run/rspamd /var/spool/postfix /var/run/dovecot /data/redis
+# 信任锚来自镜像的 dns-root-data；仅运行期 RFC5011 状态放在可重建目录。
+mkdir -p /run/unbound
+if [ ! -s /run/unbound/root.key ]; then
+	cp /usr/share/dns/root.key /run/unbound/root.key
+fi
+chown -R unbound:unbound /run/unbound
+chmod 700 /run/unbound
+unbound-checkconf /etc/unbound/lanqin.conf
 if id redis >/dev/null 2>&1; then
 	chown -R redis:redis /data/redis 2>/dev/null || true
 fi
@@ -56,8 +64,8 @@ fi
 export LANQIN_AUTH_POLICY_SECRET="$AUTH_POLICY_SECRET"
 AUTH_POLICY_URL="${LANQIN_AUTH_POLICY_URL:-http://127.0.0.1:8080/auth-policy}"
 case "$AUTH_POLICY_URL" in
-	*\?*) AUTH_POLICY_SEP='&' ;;
-	*) AUTH_POLICY_SEP='?' ;;
+*\?*) AUTH_POLICY_SEP='&' ;;
+*) AUTH_POLICY_SEP='?' ;;
 esac
 AUTH_POLICY_SECRET_SED="$(printf '%s' "$AUTH_POLICY_SECRET" | sed 's/[&#]/\\&/g')"
 

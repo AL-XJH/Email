@@ -8,6 +8,7 @@
 # 这里必须指向**本地递归解析器**（unbound / knot-resolver / 自建 BIND 递归），
 # 不能是转发器：转发器把查询甩给上游，Spamhaus 看到的仍然是上游的 IP。
 #
+# 单容器默认使用镜像内 Unbound 的 127.0.0.1:5353；不用宿主服务。
 # __LANQIN_RSPAMD_DNS__ 由 entrypoint 在启动时用 LANQIN_RSPAMD_DNS 替换。
 dns {
   nameserver = ["__LANQIN_RSPAMD_DNS__"];

@@ -19,7 +19,7 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/lanqin-healthcheck"]
       interval: 10s
-      timeout: 5s
+      timeout: 8s
       retries: 6
       start_period: 30s
     restart: unless-stopped

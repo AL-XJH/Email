@@ -35,6 +35,7 @@ exit "$rc"
         for cmd in ("doveadm", "rspamadm"):
             self.stub(cmd, "#!/bin/sh\nexit 0\n")
         self.stub("redis-cli", "#!/bin/sh\nprintf '%s\\n' \"${TEST_REDIS_REPLY:-PONG}\"\n")
+        self.stub("lanqin-dns-check", "#!/bin/sh\nexit \"${TEST_DNS_EXIT:-0}\"\n")
 
     def stub(self, name, content):
         p = self.bin / name
@@ -62,6 +63,9 @@ exit "$rc"
 
     def test_redis_error_is_unhealthy(self):
         self.assertNotEqual(self.check(TEST_REDIS_REPLY="LOADING").returncode, 0)
+
+    def test_dns_failure_is_unhealthy_even_when_mail_services_are_running(self):
+        self.assertNotEqual(self.check(TEST_DNS_EXIT="1").returncode, 0)
 
 
 if __name__ == "__main__":

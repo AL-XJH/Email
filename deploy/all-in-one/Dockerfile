@@ -65,7 +65,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     postfix postfix-sqlite \
     dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-sqlite ssl-cert \
     rspamd \
-    redis-server redis-tools
+    redis-server redis-tools unbound dns-root-data
 
 COPY --from=api-build /out/lanqin-api /usr/local/bin/lanqin-api
 COPY --from=api-build /out/lanqin-backup /usr/local/bin/lanqin-backup
@@ -75,6 +75,8 @@ COPY --from=web-build /src/apps/web/dist /usr/share/nginx/html
 COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/lanqin.conf
 COPY deploy/all-in-one/nginx.conf /etc/nginx/conf.d/default.conf
 COPY deploy/all-in-one/redis.conf /etc/redis-lanqin.conf
+COPY deploy/all-in-one/unbound.conf /etc/unbound/lanqin.conf
+COPY deploy/all-in-one/dns-check.py /usr/local/bin/lanqin-dns-check
 COPY deploy/all-in-one/entrypoint.sh /entrypoint.sh
 COPY deploy/all-in-one/healthcheck.sh /usr/local/bin/lanqin-healthcheck
 
@@ -93,9 +95,9 @@ COPY deploy/rspamd/sync-dkim.sh /usr/local/bin/lanqin-rspamd-sync-dkim
 RUN sievec /etc/dovecot/sieve/spam.sieve && \
     chmod 644 /etc/dovecot/sieve/spam.sieve /etc/dovecot/sieve/spam.svbin
 
-RUN chmod +x /entrypoint.sh /usr/local/bin/lanqin-healthcheck /usr/local/bin/lanqin-rspamd-sync-dkim /usr/local/bin/lanqin-postfix-configure-db /usr/local/bin/lanqin-dovecot-configure-db && mkdir -p /run/nginx /run/rspamd /var/mail/vhosts /data /var/lib/rspamd/dkim
+RUN chmod +x /entrypoint.sh /usr/local/bin/lanqin-healthcheck /usr/local/bin/lanqin-dns-check /usr/local/bin/lanqin-rspamd-sync-dkim /usr/local/bin/lanqin-postfix-configure-db /usr/local/bin/lanqin-dovecot-configure-db && mkdir -p /run/nginx /run/rspamd /var/mail/vhosts /data /var/lib/rspamd/dkim
 
 EXPOSE 80 443 25 465 587 993 995
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 \
+HEALTHCHECK --interval=10s --timeout=8s --start-period=30s --retries=6 \
   CMD ["/usr/local/bin/lanqin-healthcheck"]
 CMD ["/entrypoint.sh"]

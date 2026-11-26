@@ -11,7 +11,7 @@
 
 这是一个以 [LanQin996/LanQin-Email](https://github.com/LanQin996/LanQin-Email) 为基础的个人自建邮箱分支。
 
-前端是 React + TypeScript + shadcn/ui，后端是 Go + SQLite；生产部署使用单容器，把 API、Web、Nginx、Postfix、Dovecot、Rspamd 和 Redis 放在一起。这个分支不再追求“功能大而全”，而是按实际使用场景重排界面、补反垃圾/通知/外部邮箱，并把安全与数据可靠性做到能长期自用。
+前端是 React + TypeScript + shadcn/ui，后端是 Go + SQLite；生产部署使用单容器，把 API、Web、Nginx、Postfix、Dovecot、Rspamd、Redis 和 Unbound 递归 DNS 放在一起。这个分支不再追求“功能大而全”，而是按实际使用场景重排界面、补反垃圾/通知/外部邮箱，并把安全与数据可靠性做到能长期自用。
 
 
 ## 这个分支做了什么
@@ -27,6 +27,7 @@
 ### 收信与反垃圾
 
 - Rspamd 评分达到阈值后直接进垃圾箱，可在后台调整。
+- 单容器内嵌 Unbound 真正递归 DNS 与 DNSSEC 校验，不依赖宿主另装解析器；自动监督重启、实际 DNS 查询纳入健康检查，DNS 端口不对外暴露。
 - 发件人白名单、发件人拦截、验证码识别 chip、HTML 邮件安全渲染。
 - 列表里的验证码 chip 点一下直接复制，并短暂显示「已复制」；不用打开邮件再手选数字。
 - catch-all 邮件与普通邮箱统一走 Maildir → SQLite 同步。
@@ -70,7 +71,7 @@
 | --- | --- |
 | 前端 | React 19、TypeScript 7、Vite 8、Tailwind 4、shadcn/ui、TanStack Query |
 | 后端 | Go 1.27、SQLite 3.54（含 FTS5）、Maildir 同步、SMTP/IMAP 客户端 |
-| 邮件栈 | Postfix 3.10、Dovecot 2.4、Rspamd 4.3、Redis 8、Nginx 1.31 |
+| 邮件栈 | Postfix 3.10、Dovecot 2.4、Rspamd 4.3、Redis 8、Unbound 1.26、Nginx 1.31 |
 | 部署 | Docker Compose，单容器 all-in-one（可选多容器 stack） |
 
 ## 目录结构
@@ -199,7 +200,7 @@ curl -sk https://mail.example.com/readyz
 | `LANQIN_SMTP_HOST` / `LANQIN_SMTP_PORT` | 网页邮箱 发信 SMTP | `127.0.0.1` / `25` |
 | `LANQIN_MAILDIR_ROOT` | Maildir 根目录 | `/var/mail/vhosts` |
 | `LANQIN_MAILDIR_SCAN_SECONDS` | Maildir 扫描间隔（秒） | `5` |
-| `LANQIN_RSPAMD_DNS` | Rspamd 使用的 DNS | `127.0.0.11:53` |
+| `LANQIN_RSPAMD_DNS` | Rspamd 使用的容器内递归 DNS | `127.0.0.1:5353` |
 | `LANQIN_AUTH_POLICY_SECRET` | `/auth-policy` 共享密钥；留空时 entrypoint 自动生成到 `/data/auth-policy-secret` | 空 |
 | `LANQIN_EXTERNAL_IMAP_ENABLED` | 启用外部 IMAP | `false` |
 | `LANQIN_EXTERNAL_IMAP_MAX_MESSAGE_MB` | 外部 IMAP 单封上限 | `50` |

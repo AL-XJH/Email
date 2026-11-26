@@ -125,6 +125,9 @@ jobs:
             nginx -t &&
             postfix check &&
             doveconf -n >/dev/null &&
+            install -d /run/unbound &&
+            cp /usr/share/dns/root.key /run/unbound/root.key &&
+            unbound-checkconf /etc/unbound/lanqin.conf &&
             test -s /usr/share/nginx/html/index.html
           "
           docker run --rm --network none --entrypoint sh \
@@ -132,7 +135,7 @@ jobs:
             lanqin-email:ci /test.sh
 
       - name: Check healthcheck failure semantics
-        run: python3 deploy/all-in-one/tests/healthcheck_test.py -v
+        run: python3 -m unittest discover -s deploy/all-in-one/tests -p '*test.py' -v
 
   compose-config:
     name: Validate compose files

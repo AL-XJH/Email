@@ -18,3 +18,5 @@ kill -0 "$(cat /var/spool/postfix/pid/master.pid)"
 doveadm service status >/dev/null 2>&1
 rspamadm control stat >/dev/null 2>&1
 [ "$(redis-cli --raw ping 2>/dev/null)" = PONG ]
+# A running Rspamd is insufficient when its recursive resolver is unavailable.
+lanqin-dns-check
