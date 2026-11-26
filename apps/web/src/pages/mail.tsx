@@ -687,10 +687,28 @@ export function MailPage() {
       ],
     }
   }
-  function restoreMessageCaches(snapshot?: MessageCacheSnapshot) {
+  // 失败回滚只回滚这一封。整体还原快照会把同一时间别的邮件的乐观更新一起抹掉：
+  // 弱网下连着点几个星标/已读，只要有一个请求失败，已经成功的几个会从界面上跳回去。
+  function restoreCachedMessage(id: string, snapshot?: MessageCacheSnapshot) {
     if (!snapshot) return
-    for (const [key, data] of snapshot.details) qc.setQueryData(key, data)
-    for (const [key, data] of snapshot.lists) qc.setQueryData(key, data)
+    let previous: MailMessage | undefined
+    for (const [, data] of snapshot.details) {
+      if (data?.id === id) {
+        previous = data
+        break
+      }
+    }
+    if (!previous) {
+      for (const [, data] of snapshot.lists) {
+        previous = data?.pages
+          ?.flatMap((page) => page.items || [])
+          .find((message) => message.id === id)
+        if (previous) break
+      }
+    }
+    if (!previous) return
+    const target = previous
+    patchCachedMessage(id, () => target)
   }
   function updateCachedMessage(id: string, patch: Partial<MailMessage>) {
     patchCachedMessage(id, (message) => ({ ...message, ...patch }))
@@ -746,8 +764,8 @@ export function MailPage() {
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
       await qc.invalidateQueries({ queryKey: ["labels"] })
     },
-    onError: (error, _variables, snapshot) => {
-      restoreMessageCaches(snapshot)
+    onError: (error, variables, snapshot) => {
+      restoreCachedMessage(variables.id, snapshot)
       toast({ title: "操作失败", description: errorMessage(error) })
     },
   })
@@ -764,8 +782,8 @@ export function MailPage() {
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
     },
-    onError: (error, _variables, snapshot) => {
-      restoreMessageCaches(snapshot)
+    onError: (error, variables, snapshot) => {
+      restoreCachedMessage(variables.id, snapshot)
       toast({ title: "操作失败", description: errorMessage(error) })
     },
   })
@@ -786,8 +804,8 @@ export function MailPage() {
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
     },
-    onError: (error, _variables, snapshot) => {
-      restoreMessageCaches(snapshot)
+    onError: (error, variables, snapshot) => {
+      restoreCachedMessage(variables.remoteId, snapshot)
       toast({ title: "操作失败", description: errorMessage(error) })
     },
   })
@@ -804,8 +822,8 @@ export function MailPage() {
       )
       return snapshot
     },
-    onError: (_error, _vars, snapshot) => {
-      restoreMessageCaches(snapshot)
+    onError: (_error, vars, snapshot) => {
+      restoreCachedMessage(vars.id, snapshot)
       toast({ title: "添加标签失败" })
     },
     onSettled: () => {
@@ -824,8 +842,8 @@ export function MailPage() {
       }))
       return snapshot
     },
-    onError: (_error, _vars, snapshot) => {
-      restoreMessageCaches(snapshot)
+    onError: (_error, vars, snapshot) => {
+      restoreCachedMessage(vars.id, snapshot)
       toast({ title: "移除标签失败" })
     },
     onSettled: () => {
@@ -1356,6 +1374,9 @@ export function MailPage() {
     let stopped = false
     let inFlight = false
     const probeFirstPage = async () => {
+      // 后台标签页不轮询：没人看得见列表变化，白白每 30~60 秒打一次 API
+      // （常驻标签页一天就是上千次请求）。切回前台时下面会立刻补一次。
+      if (document.hidden) return
       if (inFlight) return
       inFlight = true
       setListAutoRefreshing(true)
@@ -1429,9 +1450,14 @@ export function MailPage() {
       }
     }
     const timer = window.setInterval(() => void probeFirstPage(), mailRefreshInterval)
+    const onVisibilityChange = () => {
+      if (!document.hidden) void probeFirstPage()
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
     return () => {
       stopped = true
       window.clearInterval(timer)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
       setListAutoRefreshing(false)
     }
   }, [

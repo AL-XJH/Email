@@ -168,30 +168,33 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 			missing = append(missing, id)
 			continue
 		}
+		// 每封独立的错误变量：之前复用外层的 err，前面某封建文件夹失败后，
+		// 后面命中 folderIDs 缓存、根本没尝试移动的邮件也会被算成失败。
+		var itemErr error
 		switch action {
 		case "read":
-			err = a.applyMessageRead(r.Context(), msg, true)
+			itemErr = a.applyMessageRead(r.Context(), msg, true)
 		case "unread":
-			err = a.applyMessageRead(r.Context(), msg, false)
+			itemErr = a.applyMessageRead(r.Context(), msg, false)
 		case "star":
-			err = a.applyMessageStar(r.Context(), msg, true)
+			itemErr = a.applyMessageStar(r.Context(), msg, true)
 		case "unstar":
-			err = a.applyMessageStar(r.Context(), msg, false)
+			itemErr = a.applyMessageStar(r.Context(), msg, false)
 		case "delete":
-			err = a.applyMessageDelete(r.Context(), msg)
+			itemErr = a.applyMessageDelete(r.Context(), msg)
 		default:
 			folderID, ok := folderIDs[msg.MailboxID]
 			if !ok {
-				folderID, err = a.ensureFolder(r.Context(), msg.MailboxID, normalizedFolder)
-				if err == nil {
+				folderID, itemErr = a.ensureFolder(r.Context(), msg.MailboxID, normalizedFolder)
+				if itemErr == nil {
 					folderIDs[msg.MailboxID] = folderID
 				}
 			}
-			if err == nil {
-				err = a.moveMessageMaildir(r.Context(), msg.ID, folderID)
+			if itemErr == nil {
+				itemErr = a.moveMessageMaildir(r.Context(), msg.ID, folderID)
 			}
 		}
-		if err != nil {
+		if itemErr != nil {
 			failed = append(failed, id)
 			continue
 		}
