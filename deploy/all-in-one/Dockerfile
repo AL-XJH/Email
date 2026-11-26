@@ -71,9 +71,13 @@ COPY --from=api-build /out/lanqin-api /usr/local/bin/lanqin-api
 COPY --from=api-build /out/lanqin-backup /usr/local/bin/lanqin-backup
 COPY --from=sqlite-build /usr/local/bin/sqlite3 /usr/local/bin/sqlite3
 COPY --from=web-build /src/apps/web/dist /usr/share/nginx/html
+# 构建期预压缩：gzip_static 直接发 .gz，运行时不花 CPU 压 400KB+ 的 JS。
+# -9 只在构建多做几秒，换来比动态 gzip -5 更小的体积。
+RUN find /usr/share/nginx/html -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' -o -name '*.json' -o -name '*.txt' \) -exec gzip -9 -k {} +
 
 COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/lanqin.conf
 COPY deploy/all-in-one/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deploy/all-in-one/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY deploy/all-in-one/redis.conf /etc/redis-lanqin.conf
 COPY deploy/all-in-one/unbound.conf /etc/unbound/lanqin.conf
 COPY deploy/all-in-one/dns-check.py /usr/local/bin/lanqin-dns-check
