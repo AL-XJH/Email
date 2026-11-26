@@ -1007,6 +1007,7 @@ func (a *App) parseMaildirMessage(raw []byte, fallbackTo string) (storedMessage,
 	from, fromName := firstAddressParts(m.Header.Get("From"))
 	to := addressList(m.Header.Get("To"))
 	cc := addressList(m.Header.Get("Cc"))
+	bcc := addressList(m.Header.Get("Bcc"))
 	if len(to) == 0 {
 		to = []string{fallbackTo}
 	}
@@ -1050,6 +1051,7 @@ func (a *App) parseMaildirMessage(raw []byte, fallbackTo string) (storedMessage,
 		FromName:       fromName,
 		To:             to,
 		CC:             cc,
+		BCC:            bcc,
 		SentAt:         sentAt,
 		ReceivedAt:     receivedAt,
 		Snippet:        snippetFrom(bodyText, bodyHTML),
