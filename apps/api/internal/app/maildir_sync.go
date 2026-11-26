@@ -654,8 +654,20 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 		return false, nil
 	}
 	id, err := a.insertMessage(ctx, msg, attachments)
-	if err == nil && strings.EqualFold(folder.Name, "Inbox") {
-		a.applyInboundControls(ctx, id, mb.ID, msg.From, msg.Subject)
+	if err == nil {
+		applyControls := strings.EqualFold(folder.Name, "Inbox")
+		if strings.EqualFold(folder.Name, "Spam") {
+			// LMTP Sieve may file a trusted sender into Spam before the API
+			// sees it. Honor the user's whitelist on first import as well;
+			// known messages return above, so later manual moves stay put.
+			var userID string
+			if lookupErr := a.db.QueryRowContext(ctx, `SELECT user_id FROM mailboxes WHERE id=?`, mb.ID).Scan(&userID); lookupErr == nil {
+				applyControls = a.senderAllowed(ctx, userID, mb.ID, msg.From)
+			}
+		}
+		if applyControls {
+			a.applyInboundControls(ctx, id, mb.ID, msg.From, msg.Subject)
+		}
 	}
 	return err == nil, err
 }
