@@ -1024,6 +1024,10 @@ func (a *App) handleMailSend(w http.ResponseWriter, r *http.Request) {
 	}
 	msg, err := a.sendMailNow(r.Context(), currentUser(r), mb, req)
 	if err != nil {
+		if errors.Is(err, errMessageTooLarge) {
+			respondError(w, http.StatusRequestEntityTooLarge, err.Error())
+			return
+		}
 		if errors.Is(err, errNoRecipients) || errors.Is(err, errTooManyRecipients) {
 			badRequest(w, err)
 			return
@@ -1122,6 +1126,9 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errInvalidMIME, err)
 	}
+	if err := validateOutboundMessageSize(*a.config(), int64(len(mimeBytes))); err != nil {
+		return nil, err
+	}
 
 	sentFolderID, err := a.ensureFolder(ctx, mb.ID, "Sent")
 	if err != nil {
@@ -1132,7 +1139,7 @@ func (a *App) sendMailWithSource(ctx context.Context, user *User, mb *Mailbox, r
 	if err != nil {
 		return nil, fmt.Errorf("failed to store sent message: %w", err)
 	}
-	if err := a.writeRawMessageToMaildir(ctx, sentID, mimeBytes, false); err != nil {
+	if err := a.writeRawMessageToMaildir(ctx, sentID, privateMIMECopy(mimeBytes, req.BCC), false); err != nil {
 		a.deleteMessage(ctx, sentID)
 		return nil, fmt.Errorf("failed to store sent message in maildir: %w", err)
 	}
@@ -1208,8 +1215,9 @@ func validateAttachmentLimit(attachments []AttachmentInput, limits PermissionLim
 	}
 	limitBytes := attachmentLimitBytes(limits)
 	// 请求体 64MB（base64 后），解码上限约 48MB。逐封只查单附件的话，
-	// 多封 25MB 附件会在 decodeJSON 里以「body too large」失败，用户
-	// 看不到是哪条限制。这里按解码后总量提前给明确错误。
+	// 多封大附件会在 decodeJSON 里以「body too large」失败，用户
+	// 看不到是哪条限制。这里按解码后总量提前给明确错误；发送策略的
+	// 硬上限仍是整封编码后 35MB（validateOutboundMessageSize，返回 413）。
 	const maxTotalDecodedAttachmentBytes int64 = 45 << 20
 	var totalBytes int64
 	for i := range attachments {
@@ -2109,6 +2117,20 @@ func (a *App) handleScheduleSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(compose.Subject) == "" {
 		compose.Subject = "(no subject)"
+	}
+	// Preflight the actual wire representation before creating a scheduled row.
+	// Match sendMailWithSource's generated header lengths and normalization.
+	preview, err := BuildMIME(MIMEMessage{From: mb.Address, FromName: mb.DisplayName,
+		To: compose.To, CC: compose.CC, BCC: compose.BCC, Subject: compose.Subject,
+		Text: compose.Text, HTML: compose.HTML, Attachments: compose.Attachments,
+		MessageID: fmt.Sprintf("<%s@%s>", newID("msg"), strings.Split(mb.Address, "@")[1]), Date: a.now().UTC()})
+	if err != nil {
+		badRequest(w, fmt.Errorf("%w: %v", errInvalidMIME, err))
+		return
+	}
+	if err := validateOutboundMessageSize(*a.config(), int64(len(preview))); err != nil {
+		respondError(w, http.StatusRequestEntityTooLarge, err.Error())
+		return
 	}
 	draftID := strings.TrimSpace(req.DraftID)
 	if draftID != "" {

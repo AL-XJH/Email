@@ -145,6 +145,27 @@ func BuildMIME(m MIMEMessage) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// privateMIMECopy adds sender-only metadata to a wire message. Callers must
+// restrict it to Drafts/Sent; recipient copies and SMTP always use the original.
+func privateMIMECopy(raw []byte, bcc []string) []byte {
+	bcc = dedupeEmails(bcc)
+	if len(bcc) == 0 {
+		return raw
+	}
+	header := "Bcc: " + strings.Join(bcc, ", ") + "\r\n"
+	result := make([]byte, 0, len(header)+len(raw))
+	result = append(result, header...)
+	return append(result, raw...)
+}
+
+func buildPrivateMIME(m MIMEMessage) ([]byte, error) {
+	raw, err := BuildMIME(m)
+	if err != nil {
+		return nil, err
+	}
+	return privateMIMECopy(raw, m.BCC), nil
+}
+
 func formatAddressHeader(name, address string) string {
 	address = strings.TrimSpace(address)
 	name = strings.TrimSpace(name)

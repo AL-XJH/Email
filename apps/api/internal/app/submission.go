@@ -67,7 +67,7 @@ func (a *App) newSubmissionServer(addr string, tlsConfig *tls.Config) *smtpserve
 	s.TLSConfig = tlsConfig
 	s.AllowInsecureAuth = false
 	s.MaxRecipients = defaultSubmissionMaxRecipients
-	s.MaxMessageBytes = int64(a.config().SubmissionMaxMessageMB) * 1024 * 1024
+	s.MaxMessageBytes = outboundMessageSizeLimit(*a.config())
 	s.ReadTimeout = smtpSessionTimeout
 	s.WriteTimeout = smtpSessionTimeout
 	s.ErrorLog = log.New(submissionLogWriter{log: a.log}, "smtp/submission ", 0)
@@ -284,9 +284,12 @@ func (a *App) authenticateSubmission(ctx context.Context, username, password str
 }
 
 func (a *App) submitSMTPMessage(ctx context.Context, user *User, mb *Mailbox, mailFrom string, recipients []string, r io.Reader) error {
-	raw, err := io.ReadAll(r)
+	raw, err := io.ReadAll(io.LimitReader(r, outboundMessageSizeLimit(*a.config())+1))
 	if err != nil {
 		return err
+	}
+	if err := validateOutboundMessageSize(*a.config(), int64(len(raw))); err != nil {
+		return smtpError(552, smtpserver.EnhancedCode{5, 3, 4}, err.Error())
 	}
 	prepared, msg, attachments, err := a.prepareSubmittedMessage(ctx, user, raw, mb, mailFrom, recipients)
 	if err != nil {
@@ -370,6 +373,9 @@ func (a *App) prepareSubmittedMessage(ctx context.Context, user *User, raw []byt
 	}
 	header.Del("Bcc")
 	prepared := serializeMessage(header, body)
+	if err := validateOutboundMessageSize(*a.config(), int64(len(prepared))); err != nil {
+		return nil, storedMessage{}, nil, smtpError(552, smtpserver.EnhancedCode{5, 3, 4}, err.Error())
+	}
 	msg, attachments, err := a.parseMaildirMessage(prepared, authAddress)
 	if err != nil {
 		return nil, storedMessage{}, nil, smtpError(554, smtpserver.EnhancedCode{5, 6, 0}, "invalid message")

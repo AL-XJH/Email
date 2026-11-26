@@ -1008,7 +1008,9 @@ func (a *App) parseMaildirMessage(raw []byte, fallbackTo string) (storedMessage,
 	to := addressList(m.Header.Get("To"))
 	cc := addressList(m.Header.Get("Cc"))
 	bcc := addressList(m.Header.Get("Bcc"))
-	if len(to) == 0 {
+	if len(to) == 0 && len(bcc) == 0 {
+		// A private Bcc-only draft carries "undisclosed-recipients:;" on the wire;
+		// adding the mailbox owner here would silently copy them on the next send.
 		to = []string{fallbackTo}
 	}
 	sentAt := parseMailDate(m.Header.Get("Date"))

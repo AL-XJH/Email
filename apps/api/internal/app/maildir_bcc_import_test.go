@@ -47,4 +47,12 @@ func TestMaildirPrivateDraftRetainsBCCOnImport(t *testing.T) {
 	if len(detail.To) != 1 || detail.To[0] != "visible@example.test" || len(detail.CC) != 1 || detail.CC[0] != "copy@example.test" {
 		t.Fatalf("visible recipients changed: To=%v Cc=%v", detail.To, detail.CC)
 	}
+	// A private Bcc-only draft must not gain the owner's address as a new To.
+	parsed, _, err := a.parseMaildirMessage([]byte("From: admin@lanqin.local\r\nTo: undisclosed-recipients:;\r\nBcc: hidden@example.test\r\nSubject: private Bcc only\r\n\r\nSynthetic.\r\n"), mb.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.To) != 0 || len(parsed.BCC) != 1 || parsed.BCC[0] != "hidden@example.test" {
+		t.Fatalf("Bcc-only private draft changed recipients: To=%v Bcc=%v", parsed.To, parsed.BCC)
+	}
 }

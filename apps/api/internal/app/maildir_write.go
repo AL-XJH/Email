@@ -13,23 +13,25 @@ import (
 	"time"
 )
 
+func (a *App) buildStoredMessageMIME(ctx context.Context, msg storedMessage, attachments []AttachmentInput) ([]byte, error) {
+	folder, err := a.folderNameByID(ctx, msg.FolderID)
+	if err != nil {
+		return nil, err
+	}
+	m := MIMEMessage{From: msg.From, FromName: msg.FromName, To: msg.To, CC: msg.CC, BCC: msg.BCC,
+		Subject: msg.Subject, Text: msg.BodyText, HTML: msg.BodyHTML, MessageID: msg.MessageID,
+		Date: messageDate(msg), Attachments: attachments}
+	if strings.EqualFold(folder, "Drafts") || strings.EqualFold(folder, "Sent") {
+		return buildPrivateMIME(m)
+	}
+	return BuildMIME(m)
+}
+
 func (a *App) writeStoredMessageToMaildir(ctx context.Context, messageID string, msg storedMessage, attachments []AttachmentInput, stableFilename ...string) error {
 	if strings.TrimSpace(a.config().MaildirRoot) == "" || strings.TrimSpace(msg.MailboxID) == "" || strings.TrimSpace(msg.FolderID) == "" {
 		return nil
 	}
-	raw, err := BuildMIME(MIMEMessage{
-		From:        msg.From,
-		FromName:    msg.FromName,
-		To:          msg.To,
-		CC:          msg.CC,
-		BCC:         msg.BCC,
-		Subject:     msg.Subject,
-		Text:        msg.BodyText,
-		HTML:        msg.BodyHTML,
-		MessageID:   msg.MessageID,
-		Date:        messageDate(msg),
-		Attachments: attachments,
-	})
+	raw, err := a.buildStoredMessageMIME(ctx, msg, attachments)
 	if err != nil {
 		return err
 	}
@@ -51,19 +53,7 @@ func (a *App) rewriteMessageMaildir(ctx context.Context, messageID string) error
 	if err != nil {
 		return err
 	}
-	raw, err := BuildMIME(MIMEMessage{
-		From:        msg.From,
-		FromName:    msg.FromName,
-		To:          msg.To,
-		CC:          msg.CC,
-		BCC:         msg.BCC,
-		Subject:     msg.Subject,
-		Text:        msg.BodyText,
-		HTML:        msg.BodyHTML,
-		MessageID:   msg.MessageID,
-		Date:        messageDate(msg),
-		Attachments: attachments,
-	})
+	raw, err := a.buildStoredMessageMIME(ctx, msg, attachments)
 	if err != nil {
 		return err
 	}
@@ -304,19 +294,7 @@ func (a *App) writeMessageToNewMaildirFolder(ctx context.Context, messageID, fol
 	if err != nil {
 		return err
 	}
-	raw, err := BuildMIME(MIMEMessage{
-		From:        msg.From,
-		FromName:    msg.FromName,
-		To:          msg.To,
-		CC:          msg.CC,
-		BCC:         msg.BCC,
-		Subject:     msg.Subject,
-		Text:        msg.BodyText,
-		HTML:        msg.BodyHTML,
-		MessageID:   msg.MessageID,
-		Date:        messageDate(msg),
-		Attachments: attachments,
-	})
+	raw, err := a.buildStoredMessageMIME(ctx, msg, attachments)
 	if err != nil {
 		return err
 	}
