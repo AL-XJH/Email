@@ -799,13 +799,26 @@ func TestMaildirRewriteKeepsFileWhenNameCollides(t *testing.T) {
 func TestDeploymentCSPAllowsTurnstile(t *testing.T) {
 	t.Parallel()
 	header := regexp.MustCompile("add_header\\s+Content-Security-Policy\\s+\"([^\"]+)\"\\s+always;")
+	// all-in-one 的安全头抽到了 snippet：配置里只剩 include，顺着它去查真正定义这一处。
+	const snippetInclude = "include /etc/nginx/snippets/security-headers.conf;"
 	for _, name := range []string{"nginx/default.conf", "all-in-one/nginx.conf"} {
 		t.Run(name, func(t *testing.T) {
 			content, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy", name))
 			if err != nil {
 				t.Fatal(err)
 			}
-			match := header.FindStringSubmatch(string(content))
+			text := string(content)
+			match := header.FindStringSubmatch(text)
+			if len(match) != 2 && strings.Contains(text, snippetInclude) {
+				if strings.Contains(text, "add_header Content-Security-Policy") {
+					t.Fatal("CSP 定义重复：snippet 与配置各写了一份，改一处会漏另一处")
+				}
+				snippet, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy", "all-in-one", "security-headers.conf"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				match = header.FindStringSubmatch(string(snippet))
+			}
 			if len(match) != 2 {
 				t.Fatal("missing enforced CSP header")
 			}
