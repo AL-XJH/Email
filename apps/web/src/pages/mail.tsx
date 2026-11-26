@@ -292,6 +292,7 @@ export function MailPage() {
   const [composeOpen, setComposeOpen] = React.useState(false)
   const [composeDraft, setComposeDraft] = React.useState<ComposeDraft | undefined>()
   const composeGenerationRef = React.useRef(0)
+  const composeOpenIntentRef = React.useRef(0)
   const composeGeneration = composeGenerationRef.current
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mailFilter, setMailFilter] = React.useState<MailFilter>("all")
@@ -1674,7 +1675,8 @@ export function MailPage() {
       onConfirm: () => del.mutate(message.id),
     })
   }
-  function openCompose(draft?: ComposeDraft) {
+  function openCompose(draft?: ComposeDraft, intent = ++composeOpenIntentRef.current) {
+    if (intent !== composeOpenIntentRef.current) return
     if (draft?.isDraft && !canManageSelectedDrafts) return
     if (!draft?.isDraft && !canSendSelectedMailbox) return
     composeGenerationRef.current += 1
@@ -1695,23 +1697,30 @@ export function MailPage() {
   }
   async function openReply(message: MailMessage) {
     if (!canSendSelectedMailbox) return
+    const intent = ++composeOpenIntentRef.current
     const full = await withFullBody(message)
+    if (intent !== composeOpenIntentRef.current) return
     const self = (full.mailboxAddress || "").toLowerCase()
     let to = (full.replyTo || full.from).trim()
     // 回复自己 Sent 里的邮件时，收件人应该是原收件人，不是自己。
     if (to.toLowerCase() === self) {
       to = (full.to || []).find((address) => address.toLowerCase() !== self) || to
     }
-    openCompose({
-      key: `reply-${full.id}-${Date.now()}`,
-      to,
-      subject: withPrefix(full.subject, "Re:"),
-      ...quoteMessage(full),
-    })
+    openCompose(
+      {
+        key: `reply-${full.id}-${Date.now()}`,
+        to,
+        subject: withPrefix(full.subject, "Re:"),
+        ...quoteMessage(full),
+      },
+      intent
+    )
   }
   async function openReplyAll(message: MailMessage) {
     if (!canSendSelectedMailbox) return
+    const intent = ++composeOpenIntentRef.current
     const full = await withFullBody(message)
+    if (intent !== composeOpenIntentRef.current) return
     const self = (full.mailboxAddress || "").toLowerCase()
     const primary = (full.replyTo || full.from).trim()
     const to = Array.from(
@@ -1725,32 +1734,42 @@ export function MailPage() {
         )
       )
     )
-    openCompose({
-      key: `reply-all-${full.id}-${Date.now()}`,
-      to: to.join(", "),
-      cc: cc.join(", "),
-      subject: withPrefix(full.subject, "Re:"),
-      ...quoteMessage(full),
-    })
+    openCompose(
+      {
+        key: `reply-all-${full.id}-${Date.now()}`,
+        to: to.join(", "),
+        cc: cc.join(", "),
+        subject: withPrefix(full.subject, "Re:"),
+        ...quoteMessage(full),
+      },
+      intent
+    )
   }
   async function openForward(message: MailMessage) {
     if (!canSendSelectedMailbox) return
+    const intent = ++composeOpenIntentRef.current
     try {
       const full = await withFullBody(message)
       // 转发必须带上原附件；只复制正文会让「转发发票」变成一封没有发票的信。
       const files = await attachmentFilesFromMessage(full)
-      openCompose({
-        key: `forward-${full.id}-${Date.now()}`,
-        subject: withPrefix(full.subject, "Fwd:"),
-        ...quoteMessage(full, "forward"),
-        files,
-      })
+      if (intent !== composeOpenIntentRef.current) return
+      openCompose(
+        {
+          key: `forward-${full.id}-${Date.now()}`,
+          subject: withPrefix(full.subject, "Fwd:"),
+          ...quoteMessage(full, "forward"),
+          files,
+        },
+        intent
+      )
     } catch (error) {
+      if (intent !== composeOpenIntentRef.current) return
       toast({ title: "转发失败", description: errorMessage(error) })
     }
   }
   async function openDraft(message: MailMessage) {
     if (!canManageSelectedDrafts) return
+    const intent = ++composeOpenIntentRef.current
     if (scheduledDraftIds.has(message.id)) {
       toast({ title: "这封草稿已在待发送队列中", description: "请先取消定时发送，再继续编辑。" })
       openScheduled()
@@ -1758,21 +1777,27 @@ export function MailPage() {
     }
     try {
       const detail = await api.message(message.id, { markRead: false })
-      openCompose({
-        key: `draft-${detail.id}-${Date.now()}`,
-        id: detail.id,
-        mailboxId: detail.mailboxId,
-        to: (detail.to || []).join(", "),
-        cc: (detail.cc || []).join(", "),
-        bcc: (detail.bcc || []).join(", "),
-        subject: detail.subject === "(无主题)" ? "" : detail.subject,
-        text: detail.bodyText || "",
-        html: detail.bodyHtml || undefined,
-        files: await attachmentFilesFromMessage(detail),
-        isDraft: true,
-      })
+      const files = await attachmentFilesFromMessage(detail)
+      if (intent !== composeOpenIntentRef.current) return
+      openCompose(
+        {
+          key: `draft-${detail.id}-${Date.now()}`,
+          id: detail.id,
+          mailboxId: detail.mailboxId,
+          to: (detail.to || []).join(", "),
+          cc: (detail.cc || []).join(", "),
+          bcc: (detail.bcc || []).join(", "),
+          subject: detail.subject === "(无主题)" ? "" : detail.subject,
+          text: detail.bodyText || "",
+          html: detail.bodyHtml || undefined,
+          files,
+          isDraft: true,
+        },
+        intent
+      )
       setSelectedId(null)
     } catch (error) {
+      if (intent !== composeOpenIntentRef.current) return
       toast({
         title: "打开草稿失败",
         description: errorMessage(error),
@@ -3130,6 +3155,7 @@ export function MailPage() {
       {(composeOpen || composeDraft) && (
         <React.Suspense fallback={null}>
           <ComposeDialog
+            key={composeDraft?.key}
             mailbox={selectedMailbox}
             open={composeOpen}
             draft={composeDraft}

@@ -144,6 +144,11 @@ import {
 } from "@/components/mail-composer-parts"
 import { useToast } from "@/hooks/use-toast"
 import type { ComposeDraft, ComposeSendIntent } from "@/lib/compose-types"
+import {
+  MAX_TOTAL_ATTACHMENT_BYTES,
+  MAX_ENCODED_MESSAGE_BYTES,
+  estimatedMIMEBytes,
+} from "@/lib/mail-size"
 
 export function ComposeDialog({
   mailbox,
@@ -380,6 +385,8 @@ export function ComposeDialog({
     onError: (e) => {
       // 发信失败后必须解掉这个闸门，否则接下来的编辑再也不会自动存草稿。
       sendStartedRef.current = false
+      preparingRef.current = false
+      void flushDraft()
       toast({ title: "发送失败", description: errorMessage(e) })
     },
   })
@@ -401,6 +408,8 @@ export function ComposeDialog({
     },
     onError: (e) => {
       sendStartedRef.current = false
+      preparingRef.current = false
+      void flushDraft()
       toast({ title: "定时发送失败", description: errorMessage(e) })
     },
   })
@@ -408,6 +417,7 @@ export function ComposeDialog({
   React.useEffect(() => {
     if (!open) return
     sendStartedRef.current = false
+    preparingRef.current = false
     const nextShowCc = Boolean(draft?.cc)
     const nextShowBcc = Boolean(draft?.bcc)
     const nextSplit = splitQuotedComposerHtml(draft?.html || "")
@@ -585,7 +595,7 @@ export function ComposeDialog({
     if (blockedByTotal > 0) {
       toast({
         title: "附件总大小超限",
-        description: "每封邮件附件合计最多 45 MB，超出的文件未添加。",
+        description: "每封邮件附件合计最多 25 MB，超出的文件未添加。",
       })
     }
     if (allowed.length > 0) {
@@ -615,7 +625,16 @@ export function ComposeDialog({
     if (total > MAX_TOTAL_ATTACHMENT_BYTES) {
       toast({
         title: "附件总大小超限",
-        description: "每封邮件附件合计最多 45 MB，请删减后再发送。",
+        description: "每封邮件附件合计最多 25 MB，请删减后再发送。",
+      })
+      return false
+    }
+    const text = quotedText ? `${body.text}\n\n${quotedText}` : body.text
+    const html = [body.html || plainTextToHtml(body.text), quotedHtml].filter(Boolean).join("")
+    if (estimatedMIMEBytes(files, text, html) > MAX_ENCODED_MESSAGE_BYTES) {
+      toast({
+        title: "整封邮件大小超限",
+        description: "正文和附件编码后预计超过 35 MB，请删减内容；确切大小以服务器校验为准。",
       })
       return false
     }
@@ -625,15 +644,16 @@ export function ComposeDialog({
   async function prepareSend() {
     if (!canSend) return
     if (!mailbox) return
-    // 附件转 base64 是异步的，转换期间「发送」按钮还没进入 isPending。
-    // 没有这个同步闸门，双击/回车会并发跑两次 prepareSend，最后发出两封一样的信。
-    if (preparingRef.current) return
+    // 普通/定时共用同步锁，覆盖编码、确认和请求；失败或取消确认才释放。
+    if (preparingRef.current || sendStartedRef.current) return
     if (!attachmentsWithinLimit()) return
     preparingRef.current = true
     try {
       await prepareSendPrepared()
-    } finally {
+    } catch (error) {
       preparingRef.current = false
+      toast({ title: "发送失败", description: errorMessage(error) })
+      void flushDraft()
     }
   }
 
@@ -673,6 +693,7 @@ export function ComposeDialog({
       confirmText: sendSeparately && payloads.length > 1 ? "继续分别发送" : "继续发送",
       warnings: buildSendWarnings(attachments.length),
       onConfirm: () => {
+        if (sendStartedRef.current) return
         sendStartedRef.current = true
         setSendIntent(null)
         send.mutate(payloads)
@@ -694,13 +715,15 @@ export function ComposeDialog({
       toast({ title: "请选择发件邮箱" })
       return
     }
-    if (preparingRef.current) return
+    if (preparingRef.current || sendStartedRef.current) return
     if (!attachmentsWithinLimit()) return
     preparingRef.current = true
     try {
       await scheduleAtPrepared(sendAt)
-    } finally {
+    } catch (error) {
       preparingRef.current = false
+      toast({ title: "定时发送失败", description: errorMessage(error) })
+      void flushDraft()
     }
   }
 
@@ -725,6 +748,7 @@ export function ComposeDialog({
       defaultDescription: uiMessage("发送时间：{0}", [{ date: sendAt }]),
       warnings: buildSendWarnings(attachments.length),
       onConfirm: () => {
+        if (sendStartedRef.current) return
         sendStartedRef.current = true
         setSendIntent(null)
         scheduleSend.mutate(payload)
@@ -902,7 +926,10 @@ export function ComposeDialog({
               </Button>
             )}
             {canSend && (
-              <Button className="min-h-10 px-4" disabled={send.isPending || !mailbox}>
+              <Button
+                className="min-h-10 px-4"
+                disabled={send.isPending || scheduleSend.isPending || !mailbox}
+              >
                 <Send className="h-4 w-4" />
                 {send.isPending ? uiText("发送中...") : uiText("发送")}
               </Button>
@@ -922,7 +949,10 @@ export function ComposeDialog({
           confirmText={sendIntent?.confirmText || uiText("继续")}
           pending={send.isPending || scheduleSend.isPending}
           onOpenChange={(nextOpen) => {
-            if (!nextOpen) setSendIntent(null)
+            if (!nextOpen) {
+              setSendIntent(null)
+              if (!sendStartedRef.current) preparingRef.current = false
+            }
           }}
           onConfirm={() => sendIntent?.onConfirm()}
         />
@@ -930,8 +960,6 @@ export function ComposeDialog({
     </Dialog>
   )
 }
-
-const MAX_TOTAL_ATTACHMENT_BYTES = 45 * 1024 * 1024
 
 const ScheduleCardNode = Node.create({
   name: "scheduleCard",

@@ -52,6 +52,19 @@ CHROMIUM_PATH=/work/browser/chromium_headless_shell-1248/chrome-headless-shell-l
 node scripts/reauth-session-regression.cjs
 ```
 
+## .120 异步写信与尺寸回归
+
+`compose-async-regression.cjs` 覆盖「迟到的草稿/回复/全部回复/转发（含附件下载）打开请求不能覆盖后开的新写信窗口」，以及普通发送与定时发送共用同一提交锁：请求等待中按 Esc 或回车不能绕过、编码失败后释放锁并继续自动存草稿、网络失败可直接重试、双击只发一次。定时失败后弹窗保留（toast 会吃掉第一次 Esc），脚本显式点弹窗的「取消」再继续。
+
+`mail-size-regression.cjs` 直接对 `src/lib/mail-size.ts` 断言 25 MiB 附件与 35 MiB 整封预算，含 base64 膨胀和 Unicode 字节长度。
+
+```sh
+WEB_DIR=$PWD node scripts/mail-size-regression.cjs
+BASE_URL=http://127.0.0.1:18089 PLAYWRIGHT_MODULE=/work/tests/node_modules/playwright \
+  CHROMIUM_PATH=/work/browser/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell \
+  node scripts/compose-async-regression.cjs
+```
+
 ## Coverage
 
 - Empty and hydrated anonymous sessions, expiration from concurrent protected requests, successful login and preserved return path, failed login without navigation loops, login racing an old `/api/me` response, and failed `/api/me` refetch with cached identity.
