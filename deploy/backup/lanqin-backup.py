@@ -399,7 +399,13 @@ def backup():
     service = check_config(config)
     live_env = dict(item.split("=", 1) for item in source["Config"].get("Env", []) if "=" in item)
     expected_env = service.get("environment", {})
-    require(all(live_env.get(key) == value for key, value in expected_env.items()),
+    # `compose config` serializes literal dollars as $$ so its output can be
+    # parsed again. Compare in that representation; never mutate the recovery
+    # config or collapse dollars in live values (real $ and $$ must stay distinct).
+    # Unresolved/null entries remove the variable; an empty string is different.
+    require(all((key not in live_env if value is None else
+                 key in live_env and live_env[key].replace("$", "$$") == value)
+                for key, value in expected_env.items()),
             "compose environment differs from running container; recreate it before backup (keys must stay paired with the database)")
     actual = {m["Destination"]: m for m in source["Mounts"]}
     mounts = []

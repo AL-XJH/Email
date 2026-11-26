@@ -189,7 +189,47 @@ def main():
     tools.mkdir()
     for name in ("lanqin-backup.py", "lanqin-backup.sh", "lanqin-restore.sh"):
         shutil.copyfile(source_dir / name, tools / name)
-    env_text = "LANQIN_NOTIFICATION_SECRET_KEY=synthetic-notification-secret\nLANQIN_BACKUP_SECRET_KEY=synthetic-backup-secret\n"
+    env_text = ("LANQIN_NOTIFICATION_SECRET_KEY='synthetic-$secret$$pair${name} space'\n"
+                "LANQIN_BACKUP_SECRET_KEY=synthetic-backup-secret\n"
+                "LANQIN_TEST_ENV_SINGLE='single$dollar'\n"
+                "LANQIN_TEST_ENV_DOUBLE='double$$dollar'\n"
+                "LANQIN_TEST_ENV_BRACED='literal${name}'\n"
+                "LANQIN_TEST_ENV_SPACES='  two words  '\n"
+                "LANQIN_TEST_ENV_QUOTE=\"one's value\"\n"
+                "LANQIN_TEST_ENV_ESCAPED=escaped$$dollar\n"
+                "LANQIN_TEST_ENV_UNSET\n")
+    expected_environment = {
+        "LANQIN_NOTIFICATION_SECRET_KEY": "synthetic-$secret$$pair${name} space",
+        "LANQIN_BACKUP_SECRET_KEY": "synthetic-backup-secret",
+        "LANQIN_TEST_ENV_SINGLE": "single$dollar",
+        "LANQIN_TEST_ENV_DOUBLE": "double$$dollar",
+        "LANQIN_TEST_ENV_BRACED": "literal${name}",
+        "LANQIN_TEST_ENV_SPACES": "  two words  ",
+        "LANQIN_TEST_ENV_QUOTE": "one's value",
+        "LANQIN_TEST_ENV_ESCAPED": "escaped$dollar",
+        "LANQIN_TEST_DIRECT": "direct$dollar$$pair${name} one's value",
+        "LANQIN_TEST_EMPTY": "",
+    }
+    # Prevent the test runner's environment from resolving deliberately unset keys.
+    absent_environment = ("LANQIN_TEST_ENV_UNSET", "LANQIN_TEST_NULL")
+    for key in absent_environment:
+        os.environ.pop(key, None)
+
+    def container_environment(container):
+        values = json.loads(command(["docker", "inspect", container]))[0]["Config"]["Env"]
+        return dict(value.split("=", 1) for value in values if "=" in value)
+
+    def assert_environment(container):
+        actual = container_environment(container)
+        assert all(actual.get(key) == value for key, value in expected_environment.items()), "runtime environment changed (private values suppressed)"
+        assert all(key not in actual for key in absent_environment), "unset environment unexpectedly present"
+        # Check process bytes too: Docker inspect represents removals as bare names.
+        script = ("import os; expected=" + repr(expected_environment) +
+                  "; absent=" + repr(absent_environment) +
+                  "; assert all(os.environb.get(k.encode()) == v.encode() for k,v in expected.items()), 'private environment bytes differ'" +
+                  "; assert all(k.encode() not in os.environb for k in absent), 'unset environment present'")
+        command(["docker", "exec", container, "python3", "-c", script])
+
     (app / ".env").write_text(env_text)
     (app / "data/avatars/user").write_bytes(b"avatar fixture")
     (app / "data/attachments/fixture").write_bytes(b"attachment fixture")
@@ -212,6 +252,8 @@ def main():
     name = "fix117-backup-fixture-" + str(os.getpid())
     service = {"image": args.image, "network_mode": "none", "entrypoint": ["/bin/sh", "-c"],
                "command": ["exec redis-server /etc/redis-lanqin.conf"], "env_file": ".env",
+               "environment": {"LANQIN_TEST_DIRECT": "direct$$dollar$$$$pair$${name} one's value",
+                               "LANQIN_TEST_EMPTY": "", "LANQIN_TEST_NULL": None},
                "volumes": ["./data:/data", "./mail:/var/mail/vhosts", "./dkim:/var/lib/rspamd/dkim",
                            "./nginx/site-80.conf:/etc/nginx/conf.d/default.conf:ro",
                            "./nginx/ssl-443.conf:/etc/nginx/conf.d/ssl-443.conf:ro",
@@ -236,6 +278,8 @@ def main():
     try:
         command(compose + ["up", "-d", "--pull", "never"])
         cid = command(compose + ["ps", "-q", "lanqin-email"])
+        assert_environment(cid)
+        source_environment = container_environment(cid)
         for _ in range(100):
             try:
                 if command(["docker", "exec", cid, "redis-cli", "ping"]) == "PONG":
@@ -275,6 +319,9 @@ def main():
         # Actually create/start all restored mounts; config -q alone cannot catch not-directory.
         command(restored_compose + ["up", "-d", "--pull", "never"])
         restored_cid = command(restored_compose + ["ps", "-q", "lanqin-email"])
+        assert_environment(restored_cid)
+        assert container_environment(restored_cid) == source_environment, "restored environment differs byte-for-byte (private values suppressed)"
+        print("PASS literal $/$$/${name}, spaces, quotes, direct values, empty and unset/null environment: real Compose → backup → restore → identical container environment")
         for _ in range(100):
             try:
                 if command(["docker", "exec", restored_cid, "redis-cli", "get", "audit:recovery"]) == "preserved":
@@ -320,6 +367,28 @@ def main():
         command(["bash", str(tools / "lanqin-backup.sh")], env=env, fail=True,
                 expected="compose environment differs")
         (app / ".env").write_text(env_text)
+        # A real one-dollar/two-dollar change must not be collapsed by comparison.
+        for key, before, after in (
+            ("root-key", "synthetic-$secret$$pair${name} space", "synthetic-$$secret$$pair${name} space"),
+            ("ordinary-env", "single$dollar", "single$$dollar"),
+            ("unset-to-empty", "LANQIN_TEST_ENV_UNSET\n", "LANQIN_TEST_ENV_UNSET=\n"),
+            ("null-to-set", "LANQIN_TEST_ENV_UNSET\n", "LANQIN_TEST_ENV_UNSET\nLANQIN_TEST_NULL=changed\n"),
+        ):
+            (app / ".env").write_text(env_text.replace(before, after))
+            command(["bash", str(tools / "lanqin-backup.sh")], env=env, fail=True,
+                    expected="compose environment differs")
+            assert command(["docker", "inspect", cid, "--format", "{{.State.Running}}"] ) == "true"
+            print("PASS genuine", key, "drift rejected before stopping source")
+        (app / ".env").write_text(env_text)
+        compose_path = app / "docker-compose.yml"
+        original_compose = compose_path.read_text()
+        changed_compose = json.loads(original_compose)
+        changed_compose["services"]["lanqin-email"]["environment"]["LANQIN_TEST_DIRECT"] += "$$"
+        compose_path.write_text(json.dumps(changed_compose))
+        command(["bash", str(tools / "lanqin-backup.sh")], env=env, fail=True,
+                expected="compose environment differs")
+        compose_path.write_text(original_compose)
+        print("PASS genuine direct environment drift rejected")
         # A missing bind file must fail discovery before the live container is stopped.
         external_file.unlink()
         command(["bash", str(tools / "lanqin-backup.sh")], env=env, fail=True)
