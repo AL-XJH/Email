@@ -67,6 +67,8 @@ BASE_URL=http://127.0.0.1:18089 PLAYWRIGHT_MODULE=/work/tests/node_modules/playw
 
 ## .122 邮件正文 Referer 回归
 
+`mail-failure-injection-regression.cjs` 覆盖「接口失败时用户看到什么」：批量操作部分失败必须提示「已处理 N 封，M 封失败」且失败那封留在列表（断言一次请求处理整批）；移动 500 时邮件不能从列表消失并弹「移动失败」；添加标签 500 后标签必须回滚（直接读菜单项 `aria-checked`，不要数页面上的文字——侧栏也有同名标签）。详情页工具条在桌面宽度是单排图标按钮（`回复`/`归档`/`添加标签`），没有「更多操作」；标签项是 `menuitemcheckbox` 而不是 button。mock 的 `/api/mail/labels` 必须返回 `{items:[...]}`，返回裸数组会显示「请先在侧栏新建标签」。
+
 `mail-optimistic-rollback-regression.cjs` 覆盖「一封邮件的操作失败不能连带回滚别的邮件」：列表/详情的乐观更新共用一次整体快照，只要有一个请求 500，同一窗口里其它已经成功的星标/已读会从界面上跳回去。脚本让 A 的星标请求快速 500、B 的请求慢 1600ms 成功，在 B 尚未返回时断言 B 仍是已星标——旧实现这里恒为 0。mock 的列表项必须带 `isStarred`（前端只认这个字段，`flags.flagged` 不参与渲染），否则刷新后星标会被 mock 吃掉，测试会假红。
 
 `mail-referrer-regression.cjs` 覆盖「远程图片不能带 Referer」：Chrome 对 `srcdoc` 文档忽略 `<iframe referrerPolicy>`，框架里的图片请求仍带 `Referer: https://<host>/`，开了防盗链的发信方（Trakt 的 CDN 实测带 Referer 返回 403、不带返回 200）就会一直破图。修复方式是帧文档自身带 `<meta name="referrer" content="no-referrer">`。脚本起一个 https 探针服务（带 Referer 返回 403，不带返回 1x1 PNG），走 mock API 打开一封含探针图的邮件，断言帧文档声明了该 meta、图片真的加载成功、且解析用的那次请求不带 Referer。探针必须是 https：站点 CSP 为 `img-src 'self' data: blob: https:`，http 探针会先被 CSP 拦掉。`from` 在 mock 里是字符串（`"Sender <a@b>"`）、`to` 是字符串数组、folders/labels 返回数组，否则前端会 `e.trim is not a function` 崩掉。

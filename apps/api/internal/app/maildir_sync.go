@@ -640,6 +640,11 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 	if msg.Snippet == "" {
 		msg.Snippet = snippetFrom(msg.BodyText, msg.BodyHTML)
 	}
+	if handled, err := a.handleOwnOrphanedMaildirFile(ctx, mb.ID, folder.ID, path, msg.MessageID, msg.IsRead, msg.IsStarred, raw); err != nil {
+		return false, err
+	} else if handled {
+		return false, nil
+	}
 	if exists, err := a.maildirMessageExists(ctx, mb.ID, folder.ID, path, msg.MessageID); err != nil {
 		return false, err
 	} else if exists {
@@ -670,6 +675,74 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 		}
 	}
 	return err == nil, err
+}
+
+// ownMaildirMessageIDPattern 匹配我们自己的写入路径生成的文件名：
+//
+//	{nanos}.{mail_xxx}.{header-message-id}:2,FLAGS
+//
+// 第二段是我们内部的 message id。Dovecot/LMTP 投递的文件名形如
+// {epoch}.M{pid}P{port}.{host},S=...，用户手抄的副本也不会带这个段，
+// 所以这个匹配足以把「我们自己的残留」和「真正的第二封邮件」分开。
+var ownMaildirMessageIDPattern = regexp.MustCompile(`\.(mail_[A-Za-z0-9_-]+)\.`)
+
+// handleOwnOrphanedMaildirFile 处理崩溃窗口留下的副本。
+//
+// writeRawMessageToMaildirFolder 的顺序是 tmp 写盘 → rename 到 cur/new →
+// UPDATE messages.raw_path。进程若死在 rename 之后、UPDATE 之前，磁盘上会多一份
+// 内容正确、文件名带我们内部 id 的副本，而库里仍指向旧文件。不识别的话，
+// 下一轮同步会把它当新邮件导入，用户看到同一封邮件两遍（
+// TestMaildirSyncDoesNotDuplicateOwnOrphanAfterCrash 就是这条）。
+//
+// 三种情况：库里的文件还在且内容一致 → 删掉副本（DB 是真相，内容没丢）；
+// 库里的文件已经不在了 → 认领这份副本；内容不一致 → 留在磁盘上并告警，
+// 不导入也不删除（可能是人工恢复的中间状态，不能替用户做决定）。
+func (a *App) handleOwnOrphanedMaildirFile(ctx context.Context, mailboxID, folderID, path, messageID string, read, starred bool, raw []byte) (bool, error) {
+	match := ownMaildirMessageIDPattern.FindStringSubmatch(filepath.Base(path))
+	if len(match) != 2 {
+		return false, nil
+	}
+	id := match[1]
+	var tracked string
+	err := a.db.QueryRowContext(ctx, `SELECT COALESCE(raw_path,'') FROM messages WHERE id=? AND mailbox_id=?`, id, mailboxID).Scan(&tracked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if tracked == path {
+		return false, nil
+	}
+	if tracked != "" {
+		if _, statErr := os.Stat(tracked); statErr == nil {
+			trackedRaw, readErr := os.ReadFile(tracked)
+			if readErr != nil {
+				return false, readErr
+			}
+			if bytes.Equal(trackedRaw, raw) {
+				if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+					a.log.Warn("failed to remove duplicated maildir copy", "path", path, "error", removeErr)
+				} else {
+					a.log.Info("removed duplicated maildir copy left by interrupted write", "path", path, "message", id)
+				}
+				return true, nil
+			}
+			a.log.Warn("maildir copy with our message id differs from the tracked file; leaving it in place", "path", path, "tracked", tracked, "message", id)
+			return true, nil
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return false, statErr
+		}
+	}
+	// 库指向的文件已经不在了（或这一行还没有文件）：认领这份副本。
+	handled, err := a.syncExistingMaildirMessageState(ctx, mailboxID, folderID, path, messageID, read, starred)
+	if err != nil {
+		return false, err
+	}
+	if handled {
+		a.log.Info("adopted maildir copy left by interrupted write", "path", path, "message", id)
+	}
+	return handled, nil
 }
 
 func (a *App) maildirMessageExists(ctx context.Context, mailboxID, folderID, rawPath, messageID string) (bool, error) {
