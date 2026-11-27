@@ -1592,7 +1592,7 @@ func (a *App) applyRuleActions(ctx context.Context, mailboxID, messageID, ruleID
 				if err := a.db.QueryRowContext(ctx, `SELECT user_id FROM mailboxes WHERE id=?`, mailboxID).Scan(&userID); err != nil {
 					return err
 				}
-				if err := a.enqueueTelegramNotification(ctx, userID, mailboxID, messageID, ruleID); err != nil {
+				if err := a.enqueueTelegramNotification(ctx, userID, mailboxID, messageID, ruleID, false); err != nil {
 					return err
 				}
 			}

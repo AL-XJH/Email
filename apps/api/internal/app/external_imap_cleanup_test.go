@@ -184,3 +184,32 @@ func TestExternalIMAPFolderDisplayName(t *testing.T) {
 		}
 	}
 }
+
+// 外部 IMAP 首次同步会把几周前的旧邮件整批导进来，这些不该推 Telegram。
+func TestTelegramNotificationSkipsBackfilledMail(t *testing.T) {
+	a := newTestApp(t)
+	a.updateConfig(func(cfg *Config) { cfg.TelegramNotifyMaxAgeMinutes = 60 })
+	now := a.now()
+	cases := []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{"fresh", now.Add(-5 * time.Minute), false},
+		{"just under limit", now.Add(-59 * time.Minute), false},
+		{"backfilled", now.Add(-3 * time.Hour), true},
+		{"weeks old", now.Add(-30 * 24 * time.Hour), true},
+	}
+	for _, c := range cases {
+		if got := a.telegramNotificationTooOld(c.at.UTC().Format(time.RFC3339Nano)); got != c.want {
+			t.Fatalf("%s: tooOld=%v want %v", c.name, got, c.want)
+		}
+	}
+	if a.telegramNotificationTooOld("") {
+		t.Fatal("missing received_at must not be treated as old")
+	}
+	a.updateConfig(func(cfg *Config) { cfg.TelegramNotifyMaxAgeMinutes = 0 })
+	if a.telegramNotificationTooOld(now.Add(-90 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)) {
+		t.Fatal("0 must disable the age gate")
+	}
+}

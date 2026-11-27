@@ -72,6 +72,8 @@ type Config struct {
 	MailTranslateEnabled            bool
 	MailTranslateMaxChars           int
 	NotificationSecretKey           string
+	// 补同步/历史导入进来的旧邮件不该再推 Telegram；0 表示不限制。
+	TelegramNotifyMaxAgeMinutes int
 	BackupSecretKey                 string
 	BackupArtifactDir               string
 	BackupWorkspace                 string
@@ -152,6 +154,7 @@ func LoadConfig() Config {
 		MailTranslateEnabled:            getenvBool("LANQIN_MAIL_TRANSLATE_ENABLED", true),
 		MailTranslateMaxChars:           getenvInt("LANQIN_MAIL_TRANSLATE_MAX_CHARS", 8000),
 		NotificationSecretKey:           getenv("LANQIN_NOTIFICATION_SECRET_KEY", ""),
+		TelegramNotifyMaxAgeMinutes:     getenvInt("LANQIN_TELEGRAM_NOTIFY_MAX_AGE_MINUTES", 60),
 		BackupSecretKey:                 getenv("LANQIN_BACKUP_SECRET_KEY", ""),
 		BackupArtifactDir:               getenv("LANQIN_BACKUP_ARTIFACT_DIR", ""),
 		BackupWorkspace:                 getenv("LANQIN_BACKUP_WORKSPACE", ""),

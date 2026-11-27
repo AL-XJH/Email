@@ -289,7 +289,7 @@ func (a *App) handleResendTelegramNotification(w http.ResponseWriter, r *http.Re
 		respondError(w, http.StatusInternalServerError, "failed to load message")
 		return
 	}
-	if err := a.enqueueTelegramNotification(r.Context(), user.ID, mailboxID, messageID, newID("manual")); err != nil {
+	if err := a.enqueueTelegramNotification(r.Context(), user.ID, mailboxID, messageID, newID("manual"), true); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to enqueue Telegram notification")
 		return
 	}
@@ -344,7 +344,21 @@ func (a *App) telegramConfiguredForUser(ctx context.Context, userID string) (boo
 	return count > 0, err
 }
 
-func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID, messageID, ruleID string) error {
+// telegramNotificationTooOld 判断这封信是不是「补同步进来的旧邮件」。
+// 0 表示不限制；时间解析不出来时按新邮件处理，宁可多推一条也不吞掉。
+func (a *App) telegramNotificationTooOld(receivedAt string) bool {
+	maxAge := a.config().TelegramNotifyMaxAgeMinutes
+	if maxAge <= 0 {
+		return false
+	}
+	received := parseTime(receivedAt)
+	if received.IsZero() {
+		return false
+	}
+	return a.now().Sub(received) > time.Duration(maxAge)*time.Minute
+}
+
+func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID, messageID, ruleID string, force bool) error {
 	// 规则保存后权限可能被收回：每次发送前重新校验，不能只看规则还在不在。
 	user, err := a.userByID(ctx, userID)
 	if err != nil {
@@ -360,12 +374,17 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	if !configured {
 		return nil
 	}
-	var mailboxAddress, fromAddress, fromName, subject, snippet, bodyText, bodyHTML string
-	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet,COALESCE(m.body_text,''),COALESCE(m.body_html,'')
+	var mailboxAddress, fromAddress, fromName, subject, snippet, bodyText, bodyHTML, receivedAt string
+	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet,COALESCE(m.body_text,''),COALESCE(m.body_html,''),COALESCE(m.received_at,'')
 		FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE m.id=? AND m.mailbox_id=? AND mb.user_id=?`, messageID, mailboxID, userID).
-		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet, &bodyText, &bodyHTML)
+		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet, &bodyText, &bodyHTML, &receivedAt)
 	if err != nil {
 		return err
+	}
+	// 外部 IMAP 首次同步、Maildir 补扫会把几周前的旧邮件整批导进来。这些不是
+	// 「新到的信」，推 Telegram 只会刷屏；按到达时间拦掉，手动重推不受限。
+	if !force && a.telegramNotificationTooOld(receivedAt) {
+		return nil
 	}
 	// 验证码常在第 2、3 才出现，摘要里没有，所以正文一起扫。
 	code := extractVerificationCode(subject, bodyText)
