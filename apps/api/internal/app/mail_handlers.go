@@ -130,6 +130,16 @@ func (a *App) handleMailFolders(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to load folders")
 		return
 	}
+	if hidden := a.hiddenExternalLocalFolderIDs(r.Context(), access.Mailbox.ID); len(hidden) > 0 {
+		visible := items[:0]
+		for _, item := range items {
+			if hidden[item.ID] {
+				continue
+			}
+			visible = append(visible, item)
+		}
+		items = visible
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 

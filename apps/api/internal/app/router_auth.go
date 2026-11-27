@@ -108,6 +108,7 @@ func (a *App) Router() http.Handler {
 		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Get("/me/external-imap-accounts/{id}/runs", a.handleExternalIMAPSyncRuns)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Post("/me/external-imap-accounts/{id}/sync", a.handleSyncExternalIMAPAccount)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Post("/me/external-imap-accounts/{id}/sync-folder", a.handleSyncExternalIMAPFolder)
+		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Post("/me/external-imap-accounts/{id}/hidden-folders", a.handleSetExternalIMAPHiddenFolders)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Post("/me/external-imap-oauth/{provider}/start", a.handleStartExternalIMAPOAuth)
 		r.With(a.requireExternalIMAPEnabled).Get("/external-imap-oauth/{provider}/callback", a.handleExternalIMAPOAuthCallback)
 		r.With(a.requireAuth).Get("/events", a.handleEvents)

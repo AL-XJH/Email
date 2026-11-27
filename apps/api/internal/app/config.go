@@ -73,20 +73,20 @@ type Config struct {
 	MailTranslateMaxChars           int
 	NotificationSecretKey           string
 	// 补同步/历史导入进来的旧邮件不该再推 Telegram；0 表示不限制。
-	TelegramNotifyMaxAgeMinutes int
-	BackupSecretKey                 string
-	BackupArtifactDir               string
-	BackupWorkspace                 string
-	BackupRestoreDir                string
-	BackupRecipient                 string
-	BackupDriveClientID             string
-	BackupDriveClientSecret         string
-	BackupNetworkAllowlistJSON      string
-	BackupMaintenanceSocket         string
-	DeliveryWebhookSecret           string
-	StatusWebhookURL                string
-	StatusWebhookSecret             string
-	StatusWebhookAllowPrivateHosts  bool
+	TelegramNotifyMaxAgeMinutes    int
+	BackupSecretKey                string
+	BackupArtifactDir              string
+	BackupWorkspace                string
+	BackupRestoreDir               string
+	BackupRecipient                string
+	BackupDriveClientID            string
+	BackupDriveClientSecret        string
+	BackupNetworkAllowlistJSON     string
+	BackupMaintenanceSocket        string
+	DeliveryWebhookSecret          string
+	StatusWebhookURL               string
+	StatusWebhookSecret            string
+	StatusWebhookAllowPrivateHosts bool
 }
 
 func LoadConfig() Config {

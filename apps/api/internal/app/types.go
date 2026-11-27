@@ -354,6 +354,7 @@ type ExternalIMAPAccount struct {
 type ExternalIMAPFolder struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName,omitempty"`
+	Hidden      bool   `json:"hidden,omitempty"`
 	Role        string `json:"role"`
 	UnreadCount int    `json:"unreadCount"`
 	TotalCount  int    `json:"totalCount"`

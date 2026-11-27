@@ -22,6 +22,7 @@ import {
   Clock3,
   Contact,
   Copy,
+  Eye,
   History,
   Info,
   KeyRound,
@@ -1784,6 +1785,8 @@ function MailboxManagement({
 
   const [deleteExternalTarget, setDeleteExternalTarget] =
     React.useState<ExternalImapAccount | null>(null)
+  const [folderVisibilityTarget, setFolderVisibilityTarget] =
+    React.useState<ExternalImapAccount | null>(null)
 
   const canApply = !!applyOptions?.enabled && (applyOptions.domains || []).length > 0
   const selectedMailbox = mailboxes.find((item) => item.id === selectedMailboxId)
@@ -1941,6 +1944,16 @@ function MailboxManagement({
                               : uiText("同步")}
                           </Button>
                         )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={externalPending}
+                          onClick={() => setFolderVisibilityTarget(account)}
+                        >
+                          <Eye className="h-4 w-4" />
+                          {uiText("文件夹显示")}
+                        </Button>
                         {account.storageMode === "local" && (
                           <Button
                             type="button"
@@ -2015,6 +2028,10 @@ function MailboxManagement({
           onDeleteExternal(deleteExternalTarget.id)
           setDeleteExternalTarget(null)
         }}
+      />
+      <ExternalFolderVisibilityDialog
+        account={folderVisibilityTarget}
+        onClose={() => setFolderVisibilityTarget(null)}
       />
     </div>
   )
@@ -2432,6 +2449,108 @@ function externalOAuthProviderLabel(provider?: ExternalImapOAuthProvider) {
     : provider === "outlook"
       ? "Microsoft 365 / Outlook OAuth"
       : "OAuth"
+}
+
+// 让用户挑哪些远端文件夹要显示：隐藏后侧栏不再出现，本地存储模式也不再同步它
+//（Gmail 的 Notes 是苹果备忘录同步进来的，多数人不需要在邮箱里看到）。
+function ExternalFolderVisibilityDialog({
+  account,
+  onClose,
+}: {
+  account: ExternalImapAccount | null
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  useUiLanguage()
+  const [hidden, setHidden] = React.useState<string[]>([])
+  const [loadedFor, setLoadedFor] = React.useState("")
+  const folders = useQuery({
+    queryKey: ["external-imap-folder-settings", account?.id || ""],
+    queryFn: () => api.externalFolders(account!.id, true),
+    enabled: !!account,
+  })
+  React.useEffect(() => {
+    if (!account) {
+      setLoadedFor("")
+      setHidden([])
+      return
+    }
+    if (loadedFor === account.id || !folders.data) return
+    setHidden((folders.data.items || []).filter((item) => item.hidden).map((item) => item.name))
+    setLoadedFor(account.id)
+  }, [account, folders.data, loadedFor])
+  const save = useMutation({
+    mutationFn: () => api.setExternalHiddenFolders(account!.id, hidden),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["external-imap-accounts"] })
+      qc.invalidateQueries({ queryKey: ["mail-external-accounts"] })
+      qc.invalidateQueries({ queryKey: ["mail-external-folders"] })
+      qc.invalidateQueries({ queryKey: ["mail-folders"] })
+      qc.invalidateQueries({ queryKey: ["external-imap-run-folders"] })
+      qc.invalidateQueries({ queryKey: ["external-imap-folder-settings"] })
+      toast({ title: uiText("文件夹显示设置已保存") })
+      onClose()
+    },
+    onError: (err: Error) =>
+      toast({ title: errorMessage(err.message) || err.message, variant: "destructive" }),
+  })
+  const items = folders.data?.items || []
+  return (
+    <Dialog open={!!account} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{uiText("文件夹显示")}</DialogTitle>
+        </DialogHeader>
+        <div className="max-h-[50vh] space-y-2 overflow-y-auto py-1">
+          {folders.isLoading && (
+            <div className="py-4 text-sm text-muted-foreground">{uiText("加载中...")}</div>
+          )}
+          {!folders.isLoading && items.length === 0 && (
+            <div className="py-4 text-sm text-muted-foreground">{uiText("没有可显示的文件夹")}</div>
+          )}
+          {items.map((item) => {
+            const visible = !hidden.includes(item.name)
+            return (
+              <label
+                key={item.name}
+                className="flex cursor-pointer items-center justify-between gap-3 rounded-md border px-3 py-2"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm">{item.displayName || item.name}</span>
+                  {item.displayName && item.displayName !== item.name && (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {item.name}
+                    </span>
+                  )}
+                </span>
+                <Switch
+                  checked={visible}
+                  onCheckedChange={(next) =>
+                    setHidden((prev) =>
+                      next ? prev.filter((name) => name !== item.name) : [...prev, item.name]
+                    )
+                  }
+                />
+              </label>
+            )
+          })}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            {uiText("取消")}
+          </Button>
+          <Button
+            type="button"
+            disabled={save.isPending || folders.isLoading}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending ? uiText("保存中...") : uiText("保存")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function ExternalImapSyncPanel({

@@ -502,6 +502,12 @@ func postgresFreshSchema() []string {
 			updated_at VARCHAR(35) NOT NULL,
 			PRIMARY KEY(account_id,remote_folder)
 		)`,
+		`CREATE TABLE external_imap_hidden_folders (
+			account_id VARCHAR(64) NOT NULL REFERENCES external_imap_accounts(id) ON DELETE CASCADE,
+			remote_folder VARCHAR(255) NOT NULL,
+			created_at VARCHAR(35) NOT NULL,
+			PRIMARY KEY(account_id,remote_folder)
+		)`,
 		`CREATE TABLE external_imap_messages (
 			account_id VARCHAR(64) NOT NULL REFERENCES external_imap_accounts(id) ON DELETE CASCADE,
 			remote_folder VARCHAR(255) NOT NULL,

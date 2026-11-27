@@ -542,6 +542,7 @@ export type ExternalImapOAuthStartPayload = {
 export type ExternalImapFolder = {
   name: string
   displayName?: string
+  hidden?: boolean
   role: string
   unreadCount: number
   totalCount: number

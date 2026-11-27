@@ -651,8 +651,15 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusBadRequest, "failed to list folders")
 		return
 	}
+	// 默认只回可见文件夹；设置页要用 ?all=1 拿全集，才能把隐藏的再打开。
+	showAll := strings.TrimSpace(r.URL.Query().Get("all")) == "1" || strings.EqualFold(r.URL.Query().Get("all"), "true")
+	hidden := a.externalIMAPHiddenFolderSet(r.Context(), account.ID)
 	items := make([]ExternalIMAPFolder, 0, len(folders))
 	for _, folder := range folders {
+		isHidden := hidden[folder.Name]
+		if isHidden && !showAll {
+			continue
+		}
 		if account.StorageMode == externalIMAPStorageLocal {
 			var total, unread int
 			_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0)
@@ -661,7 +668,7 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 			folder.TotalCount = total
 			folder.UnreadCount = unread
 		}
-		items = append(items, ExternalIMAPFolder{Name: folder.Name, DisplayName: externalIMAPFolderDisplayName(folder.Name), Role: folder.Role, UnreadCount: folder.UnreadCount, TotalCount: folder.TotalCount})
+		items = append(items, ExternalIMAPFolder{Name: folder.Name, DisplayName: externalIMAPFolderDisplayName(folder.Name), Hidden: isHidden, Role: folder.Role, UnreadCount: folder.UnreadCount, TotalCount: folder.TotalCount})
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -1285,7 +1292,101 @@ func (a *App) migrateExternalIMAP(ctx context.Context) error {
 			return err
 		}
 	}
+	// 老库升级：隐藏文件夹表后加，建表语句两种驱动都吃 TEXT。
+	if _, err := a.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS external_imap_hidden_folders (
+		account_id TEXT NOT NULL,
+		remote_folder TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY(account_id, remote_folder)
+	)`); err != nil {
+		return err
+	}
 	return nil
+}
+
+// externalIMAPHiddenFolderSet 返回某账号被隐藏的远端文件夹集合。
+// hiddenExternalLocalFolderIDs 找出被隐藏的远端文件夹对应的本地文件夹 id，
+// 本地存储模式下这些文件夹也不该出现在侧栏。
+func (a *App) hiddenExternalLocalFolderIDs(ctx context.Context, mailboxID string) map[string]bool {
+	out := map[string]bool{}
+	rows, err := a.db.QueryContext(ctx, `SELECT s.local_folder_id
+		FROM external_imap_hidden_folders h
+		JOIN external_imap_accounts acc ON acc.id=h.account_id
+		JOIN external_imap_folder_states s ON s.account_id=h.account_id AND s.remote_folder=h.remote_folder
+		WHERE acc.mailbox_id=? AND s.local_folder_id<>''`, mailboxID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil && id != "" {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+func (a *App) externalIMAPHiddenFolderSet(ctx context.Context, accountID string) map[string]bool {
+	out := map[string]bool{}
+	rows, err := a.db.QueryContext(ctx, `SELECT remote_folder FROM external_imap_hidden_folders WHERE account_id=?`, accountID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func (a *App) replaceExternalIMAPHiddenFolders(ctx context.Context, accountID string, folders []string) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM external_imap_hidden_folders WHERE account_id=?`, accountID); err != nil {
+		return err
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	seen := map[string]bool{}
+	for _, name := range folders {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, err := tx.ExecContext(ctx, `INSERT INTO external_imap_hidden_folders(account_id,remote_folder,created_at) VALUES(?,?,?)`, accountID, name, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (a *App) handleSetExternalIMAPHiddenFolders(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	accountID := chi.URLParam(r, "id")
+	account, err := a.externalIMAPAccountForUser(r.Context(), user.ID, accountID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "external account not found")
+		return
+	}
+	var req struct {
+		Folders []string `json:"folders"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if err := a.replaceExternalIMAPHiddenFolders(r.Context(), account.ID, req.Folders); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to save hidden folders")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "hiddenFolders": req.Folders})
 }
 
 func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (ExternalIMAPSyncRun, error) {
@@ -1312,7 +1413,12 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 	// 几十个文件夹，每轮都在超时内也可能跑很久。这里按 context 的 deadline 在文件夹之间
 	// 主动收手，别让 worker 的一个账号卡住整条定时链路。
 	deadlineHit := false
+	hidden := a.externalIMAPHiddenFolderSet(ctx, account.ID)
 	for _, folder := range folders {
+		if hidden[folder.Name] {
+			// 用户把这个文件夹隐藏了：不导入、不建本地文件夹，省流量也省通知。
+			continue
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			a.log.Warn("external imap sync stopped early", "account", account.ID, "error", ctxErr)
 			deadlineHit = true

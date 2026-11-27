@@ -784,8 +784,15 @@ export const api = {
   myOwnedMailboxes: () => request<ListResponse<Mailbox>>("/api/mail/mailboxes?owned=1"),
   externalMailAccounts: () =>
     request<ListResponse<ExternalImapAccount>>("/api/mail/external-accounts"),
-  externalFolders: (id: string) =>
-    request<ListResponse<ExternalImapFolder>>(`/api/mail/external-accounts/${id}/folders`),
+  externalFolders: (id: string, all = false) =>
+    request<ListResponse<ExternalImapFolder>>(
+      `/api/mail/external-accounts/${id}/folders${all ? "?all=1" : ""}`
+    ),
+  setExternalHiddenFolders: (id: string, folders: string[]) =>
+    request<{ ok: boolean; hiddenFolders: string[] }>(
+      `/api/me/external-imap-accounts/${id}/hidden-folders`,
+      { method: "POST", body: JSON.stringify({ folders }) }
+    ),
   externalMessages: (id: string, folder: string, cursor = "", q = "", limit = 30) => {
     const params = new URLSearchParams({ folder, cursor, q })
     params.set("limit", String(limit))

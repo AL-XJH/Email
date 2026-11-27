@@ -793,6 +793,12 @@ func (a *App) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY(account_id, remote_folder)
 		)`,
+		`CREATE TABLE IF NOT EXISTS external_imap_hidden_folders (
+			account_id TEXT NOT NULL REFERENCES external_imap_accounts(id) ON DELETE CASCADE,
+			remote_folder TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY(account_id, remote_folder)
+		)`,
 		`CREATE TABLE IF NOT EXISTS external_imap_messages (
 			account_id TEXT NOT NULL REFERENCES external_imap_accounts(id) ON DELETE CASCADE,
 			remote_folder TEXT NOT NULL,

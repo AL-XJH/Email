@@ -235,3 +235,43 @@ func TestExternalIMAPFolderIsAllMail(t *testing.T) {
 		}
 	}
 }
+
+// 隐藏文件夹要能存、能去重，并且能把对应的本地文件夹从列表里滤掉。
+func TestExternalIMAPHiddenFolders(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	accountID := "ximap_hidden_folders"
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "hidden folders", "imap.example.test", 993, externalIMAPTLS, "remote@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	// 重复、空白都要归一。
+	if err := a.replaceExternalIMAPHiddenFolders(ctx, accountID, []string{"Notes", " Notes ", "", "Notes"}); err != nil {
+		t.Fatalf("save hidden folders: %v", err)
+	}
+	hidden := a.externalIMAPHiddenFolderSet(ctx, accountID)
+	if len(hidden) != 1 || !hidden["Notes"] {
+		t.Fatalf("hidden set = %v, want only Notes", hidden)
+	}
+
+	var folderID string
+	if err := a.db.QueryRowContext(ctx, `SELECT id FROM folders WHERE mailbox_id=? ORDER BY sort_order,id LIMIT 1`, mailbox.ID).Scan(&folderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?)`, accountID, "Notes", folderID, 1, 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.hiddenExternalLocalFolderIDs(ctx, mailbox.ID); !got[folderID] {
+		t.Fatalf("local folder %s linked to hidden Notes must be filtered, got %v", folderID, got)
+	}
+	// 取消隐藏后本地文件夹要回到列表。
+	if err := a.replaceExternalIMAPHiddenFolders(ctx, accountID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.hiddenExternalLocalFolderIDs(ctx, mailbox.ID); len(got) != 0 {
+		t.Fatalf("after unhide hidden local folders = %v, want none", got)
+	}
+}
