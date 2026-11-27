@@ -2169,6 +2169,19 @@ export function MailPage() {
     if (refreshing || autoRefreshing) return
     setRefreshing(true)
     try {
+      // 在外部邮箱里点刷新 = 立刻同步一次，不用等后台 5 分钟轮询。
+      // 远端直连模式没有本地库，同步接口会直接报错，所以只对 local 模式调。
+      const externalAccount =
+        mailView === "external"
+          ? externalAccountItems.find((item) => item.id === selectedExternalAccountId)
+          : undefined
+      if (externalAccount && externalAccount.storageMode === "local") {
+        try {
+          await api.syncExternalImapAccount(externalAccount.id)
+        } catch (error) {
+          toast({ title: "同步外部邮箱失败", description: errorMessage(error) })
+        }
+      }
       await Promise.all([
         refreshMailData(),
         new Promise((resolve) => window.setTimeout(resolve, 500)),
