@@ -304,6 +304,11 @@ func (a *App) writeMessageToNewMaildirFolder(ctx context.Context, messageID, fol
 func (a *App) deleteMessageMaildirFile(ctx context.Context, messageID string) error {
 	var rawPath string
 	if err := a.db.QueryRowContext(ctx, `SELECT raw_path FROM messages WHERE id=?`, messageID).Scan(&rawPath); err != nil {
+		// 行已经不存在时视为「已经删干净」：调用方经常是清理脚本或外部账号
+		// 删除流程，手里可能拿着一条陈旧引用，不能因此让整批清理失败。
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
 		return err
 	}
 	return a.removeMaildirPath(ctx, rawPath)

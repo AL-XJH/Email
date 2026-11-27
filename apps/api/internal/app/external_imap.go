@@ -1294,6 +1294,7 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 	if account.StorageMode != externalIMAPStorageLocal {
 		return ExternalIMAPSyncRun{}, errors.New("account is not configured for local storage")
 	}
+	a.pruneOrphanExternalIMAPMessages(ctx, account.ID)
 	run := ExternalIMAPSyncRun{ID: newID("ximrun"), AccountID: account.ID, Status: "running", StartedAt: a.now().UTC()}
 	_, _ = a.db.ExecContext(ctx, `INSERT INTO external_imap_sync_runs(id,account_id,folder,status,started_at) VALUES(?,?,?,?,?)`, run.ID, run.AccountID, run.Folder, run.Status, run.StartedAt.Format(time.RFC3339Nano))
 	client, err := a.externalIMAP.openExternalIMAPClient(ctx, account)
@@ -1339,6 +1340,7 @@ func (a *App) syncExternalIMAPAccountFolder(ctx context.Context, accountID, fold
 	if account.StorageMode != externalIMAPStorageLocal {
 		return ExternalIMAPSyncRun{}, errors.New("account is not configured for local storage")
 	}
+	a.pruneOrphanExternalIMAPMessages(ctx, account.ID)
 	run := ExternalIMAPSyncRun{ID: newID("ximrun"), AccountID: account.ID, Folder: folderName, Status: "running", StartedAt: a.now().UTC()}
 	_, _ = a.db.ExecContext(ctx, `INSERT INTO external_imap_sync_runs(id,account_id,folder,status,started_at) VALUES(?,?,?,?,?)`, run.ID, run.AccountID, run.Folder, run.Status, run.StartedAt.Format(time.RFC3339Nano))
 	client, err := a.externalIMAP.openExternalIMAPClient(ctx, account)
@@ -1372,6 +1374,26 @@ func (a *App) syncExternalIMAPAccountFolder(ctx context.Context, accountID, fold
 		status = "failed"
 	}
 	return a.finishExternalIMAPRun(ctx, run, status, err)
+}
+
+func (a *App) pruneOrphanExternalIMAPMessages(ctx context.Context, accountID string) {
+	// 早先版本切换存储模式/换服务器时只删 messages 没删映射，这些 UID 之后
+	// 一直被当成「已导入」跳过，外部邮箱在本地模式下永远空白。同步前自愈。
+	res, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_messages WHERE account_id=? AND local_message_id<>'' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id=external_imap_messages.local_message_id)`, accountID)
+	if err != nil {
+		a.log.Warn("failed to prune orphan external imap mappings", "account", accountID, "error", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return
+	}
+	// 映射删了但游标停在旧位置的话，这些邮件照样不会再拉下来；归零重扫，
+	// 已在库的邮件靠残留映射去重，不会重复导入。
+	if _, err := a.db.ExecContext(ctx, `UPDATE external_imap_folder_states SET last_uid=0 WHERE account_id=?`, accountID); err != nil {
+		a.log.Warn("failed to reset external imap folder cursor after prune", "account", accountID, "error", err)
+	}
+	a.log.Info("pruned orphan external imap mappings", "account", accountID, "rows", n)
 }
 
 func (a *App) externalIMAPAccountByID(ctx context.Context, id string) (externalIMAPAccountRecord, error) {
@@ -2063,8 +2085,11 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 }
 
 func mailboxHasNoSelect(attrs []imap.MailboxAttr) bool {
+	// 必须和库里的常量比：属性值是单个反斜杠加名字，写成原始字符串里的两个反斜杠
+	// 会永远匹配不上，Gmail 的 [Gmail] 这类层级节点就会被当成可选邮箱去 SELECT，
+	// 整轮同步报 NONEXISTENT Unknown Mailbox。
 	for _, attr := range attrs {
-		if strings.EqualFold(string(attr), `\Noselect`) {
+		if strings.EqualFold(string(attr), string(imap.MailboxAttrNoSelect)) || strings.EqualFold(string(attr), string(imap.MailboxAttrNonExistent)) {
 			return true
 		}
 	}
@@ -2540,10 +2565,26 @@ func (a *App) deleteExternalIMAPLocalData(ctx context.Context, accountID, userID
 	var deleteErr error
 	for _, id := range messageIDs {
 		if err := a.deleteMessage(ctx, id); err != nil {
-			a.log.Warn("failed to delete external imap local message", "message", id, "error", err)
-			if deleteErr == nil {
-				deleteErr = err
+			if !errors.Is(err, sql.ErrNoRows) {
+				// 文件删不掉（路径不在 maildir 根下、权限不足等）不能拖住整个
+				// 账号删除：行必须清掉，孤儿文件留给运维看日志处理。
+				a.log.Warn("failed to delete external imap local message, forcing row removal", "message", id, "error", err)
 			}
+			if _, rowErr := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, id); rowErr != nil {
+				a.log.Warn("failed to force remove external imap message row", "message", id, "error", rowErr)
+				if deleteErr == nil {
+					deleteErr = rowErr
+				}
+			}
+		}
+	}
+	// 映射行必须一起清：只删 messages 会留下指向已消失邮件的孤儿映射，
+	// 之后同步会认为这些 UID 已经导入而永远跳过（列表空白），删账号时也会
+	// 反复在旧引用上失败。
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_messages WHERE account_id=?`, accountID); err != nil {
+		a.log.Warn("failed to clear external imap message mappings", "account", accountID, "error", err)
+		if deleteErr == nil {
+			deleteErr = err
 		}
 	}
 
