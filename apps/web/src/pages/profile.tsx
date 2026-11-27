@@ -2467,7 +2467,7 @@ function ExternalImapSyncPanel({
             <SelectContent>
               {folders.map((item) => (
                 <SelectItem key={item.name} value={item.name}>
-                  {folderLabel(item.name)}
+                  {item.displayName || folderLabel(item.name)}
                 </SelectItem>
               ))}
             </SelectContent>

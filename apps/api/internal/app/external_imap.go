@@ -661,7 +661,7 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 			folder.TotalCount = total
 			folder.UnreadCount = unread
 		}
-		items = append(items, ExternalIMAPFolder{Name: folder.Name, Role: folder.Role, UnreadCount: folder.UnreadCount, TotalCount: folder.TotalCount})
+		items = append(items, ExternalIMAPFolder{Name: folder.Name, DisplayName: externalIMAPFolderDisplayName(folder.Name), Role: folder.Role, UnreadCount: folder.UnreadCount, TotalCount: folder.TotalCount})
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }

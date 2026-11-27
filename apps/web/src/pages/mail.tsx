@@ -2392,7 +2392,7 @@ export function MailPage() {
                               <span>
                                 {folderLabels[item.role] || folderLabels[item.name]
                                   ? uiText(folderLabels[item.role] || folderLabels[item.name])
-                                  : item.name}
+                                  : item.displayName || item.name}
                               </span>
                               {item.unreadCount > 0 && (
                                 <Badge variant="secondary" className="ml-auto">
