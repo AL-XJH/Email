@@ -275,3 +275,56 @@ func TestExternalIMAPHiddenFolders(t *testing.T) {
 		t.Fatalf("after unhide hidden local folders = %v, want none", got)
 	}
 }
+
+// 同步顺序不确定：INBOX 后跑时也必须认出「所有邮件」已经存过的那封信。
+func TestExternalIMAPCrossFolderDedupeBothDirections(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	accountID := "ximap_cross_folder_dedupe"
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "Gmail", "imap.gmail.com", 993, externalIMAPTLS, "remote@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err := a.ensureFolder(ctx, mailbox.ID, "Inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allID, err := a.ensureFolder(ctx, mailbox.ID, "外部 · Gmail · [Gmail]/所有邮件")
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := a.externalIMAPAccountByID(ctx, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := storedMessage{MailboxID: mailbox.ID, MessageID: "<both@example.test>", Subject: "both", From: "sender@example.test"}
+	first := base
+	first.FolderID = allID
+	firstID, err := a.insertExternalIMAPMessageOnce(ctx, account, "[Gmail]/所有邮件",
+		externalIMAPRemoteMessage{UID: 1, UIDValidity: 9}, first, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == "" {
+		t.Fatal("first import must insert a message")
+	}
+	second := base
+	second.FolderID = inboxID
+	secondID, err := a.insertExternalIMAPMessageOnce(ctx, account, "INBOX",
+		externalIMAPRemoteMessage{UID: 1, UIDValidity: 4}, second, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondID != "" {
+		t.Fatalf("INBOX import must reuse the copy stored by All Mail, got %q", secondID)
+	}
+	var copies int
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND message_id=?`, mailbox.ID, "<both@example.test>").Scan(&copies); err != nil {
+		t.Fatal(err)
+	}
+	if copies != 1 {
+		t.Fatalf("expected exactly one stored copy, got %d", copies)
+	}
+}

@@ -1770,7 +1770,7 @@ func (a *App) externalIMAPRemoteMessageExists(ctx context.Context, accountID, fo
 	return exists == 1
 }
 
-func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externalIMAPAccountRecord, folder string, item externalIMAPRemoteMessage, msg storedMessage, attachments []AttachmentInput, dedupeByMessageID, dedupeAcrossFolders bool) (string, error) {
+func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externalIMAPAccountRecord, folder string, item externalIMAPRemoteMessage, msg storedMessage, attachments []AttachmentInput, dedupeByMessageID, dedupeAnyCopy bool) (string, error) {
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1785,19 +1785,16 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", tx.Commit()
 	}
-	if msg.MessageID != "" && (dedupeByMessageID || dedupeAcrossFolders) {
-		// UIDVALIDITY 重置后的重扫只在同文件夹内去重：平时两封不同邮件复用同一个
-		// Message-ID（营销邮件、坏客户端）不能吞掉一封。
-		// Gmail 的「所有邮件」例外：它把其他文件夹的邮件再列一遍，同一封必须跨
-		// 文件夹认，否则每封本地存两份。
+	if msg.MessageID != "" {
+		// Gmail 的标签和「所有邮件」是同一封信的不同视图，第一次同步时哪个
+		// 文件夹先跑不确定：只给「所有邮件」单向去重时，反方向（INBOX 后跑）
+		// 仍会再插一份。这里改成账号内跨文件夹双向认：只要这封信已经落在本
+		// 账号的别的远端文件夹里，就复用那一行，只补映射。
 		var existingID string
-		query := `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? LIMIT 1`
-		args := []any{msg.MailboxID, msg.FolderID, msg.MessageID}
-		if dedupeAcrossFolders {
-			query = `SELECT id FROM messages WHERE mailbox_id=? AND message_id=? ORDER BY received_at DESC, id LIMIT 1`
-			args = []any{msg.MailboxID, msg.MessageID}
-		}
-		err := tx.QueryRowContext(ctx, query, args...).Scan(&existingID)
+		err := tx.QueryRowContext(ctx, `SELECT m.id FROM messages m
+			JOIN external_imap_messages em ON em.local_message_id=m.id
+			WHERE em.account_id=? AND em.remote_folder<>? AND m.message_id=? LIMIT 1`,
+			account.ID, folder, msg.MessageID).Scan(&existingID)
 		switch {
 		case err == nil:
 			if _, err := tx.ExecContext(ctx, `UPDATE external_imap_messages SET local_message_id=?,updated_at=? WHERE account_id=? AND remote_folder=? AND uid_validity=? AND uid=?`,
@@ -1807,6 +1804,40 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 			return "", tx.Commit()
 		case !errors.Is(err, sql.ErrNoRows):
 			return "", err
+		}
+		if dedupeAnyCopy {
+			// 「所有邮件」再兜一层：早期版本导入的副本可能没有映射行（切换过
+			// 存储模式、手工清理过），只按映射找不到它们。
+			var anyID string
+			err := tx.QueryRowContext(ctx, `SELECT id FROM messages WHERE mailbox_id=? AND message_id=? ORDER BY received_at DESC, id LIMIT 1`,
+				msg.MailboxID, msg.MessageID).Scan(&anyID)
+			switch {
+			case err == nil:
+				if _, err := tx.ExecContext(ctx, `UPDATE external_imap_messages SET local_message_id=?,updated_at=? WHERE account_id=? AND remote_folder=? AND uid_validity=? AND uid=?`,
+					anyID, now, account.ID, folder, item.UIDValidity, item.UID); err != nil {
+					return "", err
+				}
+				return "", tx.Commit()
+			case !errors.Is(err, sql.ErrNoRows):
+				return "", err
+			}
+		}
+		if dedupeByMessageID {
+			// UIDVALIDITY 重置后的重扫只在同文件夹内去重：同一文件夹里两封不同
+			// 邮件复用同一个 Message-ID（营销邮件、坏客户端）不能吞掉一封。
+			var sameFolderID string
+			err := tx.QueryRowContext(ctx, `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? LIMIT 1`,
+				msg.MailboxID, msg.FolderID, msg.MessageID).Scan(&sameFolderID)
+			switch {
+			case err == nil:
+				if _, err := tx.ExecContext(ctx, `UPDATE external_imap_messages SET local_message_id=?,updated_at=? WHERE account_id=? AND remote_folder=? AND uid_validity=? AND uid=?`,
+					sameFolderID, now, account.ID, folder, item.UIDValidity, item.UID); err != nil {
+					return "", err
+				}
+				return "", tx.Commit()
+			case !errors.Is(err, sql.ErrNoRows):
+				return "", err
+			}
 		}
 	}
 	id, err := a.insertMessageWithDB(ctx, tx, msg, attachments)
@@ -2226,7 +2257,7 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 		f := externalIMAPRemoteFolder{Name: item.Mailbox, Role: normalizeExternalIMAPFolderName(item.Mailbox)}
 		// Gmail 的 \All（「所有邮件」）把 INBOX/Sent 的邮件再列一遍，
 		// 导入时必须跨文件夹按 Message-ID 去重，否则每封本地存两份。
-		if mailboxHasAttr(item.Attrs, imap.MailboxAttrAll) {
+		if mailboxHasAttr(item.Attrs, imap.MailboxAttrAll) || externalIMAPFolderIsAllMail(f) {
 			f.Role = externalIMAPFolderRoleAll
 		}
 		if item.Status != nil {
