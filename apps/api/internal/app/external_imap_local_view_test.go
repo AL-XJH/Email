@@ -71,7 +71,11 @@ func TestLocalExternalIMAPMessagesAreHiddenFromMailboxAndVisibleInAccount(t *tes
 		VALUES(?,?,?,?,?,?,?,?,?)`, accountID, "INBOX", 7, 1, external.MessageID, messageID, 1, now, now); err != nil {
 		t.Fatal(err)
 	}
-	externalFolderID, err := a.ensureFolder(t.Context(), mailbox.ID, externalIMAPLocalFolderName(accountID, "INBOX"))
+	accountRec, err := a.externalIMAPAccountByID(t.Context(), accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalFolderID, err := a.ensureFolder(t.Context(), mailbox.ID, a.externalIMAPLocalFolderName(t.Context(), accountRec, "INBOX"))
 	if err != nil {
 		t.Fatal(err)
 	}

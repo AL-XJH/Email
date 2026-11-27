@@ -108,3 +108,61 @@ func TestExternalIMAPCleanupRemovesOrphanMappings(t *testing.T) {
 		t.Fatal("cleanup must force-remove the message row even when the maildir file cannot be deleted")
 	}
 }
+
+// Gmail 的「所有邮件」会把 INBOX 的邮件再列一遍：导入时必须跨文件夹按
+// Message-ID 认同一封，只补映射，不再插一份新的，否则每封本地存两份。
+func TestExternalIMAPAllMailFolderDeduplicatesAcrossFolders(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	accountID := "ximap_all_mail_dedupe"
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "Gmail", "imap.gmail.com", 993, externalIMAPTLS, "remote@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err := a.ensureFolder(ctx, mailbox.ID, "Inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingID, err := a.insertMessage(ctx, storedMessage{
+		MailboxID: mailbox.ID, FolderID: inboxID, MessageUID: newID("uid"), MessageID: "<dup@example.test>",
+		Subject: "dup", From: "sender@example.test", To: []string{mailbox.Address},
+		SentAt: a.now().UTC(), ReceivedAt: a.now().UTC(), BodyText: "body", Snippet: "body",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allFolderID, err := a.ensureFolder(ctx, mailbox.ID, "外部 · Gmail · [Gmail]/所有邮件")
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := a.externalIMAPAccountByID(ctx, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, "[Gmail]/所有邮件",
+		externalIMAPRemoteMessage{UID: 1, UIDValidity: 7, IsRead: true},
+		storedMessage{MailboxID: mailbox.ID, FolderID: allFolderID, MessageID: "<dup@example.test>", Subject: "dup", From: "sender@example.test"},
+		nil, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msgID != "" {
+		t.Fatalf("duplicate message must not be inserted again, got id=%q", msgID)
+	}
+	var copies int
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND message_id=?`, mailbox.ID, "<dup@example.test>").Scan(&copies); err != nil {
+		t.Fatal(err)
+	}
+	if copies != 1 {
+		t.Fatalf("expected exactly one stored copy, got %d", copies)
+	}
+	var mappedTo string
+	if err := a.db.QueryRowContext(ctx, `SELECT local_message_id FROM external_imap_messages WHERE account_id=? AND remote_folder=? AND uid=?`, accountID, "[Gmail]/所有邮件", 1).Scan(&mappedTo); err != nil {
+		t.Fatal(err)
+	}
+	if mappedTo != existingID {
+		t.Fatalf("mapping must point at the existing copy: got %q want %q", mappedTo, existingID)
+	}
+}

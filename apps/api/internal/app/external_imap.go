@@ -42,8 +42,10 @@ const (
 	externalIMAPOAuthGmail       = "gmail"
 	externalIMAPOAuthOutlook     = "outlook"
 	externalIMAPOAuthNonceCookie = "external_imap_oauth_nonce"
-	externalIMAPSyncBatchSize    = 10
-	externalIMAPSyncMaxPerRun    = 100
+	// Gmail 的 \All（「所有邮件」）角色：导入时跨文件夹按 Message-ID 去重。
+	externalIMAPFolderRoleAll = "All"
+	externalIMAPSyncBatchSize = 10
+	externalIMAPSyncMaxPerRun = 100
 
 	// 单封超过这个体积就不跟着整批拉了：批量取正文时 10 封 20MB 的邮件
 	// 会同时驻留内存。超过的改用 FetchRaw 逐封取，峰值只跟最大的一封有关。
@@ -1402,14 +1404,25 @@ func (a *App) externalIMAPAccountByID(ctx context.Context, id string) (externalI
 }
 
 func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAccountRecord, client externalIMAPClient, folder externalIMAPRemoteFolder) (int, int, int, error) {
-	localFolderName := externalIMAPLocalFolderName(account.ID, folder.Name)
-	localFolderID, err := a.ensureFolder(ctx, account.MailboxID, localFolderName)
-	if err != nil {
-		return 0, 0, 0, err
-	}
 	state := a.loadExternalIMAPFolderState(ctx, account.ID, folder.Name)
-	if state.LocalFolderID != "" && state.LocalFolderID != localFolderID {
-		if err := a.moveExternalIMAPMessagesToFolder(ctx, account.ID, account.MailboxID, folder.Name, localFolderID); err != nil {
+	localFolderName := a.externalIMAPLocalFolderName(ctx, account, folder.Name)
+	localFolderID := state.LocalFolderID
+	if localFolderID != "" {
+		// 已有映射的文件夹就地改名（旧命名是 External <键> <哈希>），
+		// 不要新建一个空文件夹再把几百封邮件搬过去。
+		if _, err := a.db.ExecContext(ctx, `UPDATE folders SET name=? WHERE id=? AND mailbox_id=? AND name<>?`,
+			localFolderName, localFolderID, account.MailboxID, localFolderName); err != nil {
+			a.log.Warn("failed to rename external imap local folder", "folder", localFolderID, "name", localFolderName, "error", err)
+		}
+		var exists string
+		if a.db.QueryRowContext(ctx, `SELECT id FROM folders WHERE id=? AND mailbox_id=?`, localFolderID, account.MailboxID).Scan(&exists) != nil {
+			localFolderID = ""
+		}
+	}
+	if localFolderID == "" {
+		var err error
+		localFolderID, err = a.ensureFolder(ctx, account.MailboxID, localFolderName)
+		if err != nil {
 			return 0, 0, 0, err
 		}
 	}
@@ -1500,7 +1513,7 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 				stored.Subject = item.Subject
 			}
 			stored.IsRead = item.IsRead
-			msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, folder.Name, item, stored, attachments, uidValidityChanged)
+			msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, folder.Name, item, stored, attachments, uidValidityChanged, folder.Role == externalIMAPFolderRoleAll)
 			if err != nil {
 				failed++
 				if errors.Is(err, errMailboxQuotaExceeded) {
@@ -1555,13 +1568,33 @@ func (a *App) loadExternalIMAPFolderState(ctx context.Context, accountID, folder
 	return state
 }
 
-func externalIMAPLocalFolderName(accountID, remoteFolder string) string {
-	key := strings.TrimPrefix(accountID, "ximap_")
-	if len(key) > 12 {
-		key = key[:12]
+// externalIMAPLocalFolderName 起一个能认出来的本地文件夹名。
+// 以前是「External <账号键> <远端名哈希>」，界面上完全看不出对应哪个文件夹。
+// 现在带上账号名与远端名；两个账号撞名时补 4 位账号键，保证 UNIQUE(mailbox,name)。
+func (a *App) externalIMAPLocalFolderName(ctx context.Context, account externalIMAPAccountRecord, remoteFolder string) string {
+	label := strings.TrimSpace(account.Name)
+	if label == "" {
+		label = strings.TrimSpace(account.Username)
 	}
-	hash := sha256.Sum256([]byte(remoteFolder))
-	return fmt.Sprintf("External %s %x", key, hash[:6])
+	if label == "" {
+		label = strings.TrimPrefix(account.ID, "ximap_")
+		if len(label) > 8 {
+			label = label[:8]
+		}
+	}
+	base := fmt.Sprintf("外部 · %s · %s", label, remoteFolder)
+	var owner string
+	err := a.db.QueryRowContext(ctx, `SELECT COALESCE(fs.account_id,'') FROM folders f
+		LEFT JOIN external_imap_folder_states fs ON fs.local_folder_id=f.id
+		WHERE f.mailbox_id=? AND lower(f.name)=lower(?)`, account.MailboxID, base).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner == "" || owner == account.ID)) {
+		return base
+	}
+	key := strings.TrimPrefix(account.ID, "ximap_")
+	if len(key) > 4 {
+		key = key[:4]
+	}
+	return fmt.Sprintf("外部 · %s（%s） · %s", label, key, remoteFolder)
 }
 
 func (a *App) moveExternalIMAPMessagesToFolder(ctx context.Context, accountID, mailboxID, remoteFolder, targetFolderID string) error {
@@ -1600,7 +1633,7 @@ func (a *App) externalIMAPRemoteMessageExists(ctx context.Context, accountID, fo
 	return exists == 1
 }
 
-func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externalIMAPAccountRecord, folder string, item externalIMAPRemoteMessage, msg storedMessage, attachments []AttachmentInput, dedupeByMessageID bool) (string, error) {
+func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externalIMAPAccountRecord, folder string, item externalIMAPRemoteMessage, msg storedMessage, attachments []AttachmentInput, dedupeByMessageID, dedupeAcrossFolders bool) (string, error) {
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1615,13 +1648,19 @@ func (a *App) insertExternalIMAPMessageOnce(ctx context.Context, account externa
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", tx.Commit()
 	}
-	if msg.MessageID != "" && dedupeByMessageID {
-		// 只在 UIDVALIDITY 重置后的重扫里按 Message-ID 去重：
-		// 平时两封不同邮件复用同一个 Message-ID（营销邮件、坏客户端）不能吞掉一封。
-		// 这里按 Message-ID 认一下：已经在本地就直接补映射，不再插一封重复的邮件。
+	if msg.MessageID != "" && (dedupeByMessageID || dedupeAcrossFolders) {
+		// UIDVALIDITY 重置后的重扫只在同文件夹内去重：平时两封不同邮件复用同一个
+		// Message-ID（营销邮件、坏客户端）不能吞掉一封。
+		// Gmail 的「所有邮件」例外：它把其他文件夹的邮件再列一遍，同一封必须跨
+		// 文件夹认，否则每封本地存两份。
 		var existingID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? LIMIT 1`,
-			msg.MailboxID, msg.FolderID, msg.MessageID).Scan(&existingID)
+		query := `SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND message_id=? LIMIT 1`
+		args := []any{msg.MailboxID, msg.FolderID, msg.MessageID}
+		if dedupeAcrossFolders {
+			query = `SELECT id FROM messages WHERE mailbox_id=? AND message_id=? ORDER BY received_at DESC, id LIMIT 1`
+			args = []any{msg.MailboxID, msg.MessageID}
+		}
+		err := tx.QueryRowContext(ctx, query, args...).Scan(&existingID)
 		switch {
 		case err == nil:
 			if _, err := tx.ExecContext(ctx, `UPDATE external_imap_messages SET local_message_id=?,updated_at=? WHERE account_id=? AND remote_folder=? AND uid_validity=? AND uid=?`,
@@ -2048,6 +2087,11 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 			continue
 		}
 		f := externalIMAPRemoteFolder{Name: item.Mailbox, Role: normalizeExternalIMAPFolderName(item.Mailbox)}
+		// Gmail 的 \All（「所有邮件」）把 INBOX/Sent 的邮件再列一遍，
+		// 导入时必须跨文件夹按 Message-ID 去重，否则每封本地存两份。
+		if mailboxHasAttr(item.Attrs, imap.MailboxAttrAll) {
+			f.Role = externalIMAPFolderRoleAll
+		}
 		if item.Status != nil {
 			if item.Status.NumMessages != nil {
 				f.TotalCount = int(*item.Status.NumMessages)
@@ -2084,16 +2128,19 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 	return folders, nil
 }
 
-func mailboxHasNoSelect(attrs []imap.MailboxAttr) bool {
-	// 必须和库里的常量比：属性值是单个反斜杠加名字，写成原始字符串里的两个反斜杠
-	// 会永远匹配不上，Gmail 的 [Gmail] 这类层级节点就会被当成可选邮箱去 SELECT，
-	// 整轮同步报 NONEXISTENT Unknown Mailbox。
+func mailboxHasAttr(attrs []imap.MailboxAttr, want imap.MailboxAttr) bool {
+	// 属性值是单个反斜杠加名字，必须和库里的常量比；写成原始字符串里的两个
+	// 反斜杠会永远匹配不上。
 	for _, attr := range attrs {
-		if strings.EqualFold(string(attr), string(imap.MailboxAttrNoSelect)) || strings.EqualFold(string(attr), string(imap.MailboxAttrNonExistent)) {
+		if strings.EqualFold(string(attr), string(want)) {
 			return true
 		}
 	}
 	return false
+}
+
+func mailboxHasNoSelect(attrs []imap.MailboxAttr) bool {
+	return mailboxHasAttr(attrs, imap.MailboxAttrNoSelect) || mailboxHasAttr(attrs, imap.MailboxAttrNonExistent)
 }
 
 func (c *goExternalIMAPClient) FetchSummaries(ctx context.Context, folder string, query string, cursor string, limit int) ([]externalIMAPRemoteMessage, string, int, error) {
