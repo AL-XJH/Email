@@ -125,42 +125,10 @@ func (a *App) handleMailFolders(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "mailbox not found")
 		return
 	}
-	mb := access.Mailbox
-	where := `f.mailbox_id=?`
-	args := []any{mb.ID}
-	where += ` AND NOT EXISTS (SELECT 1 FROM external_imap_folder_states efs WHERE efs.local_folder_id=f.id)`
-	if !access.Owner && access.Scope == "custom" {
-		where += ` AND EXISTS (SELECT 1 FROM mailbox_share_folders msf WHERE msf.share_id=? AND msf.folder_id=f.id)`
-		args = append(args, access.ShareID)
-	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT f.id,f.name,f.role,
-		COALESCE(SUM(CASE WHEN m.is_read=0 AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0) AS unread,
-		COUNT(CASE WHEN NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN m.id END) AS total,
-		f.sort_order,f.uid_validity,f.uid_next,f.highest_modseq
-		FROM folders f LEFT JOIN messages m ON m.folder_id=f.id
-		WHERE `+where+` GROUP BY f.id,f.name,f.role,f.sort_order,f.uid_validity,f.uid_next,f.highest_modseq
-		ORDER BY CASE
-			WHEN lower(f.name)='inbox' THEN 1000
-			WHEN lower(f.name)='sent' THEN 5000
-			WHEN lower(f.name)='drafts' THEN 6000
-			WHEN lower(f.name)='archive' THEN 7000
-			WHEN lower(f.name)='spam' THEN 8000
-			WHEN lower(f.name)='trash' THEN 9000
-			ELSE f.sort_order
-		END, f.created_at,f.name`, args...)
+	items, err := a.loadMailFolderCounts(r.Context(), access.Mailbox.ID, access.ShareID, !access.Owner && access.Scope == "custom")
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load folders")
 		return
-	}
-	defer rows.Close()
-	items := []MailFolder{}
-	for rows.Next() {
-		var f MailFolder
-		if err := rows.Scan(&f.ID, &f.Name, &f.Role, &f.UnreadCount, &f.TotalCount, &f.SortOrder, &f.UIDValidity, &f.UIDNext, &f.HighestModSeq); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to scan folders")
-			return
-		}
-		items = append(items, f)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -2516,25 +2484,24 @@ func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	attID := chi.URLParam(r, "id")
-	row := a.db.QueryRowContext(r.Context(), `SELECT a.filename,a.content_type,a.size_bytes,a.storage_path,a.message_id
-		FROM attachments a WHERE a.id=?`, attID)
-	var filename, contentType, path, messageID string
+	// 一条查询同时拿到附件、所属邮箱和「是不是外部账号导入件」。以前是
+	// SELECT 附件 → loadMessageForReadRequest → 再 COUNT 一次外部映射，
+	// 打开一个附件要跑 3~4 次库。
+	row := a.db.QueryRowContext(r.Context(), `SELECT a.filename,a.content_type,a.size_bytes,a.storage_path,m.mailbox_id,
+		EXISTS(SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=a.message_id)
+		FROM attachments a JOIN messages m ON m.id=a.message_id WHERE a.id=?`, attID)
+	var filename, contentType, path, mailboxID string
 	var size int64
-	if err := row.Scan(&filename, &contentType, &size, &path, &messageID); err != nil {
-		respondError(w, http.StatusNotFound, "attachment not found")
-		return
-	}
-	message, err := a.loadMessageForReadRequest(r, messageID, false)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "attachment not found")
-		return
-	}
 	var external int
-	if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM external_imap_messages WHERE local_message_id=?`, messageID).Scan(&external); err != nil || external > 0 {
+	if err := row.Scan(&filename, &contentType, &size, &path, &mailboxID, &external); err != nil {
 		respondError(w, http.StatusNotFound, "attachment not found")
 		return
 	}
-	access, err := a.mailboxReadAccessWithID(r, message.MailboxID)
+	if external > 0 {
+		respondError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+	access, err := a.mailboxReadAccessWithID(r, mailboxID)
 	if err != nil || (!access.Owner && !access.AllowAttachments) {
 		respondError(w, http.StatusNotFound, "attachment not found")
 		return
@@ -2549,8 +2516,18 @@ func (a *App) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	writeAttachmentHeaders(w, contentType, filename, size)
-	_, _ = io.Copy(w, f)
+	info, err := f.Stat()
+	if err != nil {
+		respondError(w, http.StatusNotFound, "attachment file missing")
+		return
+	}
+	w.Header().Set("Content-Type", safeAttachmentContentType(contentType))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", attachmentDisposition(filename))
+	// ServeContent 负责 Content-Length / Range / If-Modified-Since：大附件可以断点续传、
+	// 音视频能拖动进度，失败重下不必从头再来。不要自己先写 Content-Length——206
+	// 响应的长度会与实际字节数不符。
+	http.ServeContent(w, r, filename, info.ModTime(), f)
 }
 
 func (a *App) handleAdminAttachment(w http.ResponseWriter, r *http.Request) {
@@ -2572,8 +2549,18 @@ func (a *App) handleAdminAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	writeAttachmentHeaders(w, contentType, filename, size)
-	_, _ = io.Copy(w, f)
+	info, err := f.Stat()
+	if err != nil {
+		respondError(w, http.StatusNotFound, "attachment file missing")
+		return
+	}
+	w.Header().Set("Content-Type", safeAttachmentContentType(contentType))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", attachmentDisposition(filename))
+	// ServeContent 负责 Content-Length / Range / If-Modified-Since：大附件可以断点续传、
+	// 音视频能拖动进度，失败重下不必从头再来。不要自己先写 Content-Length——206
+	// 响应的长度会与实际字节数不符。
+	http.ServeContent(w, r, filename, info.ModTime(), f)
 }
 
 // maxSSEConnectionsPerUser bounds how many event streams one account may hold.

@@ -753,15 +753,33 @@ func (a *App) handleMailStats(w http.ResponseWriter, r *http.Request) {
 		args = append(args, mailboxID)
 	}
 	stats := MailStats{ByFolder: []MailStatsFolderCount{}}
-	row := a.db.QueryRowContext(r.Context(), `SELECT COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN m.is_read=0 AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN m.is_starred=1 AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN m.size_bytes ELSE 0 END),0)
-		FROM mailboxes mb LEFT JOIN messages m ON m.mailbox_id=mb.id WHERE `+where, args...)
-	if err := row.Scan(&stats.TotalMessages, &stats.UnreadMessages, &stats.StarredMessages, &stats.StorageBytes); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load stats")
-		return
-	}
-	if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(a.id),COALESCE(SUM(a.size_bytes),0) FROM attachments a JOIN messages m ON m.id=a.message_id JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE `+where+` AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`, args...).Scan(&stats.AttachmentCount, &stats.AttachmentBytes); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load attachment stats")
-		return
+	// 单邮箱视图是 UI 的常态路径：用一次分组聚合拿到总数/未读/星标/占用，
+	// 不再对每封邮件跑三次相关子查询。多邮箱（管理端「全部」）继续走原查询。
+	if mailboxID != "" {
+		totals, err := a.loadMailboxTotals(r.Context(), mailboxID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load stats")
+			return
+		}
+		stats.TotalMessages, stats.UnreadMessages = totals.TotalMessages, totals.UnreadMessages
+		stats.StarredMessages, stats.StorageBytes = totals.StarredMessages, totals.StorageBytes
+		attCount, attBytes, err := a.loadMailboxAttachmentTotals(r.Context(), mailboxID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load attachment stats")
+			return
+		}
+		stats.AttachmentCount, stats.AttachmentBytes = attCount, attBytes
+	} else {
+		row := a.db.QueryRowContext(r.Context(), `SELECT COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN m.is_read=0 AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN m.is_starred=1 AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id) THEN m.size_bytes ELSE 0 END),0)
+			FROM mailboxes mb LEFT JOIN messages m ON m.mailbox_id=mb.id WHERE `+where, args...)
+		if err := row.Scan(&stats.TotalMessages, &stats.UnreadMessages, &stats.StarredMessages, &stats.StorageBytes); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load stats")
+			return
+		}
+		if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(a.id),COALESCE(SUM(a.size_bytes),0) FROM attachments a JOIN messages m ON m.id=a.message_id JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE `+where+` AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)`, args...).Scan(&stats.AttachmentCount, &stats.AttachmentBytes); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load attachment stats")
+			return
+		}
 	}
 	if mailboxID != "" {
 		var quotaMB int64
@@ -774,21 +792,30 @@ func (a *App) handleMailStats(w http.ResponseWriter, r *http.Request) {
 			stats.QuotaUsedPct = float64(stats.StorageBytes) / float64(stats.QuotaBytes) * 100
 		}
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT f.name,f.role,COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0),COALESCE(SUM(m.size_bytes),0)
-		FROM mailboxes mb JOIN folders f ON f.mailbox_id=mb.id LEFT JOIN messages m ON m.folder_id=f.id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)
-		WHERE `+where+` AND NOT EXISTS (SELECT 1 FROM external_imap_folder_states efs WHERE efs.local_folder_id=f.id) GROUP BY f.id,f.name,f.role ORDER BY CASE f.role WHEN 'inbox' THEN 1 WHEN 'sent' THEN 2 WHEN 'drafts' THEN 3 WHEN 'archive' THEN 4 WHEN 'spam' THEN 5 WHEN 'trash' THEN 6 ELSE 99 END`, args...)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load folder stats")
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var item MailStatsFolderCount
-		if err := rows.Scan(&item.Folder, &item.Role, &item.Count, &item.Unread, &item.Bytes); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to scan folder stats")
+	if mailboxID != "" {
+		byFolder, err := a.loadFolderBreakdown(r.Context(), mailboxID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load folder stats")
 			return
 		}
-		stats.ByFolder = append(stats.ByFolder, item)
+		stats.ByFolder = byFolder
+	} else {
+		rows, err := a.db.QueryContext(r.Context(), `SELECT f.name,f.role,COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0),COALESCE(SUM(m.size_bytes),0)
+			FROM mailboxes mb JOIN folders f ON f.mailbox_id=mb.id LEFT JOIN messages m ON m.folder_id=f.id AND NOT EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id)
+			WHERE `+where+` AND NOT EXISTS (SELECT 1 FROM external_imap_folder_states efs WHERE efs.local_folder_id=f.id) GROUP BY f.id,f.name,f.role ORDER BY CASE f.role WHEN 'inbox' THEN 1 WHEN 'sent' THEN 2 WHEN 'drafts' THEN 3 WHEN 'archive' THEN 4 WHEN 'spam' THEN 5 WHEN 'trash' THEN 6 ELSE 99 END`, args...)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load folder stats")
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item MailStatsFolderCount
+			if err := rows.Scan(&item.Folder, &item.Role, &item.Count, &item.Unread, &item.Bytes); err != nil {
+				respondError(w, http.StatusInternalServerError, "failed to scan folder stats")
+				return
+			}
+			stats.ByFolder = append(stats.ByFolder, item)
+		}
 	}
 	respondJSON(w, http.StatusOK, stats)
 }
