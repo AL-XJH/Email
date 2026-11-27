@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -246,4 +250,117 @@ func BenchmarkMessageListCountVariants(b *testing.B) {
 			}
 		})
 	}
+}
+
+// 端到端热点：四个用户实际会打的接口。用 profile 决定改什么，而不是猜。
+//   go test ./internal/app -run '^$' -bench BenchmarkHotEndpoints -benchtime 20x -cpuprofile /tmp/hot.prof
+//   go tool pprof -top -nodecount=40 /tmp/hot.prof
+func benchUser(tb testing.TB, a *App) *User {
+	var uid string
+	if err := a.db.QueryRow(`SELECT user_id FROM mailboxes ORDER BY created_at LIMIT 1`).Scan(&uid); err != nil {
+		tb.Fatal(err)
+	}
+	return &User{ID: uid, Role: "admin", Email: "admin@lanqin.local"}
+}
+
+func benchHandlerReq(tb testing.TB, user *User, target string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	return r.WithContext(context.WithValue(r.Context(), userContextKey, user))
+}
+
+func BenchmarkHotEndpoints(b *testing.B) {
+	// BENCH_SEED_N 用来对齐生产规模（当前 173 封）与增长后的规模（5000+）。
+	n := 5000
+	if v := os.Getenv("BENCH_SEED_N"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			n = parsed
+		}
+	}
+	a, ctx, mailboxID := benchSeed(b, n)
+	user := benchUser(b, a)
+	folders, err := a.loadMailFolderCounts(ctx, mailboxID, "", false)
+	if err != nil {
+		b.Fatal(err)
+	}
+	inboxID := folders[0].ID
+	var msgID string
+	if err := a.db.QueryRow(`SELECT id FROM messages WHERE mailbox_id=? AND folder_id=? AND is_read=1 ORDER BY received_at DESC LIMIT 1`, mailboxID, inboxID).Scan(&msgID); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("list", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rec := httptest.NewRecorder()
+			req := benchHandlerReq(b, user, "/api/mail/messages?mailboxId="+mailboxID+"&pageSize=30")
+			a.handleMailMessages(rec, req)
+			if rec.Code != http.StatusOK {
+				b.Fatalf("status=%d body=%s", rec.Code, rec.Body.String()[:min(200, rec.Body.Len())])
+			}
+		}
+	})
+	b.Run("folders", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rec := httptest.NewRecorder()
+			req := benchHandlerReq(b, user, "/api/mail/folders?mailboxId="+mailboxID)
+			a.handleMailFolders(rec, req)
+			if rec.Code != http.StatusOK {
+				b.Fatalf("status=%d", rec.Code)
+			}
+		}
+	})
+	b.Run("stats", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rec := httptest.NewRecorder()
+			req := benchHandlerReq(b, user, "/api/mail/stats?mailboxId="+mailboxID)
+			a.handleMailStats(rec, req)
+			if rec.Code != http.StatusOK {
+				b.Fatalf("status=%d", rec.Code)
+			}
+		}
+	})
+	b.Run("open", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rec := httptest.NewRecorder()
+			req := withChiParam(benchHandlerReq(b, user, "/api/mail/messages/"+msgID), "id", msgID)
+			a.handleMailMessage(rec, req)
+			if rec.Code != http.StatusOK {
+				b.Fatalf("status=%d", rec.Code)
+			}
+		}
+	})
+}
+
+// 同一份数据、同一进程里 A/B 一个覆盖索引：先无索引、再建、再删，三段都测，
+// 用第 1 段和第 3 段的差值估计预热漂移。VM 噪声大，跨进程比较不可信。
+func BenchmarkStatsIndexAB(b *testing.B) {
+	a, ctx, mailboxID := benchSeed(b, 5000)
+	user := benchUser(b, a)
+	call := func() {
+		rec := httptest.NewRecorder()
+		a.handleMailStats(rec, benchHandlerReq(b, user, "/api/mail/stats?mailboxId="+mailboxID))
+		if rec.Code != http.StatusOK {
+			b.Fatalf("status=%d", rec.Code)
+		}
+	}
+	phase := func(name string) {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				call()
+			}
+		})
+	}
+	phase("1_no_index")
+	if _, err := a.db.ExecContext(ctx, `CREATE INDEX idx_ab_cover ON messages(mailbox_id, folder_id, is_read, size_bytes)`); err != nil {
+		b.Fatal(err)
+	}
+	phase("2_with_index")
+	if _, err := a.db.ExecContext(ctx, `DROP INDEX idx_ab_cover`); err != nil {
+		b.Fatal(err)
+	}
+	phase("3_no_index_again")
 }
