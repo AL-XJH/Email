@@ -166,3 +166,21 @@ func TestExternalIMAPAllMailFolderDeduplicatesAcrossFolders(t *testing.T) {
 		t.Fatalf("mapping must point at the existing copy: got %q want %q", mappedTo, existingID)
 	}
 }
+
+// 侧栏不该出现「[Gmail]/已删除邮件」这种带层级前缀的名字。
+func TestExternalIMAPFolderDisplayName(t *testing.T) {
+	cases := map[string]string{
+		"[Gmail]/已删除邮件":        "已删除邮件",
+		"[Gmail]/All Mail":       "所有邮件",
+		"[Google Mail]/Sent Mail": "已发邮件",
+		"[Gmail]/Spam":           "垃圾邮件",
+		"INBOX":                  "INBOX",
+		"Notes":                  "Notes",
+		"自定义标签":                   "自定义标签",
+	}
+	for in, want := range cases {
+		if got := externalIMAPFolderDisplayName(in); got != want {
+			t.Fatalf("display name for %q = %q, want %q", in, got, want)
+		}
+	}
+}

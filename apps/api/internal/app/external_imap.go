@@ -1568,6 +1568,37 @@ func (a *App) loadExternalIMAPFolderState(ctx context.Context, accountID, folder
 	return state
 }
 
+// externalIMAPFolderDisplayName 去掉 Gmail 的层级前缀，并把常见的英文系统
+// 文件夹名换成中文，避免侧栏出现「[Gmail]/已删除邮件」这种夹杂层级路径的名字。
+func externalIMAPFolderDisplayName(remoteFolder string) string {
+	name := strings.TrimSpace(remoteFolder)
+	for _, prefix := range []string{"[Gmail]/", "[Google Mail]/"} {
+		if len(name) > len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
+			name = strings.TrimSpace(name[len(prefix):])
+			break
+		}
+	}
+	switch strings.ToLower(name) {
+	case "all mail":
+		return "所有邮件"
+	case "sent mail", "sent messages", "sent items":
+		return "已发邮件"
+	case "drafts", "draft":
+		return "草稿"
+	case "spam", "junk e-mail", "junk email":
+		return "垃圾邮件"
+	case "trash", "deleted items", "bin":
+		return "已删除邮件"
+	case "starred":
+		return "已加星标"
+	case "important":
+		return "重要"
+	case "archive":
+		return "归档"
+	}
+	return name
+}
+
 // externalIMAPLocalFolderName 起一个能认出来的本地文件夹名。
 // 以前是「External <账号键> <远端名哈希>」，界面上完全看不出对应哪个文件夹。
 // 现在带上账号名与远端名；两个账号撞名时补 4 位账号键，保证 UNIQUE(mailbox,name)。
@@ -1582,7 +1613,7 @@ func (a *App) externalIMAPLocalFolderName(ctx context.Context, account externalI
 			label = label[:8]
 		}
 	}
-	base := fmt.Sprintf("外部 · %s · %s", label, remoteFolder)
+	base := fmt.Sprintf("外部 · %s · %s", label, externalIMAPFolderDisplayName(remoteFolder))
 	var owner string
 	err := a.db.QueryRowContext(ctx, `SELECT COALESCE(fs.account_id,'') FROM folders f
 		LEFT JOIN external_imap_folder_states fs ON fs.local_folder_id=f.id
@@ -1594,7 +1625,7 @@ func (a *App) externalIMAPLocalFolderName(ctx context.Context, account externalI
 	if len(key) > 4 {
 		key = key[:4]
 	}
-	return fmt.Sprintf("外部 · %s（%s） · %s", label, key, remoteFolder)
+	return fmt.Sprintf("外部 · %s（%s） · %s", label, key, externalIMAPFolderDisplayName(remoteFolder))
 }
 
 func (a *App) moveExternalIMAPMessagesToFolder(ctx context.Context, accountID, mailboxID, remoteFolder, targetFolderID string) error {
