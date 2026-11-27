@@ -292,6 +292,9 @@ export function ProfilePage() {
   )
   const activeMailboxId = selectedMailbox?.id || ""
   const externalImapEnabled = publicSettings.data?.externalImapEnabled ?? false
+  // 服务端只在 OAuth 客户端 ID 与密钥都配好时返回 true；未配置则按钮置灰并说明原因。
+  const externalGmailOAuthConfigured = publicSettings.data?.externalImapGmailOAuth ?? false
+  const externalOutlookOAuthConfigured = publicSettings.data?.externalImapOutlookOAuth ?? false
   const externalImapAccounts = useQuery({
     queryKey: ["external-imap-accounts", activeMailboxId],
     queryFn: () => api.externalImapAccounts(activeMailboxId),
@@ -977,6 +980,8 @@ export function ProfilePage() {
           }
           selectedMailboxId={mailboxId}
           externalImapEnabled={externalImapEnabled}
+          externalGmailOAuthConfigured={externalGmailOAuthConfigured}
+          externalOutlookOAuthConfigured={externalOutlookOAuthConfigured}
           externalAccounts={externalImapAccounts.data?.items || []}
           externalPending={
             createExternalImap.isPending ||
@@ -1722,6 +1727,8 @@ function MailboxManagement({
   mailboxQuota,
   selectedMailboxId,
   externalImapEnabled,
+  externalGmailOAuthConfigured,
+  externalOutlookOAuthConfigured,
   externalAccounts,
   externalPending,
   externalSyncingId,
@@ -1748,6 +1755,8 @@ function MailboxManagement({
   mailboxQuota?: { used: number; limit: number }
   selectedMailboxId: string
   externalImapEnabled: boolean
+  externalGmailOAuthConfigured: boolean
+  externalOutlookOAuthConfigured: boolean
   externalAccounts: ExternalImapAccount[]
   externalPending: boolean
   externalSyncingId: string
@@ -1838,6 +1847,7 @@ function MailboxManagement({
                 <ExternalImapOAuthDialog
                   provider="gmail"
                   selectedMailbox={selectedMailbox}
+                  configured={externalGmailOAuthConfigured}
                   disabled={!selectedMailbox}
                   pending={externalPending}
                   onStart={onStartExternalOAuth}
@@ -1845,6 +1855,7 @@ function MailboxManagement({
                 <ExternalImapOAuthDialog
                   provider="outlook"
                   selectedMailbox={selectedMailbox}
+                  configured={externalOutlookOAuthConfigured}
                   disabled={!selectedMailbox}
                   pending={externalPending}
                   onStart={onStartExternalOAuth}
@@ -2095,12 +2106,14 @@ function ApplyMailboxDialog({
 function ExternalImapOAuthDialog({
   provider,
   selectedMailbox,
+  configured,
   disabled,
   pending,
   onStart,
 }: {
   provider: ExternalImapOAuthProvider
   selectedMailbox?: Mailbox
+  configured: boolean
   disabled?: boolean
   pending: boolean
   onStart: (
@@ -2130,10 +2143,15 @@ function ExternalImapOAuthDialog({
       <Button
         type="button"
         variant="outline"
-        disabled={disabled || pending}
+        disabled={disabled || pending || !configured}
+        title={
+          configured
+            ? undefined
+            : uiText("管理员尚未在本站配置该服务商的 OAuth 客户端，暂时无法使用")
+        }
         onClick={() => setOpen(true)}
       >
-        {uiText(label)}
+        {configured ? uiText(label) : `${uiText(label)} ${uiText("（未配置）")}`}
       </Button>
       <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>

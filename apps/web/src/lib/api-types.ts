@@ -669,6 +669,8 @@ export type PublicSettings = {
   mailAutoRefresh: boolean
   mailRefreshMs: number
   externalImapEnabled: boolean
+  externalImapGmailOAuth: boolean
+  externalImapOutlookOAuth: boolean
   linuxDoSSOEnabled: boolean
   linuxDoRegistrationEnabled: boolean
   mailboxDomains?: PublicDomain[]

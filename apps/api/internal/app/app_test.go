@@ -955,8 +955,8 @@ func TestExternalIMAPDisabledByDefaultAndAdminSettings(t *testing.T) {
 		t.Fatalf("external imap should be disabled by default code=%d body=%v", code, body)
 	}
 	var public PublicSettings
-	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || public.ExternalIMAPEnabled {
-		t.Fatalf("public settings should expose disabled external imap code=%d settings=%+v", code, public)
+	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || public.ExternalIMAPEnabled || public.ExternalIMAPGmailOAuth || public.ExternalIMAPOutlookOAuth {
+		t.Fatalf("public settings should expose disabled external imap and no oauth code=%d settings=%+v", code, public)
 	}
 	var settings SystemSettings
 	if code := admin.do("GET", "/api/admin/settings", nil, &settings); code != http.StatusOK {
@@ -983,8 +983,13 @@ func TestExternalIMAPDisabledByDefaultAndAdminSettings(t *testing.T) {
 	if a.config().ExternalIMAPSecretKey != "test-secret" || a.config().ExternalIMAPGmailClientSecret != "gmail-secret" || a.config().ExternalIMAPOutlookClientSecret != "outlook-secret" {
 		t.Fatalf("secret settings not persisted in config")
 	}
-	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || !public.ExternalIMAPEnabled {
-		t.Fatalf("public settings should expose enabled external imap code=%d settings=%+v", code, public)
+	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || !public.ExternalIMAPEnabled || !public.ExternalIMAPGmailOAuth || !public.ExternalIMAPOutlookOAuth {
+		t.Fatalf("public settings should expose enabled external imap with both oauth providers code=%d settings=%+v", code, public)
+	}
+	// 只配一半凭据也必须算「未配置」：前端据此置灰按钮，否则点进去还是 400。
+	a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPGmailClientSecret = "" })
+	if code := admin.do("GET", "/api/public/settings", nil, &public); code != http.StatusOK || public.ExternalIMAPGmailOAuth || !public.ExternalIMAPOutlookOAuth {
+		t.Fatalf("half configured gmail oauth must not be advertised as ready code=%d settings=%+v", code, public)
 	}
 }
 

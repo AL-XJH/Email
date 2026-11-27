@@ -130,6 +130,8 @@ type PublicSettings struct {
 	MailAutoRefresh            bool           `json:"mailAutoRefresh"`
 	MailRefreshMs              int            `json:"mailRefreshMs"`
 	ExternalIMAPEnabled        bool           `json:"externalImapEnabled"`
+	ExternalIMAPGmailOAuth     bool           `json:"externalImapGmailOAuth"`
+	ExternalIMAPOutlookOAuth   bool           `json:"externalImapOutlookOAuth"`
 	LinuxDoSSOEnabled          bool           `json:"linuxDoSSOEnabled"`
 	LinuxDoRegistrationEnabled bool           `json:"linuxDoRegistrationEnabled"`
 	MailboxDomains             []PublicDomain `json:"mailboxDomains,omitempty"`
@@ -155,7 +157,11 @@ func (a *App) handlePublicSettings(w http.ResponseWriter, r *http.Request) {
 		refreshSeconds = 30
 	}
 	linuxDoEnabled := a.linuxDoEnabled()
-	settings := PublicSettings{OpenRegistration: a.config().OpenRegistration, InviteRegistrationEnabled: a.config().InviteRegistrationEnabled, TurnstileEnabled: enabled, TurnstileSiteKey: a.config().TurnstileSiteKey, PublicHostname: a.config().PublicHostname, SiteTitle: a.config().SiteTitle, MailAutoRefresh: a.config().MailAutoRefresh, MailRefreshMs: refreshSeconds * 1000, ExternalIMAPEnabled: a.config().ExternalIMAPEnabled, LinuxDoSSOEnabled: linuxDoEnabled, LinuxDoRegistrationEnabled: linuxDoEnabled && a.config().LinuxDoRegistrationEnabled}
+	// 只暴露「是否已配置」的布尔值：前端据此禁用 OAuth 按钮，避免用户点了才吃 400。
+	// OAuth 未配置时按钮仍应可见，否则管理员看不出还需要配什么。
+	gmailOAuthConfigured := strings.TrimSpace(a.config().ExternalIMAPGmailClientID) != "" && strings.TrimSpace(a.config().ExternalIMAPGmailClientSecret) != ""
+	outlookOAuthConfigured := strings.TrimSpace(a.config().ExternalIMAPOutlookClientID) != "" && strings.TrimSpace(a.config().ExternalIMAPOutlookClientSecret) != ""
+	settings := PublicSettings{OpenRegistration: a.config().OpenRegistration, InviteRegistrationEnabled: a.config().InviteRegistrationEnabled, TurnstileEnabled: enabled, TurnstileSiteKey: a.config().TurnstileSiteKey, PublicHostname: a.config().PublicHostname, SiteTitle: a.config().SiteTitle, MailAutoRefresh: a.config().MailAutoRefresh, MailRefreshMs: refreshSeconds * 1000, ExternalIMAPEnabled: a.config().ExternalIMAPEnabled, ExternalIMAPGmailOAuth: gmailOAuthConfigured, ExternalIMAPOutlookOAuth: outlookOAuthConfigured, LinuxDoSSOEnabled: linuxDoEnabled, LinuxDoRegistrationEnabled: linuxDoEnabled && a.config().LinuxDoRegistrationEnabled}
 
 	// Include available domains for mailbox creation during registration
 	if a.config().OpenRegistration || a.config().InviteRegistrationEnabled || (linuxDoEnabled && a.config().LinuxDoRegistrationEnabled) {
