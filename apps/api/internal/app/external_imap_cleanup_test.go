@@ -213,3 +213,25 @@ func TestTelegramNotificationSkipsBackfilledMail(t *testing.T) {
 		t.Fatal("0 must disable the age gate")
 	}
 }
+
+// Gmail 中文界面 LIST 不带 SPECIAL-USE，只靠 \All 会漏判「所有邮件」，
+// 结果同一封邮件在 INBOX 和所有邮件各存一份。
+func TestExternalIMAPFolderIsAllMail(t *testing.T) {
+	cases := []struct {
+		name string
+		f    externalIMAPRemoteFolder
+		want bool
+	}{
+		{"special use attr", externalIMAPRemoteFolder{Name: "[Gmail]/All Mail", Role: externalIMAPFolderRoleAll}, true},
+		{"chinese name only", externalIMAPRemoteFolder{Name: "[Gmail]/所有邮件", Role: "Imported"}, true},
+		{"english name only", externalIMAPRemoteFolder{Name: "[Google Mail]/All Mail", Role: "Imported"}, true},
+		{"inbox", externalIMAPRemoteFolder{Name: "INBOX", Role: "Inbox"}, false},
+		{"custom label", externalIMAPRemoteFolder{Name: "[Gmail]/账单", Role: "Imported"}, false},
+		{"trash", externalIMAPRemoteFolder{Name: "[Gmail]/已删除邮件", Role: "Trash"}, false},
+	}
+	for _, c := range cases {
+		if got := externalIMAPFolderIsAllMail(c.f); got != c.want {
+			t.Fatalf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -1513,7 +1513,7 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 				stored.Subject = item.Subject
 			}
 			stored.IsRead = item.IsRead
-			msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, folder.Name, item, stored, attachments, uidValidityChanged, folder.Role == externalIMAPFolderRoleAll)
+			msgID, err := a.insertExternalIMAPMessageOnce(ctx, account, folder.Name, item, stored, attachments, uidValidityChanged, externalIMAPFolderIsAllMail(folder))
 			if err != nil {
 				failed++
 				if errors.Is(err, errMailboxQuotaExceeded) {
@@ -2157,6 +2157,21 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 		folders = append(folders, externalIMAPRemoteFolder{Name: "INBOX", Role: "Inbox"})
 	}
 	return folders, nil
+}
+
+// externalIMAPFolderIsAllMail 判断是不是 Gmail 的「所有邮件」。
+// 不能只看 \All：部分服务器（含中文界面的 Gmail）LIST 不带 SPECIAL-USE，
+// 只回名字，靠属性判断会退化成普通文件夹，于是每封邮件在本地存两份。
+func externalIMAPFolderIsAllMail(folder externalIMAPRemoteFolder) bool {
+	if folder.Role == externalIMAPFolderRoleAll {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(externalIMAPFolderDisplayName(folder.Name)))
+	switch name {
+	case "all mail", "all", "所有邮件", "所有邮件夹", "全部邮件":
+		return true
+	}
+	return false
 }
 
 func mailboxHasAttr(attrs []imap.MailboxAttr, want imap.MailboxAttr) bool {
