@@ -14,6 +14,7 @@ type maildirSyncCounts struct {
 	DirectoriesScanned int      `json:"directoriesScanned"`
 	FilesScanned       int      `json:"filesScanned"`
 	Imported           int      `json:"imported"`
+	Updated            int      `json:"updated"`
 	Backfilled         int      `json:"backfilled"`
 	Cleaned            int      `json:"cleaned"`
 	FileErrors         int      `json:"fileErrors"`
@@ -36,8 +37,11 @@ func (c maildirSyncCounts) total() int {
 // out to Maildir, so it never gives a browser anything new to fetch. Publishing on it
 // meant that on any deployment with a populated database the first scan broadcast to
 // everyone, which is exactly the fan-out the targeting is meant to avoid.
+//
+// Updated is included: a flag flipped by an external MUA (seen / starred) changes
+// what the client renders even though no row was added or removed.
 func (c maildirSyncCounts) clientVisibleChanges() int {
-	return c.Imported + c.Cleaned
+	return c.Imported + c.Updated + c.Cleaned
 }
 
 func (c *maildirSyncCounts) markMailbox(id string) {

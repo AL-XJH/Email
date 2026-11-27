@@ -36,7 +36,7 @@ func importSyntheticSMTPMessage(t *testing.T, a *App, recipient Mailbox, sentID 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.syncMaildirFile(ctx, maildirMailbox{ID: recipient.ID, Address: recipient.Address}, maildirFolder{ID: folder, Name: "Inbox"}, path); err != nil {
+	if _, _, err := a.syncMaildirFile(ctx, maildirMailbox{ID: recipient.ID, Address: recipient.Address}, maildirFolder{ID: folder, Name: "Inbox"}, path); err != nil {
 		t.Fatal(err)
 	}
 }

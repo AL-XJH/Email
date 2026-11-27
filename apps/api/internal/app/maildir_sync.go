@@ -169,7 +169,17 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 		}
 		previous, known := a.maildirDirs[target.Directory]
 		if !fullScan && known && previous == signature {
-			continue
+			// 目录 mtime 没变不代表没事：外部 MUA 在同一个时钟 tick 内把文件
+			// 改名（去 S 标记、加星）时，目录 mtime 和上一轮一模一样。只凭签名
+			// 跳过，这次改名要等下一次全量扫描（约 100 秒）才被看见。
+			// 这里只做一个廉价的核对：库里面向该目录的文件是否都还在。
+			missing, err := a.maildirDirectoryHasMissingFiles(ctx, target.Directory)
+			if err != nil {
+				return counts, err
+			}
+			if !missing {
+				continue
+			}
 		}
 		counts.DirectoriesScanned++
 		pending = append(pending, pendingDirectory{target: target, signature: signature})
@@ -267,7 +277,7 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 				}
 				continue
 			}
-			handled, err := a.syncKnownMaildirFileState(ctx, target.Mailbox, target.Folder, path, knownFiles)
+			handled, changed, err := a.syncKnownMaildirFileState(ctx, target.Mailbox, target.Folder, path, knownFiles)
 			if err != nil {
 				counts.FileErrors++
 				counts.fileErrorDetails = append(counts.fileErrorDetails, fmt.Sprintf("%s: %v", path, err))
@@ -275,9 +285,15 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 				continue
 			}
 			if handled {
+				if changed {
+					// 以前这里改了库却不标记邮箱，客户端收不到推送，要等下一次
+					// 带新邮件的同步才刷新。
+					counts.Updated++
+					counts.markMailbox(target.Mailbox.ID)
+				}
 				continue
 			}
-			ok, err := a.syncMaildirFile(ctx, target.Mailbox, target.Folder, path)
+			ok, changedExisting, err := a.syncMaildirFile(ctx, target.Mailbox, target.Folder, path)
 			if err != nil {
 				counts.FileErrors++
 				counts.fileErrorDetails = append(counts.fileErrorDetails, fmt.Sprintf("%s: %v", path, err))
@@ -286,6 +302,9 @@ func (a *App) syncMaildirOnceDetailed(ctx context.Context) (maildirSyncCounts, e
 			}
 			if ok {
 				counts.Imported++
+				counts.markMailbox(target.Mailbox.ID)
+			} else if changedExisting {
+				counts.Updated++
 				counts.markMailbox(target.Mailbox.ID)
 			}
 		}
@@ -430,16 +449,47 @@ func (a *App) knownMaildirFiles(ctx context.Context) (map[string]knownMaildirFil
 	return files, rows.Err()
 }
 
-func (a *App) syncKnownMaildirFileState(ctx context.Context, mb maildirMailbox, folder maildirFolder, path string, knownFiles map[string]knownMaildirFile) (bool, error) {
+// syncKnownMaildirFileState 同步一个已知文件（路径已在库里）的状态。
+// handled 表示这封邮件已被此函数处理完，调用方不必再导入；
+// changed 表示库里的标记确实被改写了（需要通知客户端）。
+func (a *App) syncKnownMaildirFileState(ctx context.Context, mb maildirMailbox, folder maildirFolder, path string, knownFiles map[string]knownMaildirFile) (handled bool, changed bool, err error) {
 	state, ok := knownFiles[path]
 	if !ok || state.MailboxID != mb.ID {
-		return false, nil
+		return false, false, nil
 	}
 	read, starred := maildirFlagsFromPath(path, folder.Name)
 	if state.FolderID == folder.ID && state.IsRead == read && state.IsStarred == starred {
-		return true, nil
+		return true, false, nil
 	}
-	return a.syncExistingMaildirMessageState(ctx, mb.ID, folder.ID, path, "", read, starred)
+	updated, err := a.syncExistingMaildirMessageState(ctx, mb.ID, folder.ID, path, "", read, starred)
+	return true, updated, err
+}
+
+// maildirDirectoryHasMissingFiles 判断库里面向 dir 的文件是否已不在磁盘上。
+//
+// 它只在一个场景被调用：目录 mtime 没变、准备跳过这个目录之前。外部 MUA 在
+// 同一时钟 tick 内改名文件时 mtime 不会变，但旧路径会立刻消失——这正是
+// 「跳过就会漏掉」的精确信号。文件都在就返回 false，目录照常跳过。
+func (a *App) maildirDirectoryHasMissingFiles(ctx context.Context, dir string) (bool, error) {
+	prefix := dir + string(filepath.Separator)
+	rows, err := a.db.QueryContext(ctx, `SELECT raw_path FROM messages WHERE raw_path<>'' AND folder_id IS NOT NULL`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return false, err
+		}
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return true, rows.Close()
+		}
+	}
+	return false, rows.Err()
 }
 
 func (a *App) maildirMailboxes(ctx context.Context) ([]maildirMailbox, error) {
@@ -609,14 +659,18 @@ func maildirFolderPath(base, folder string) string {
 	return filepath.Join(base, "."+folder)
 }
 
-func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder maildirFolder, path string) (bool, error) {
+// syncMaildirFile 导入（或认领）一个 Maildir 文件。
+//
+// ok 表示导入了一封新邮件；changedExisting 表示库里已有的行被改写了（flag
+// 变更或改名认领）——调用方要据此通知客户端，否则外部 MUA 的改动推不出去。
+func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder maildirFolder, path string) (ok bool, changedExisting bool, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	msg, attachments, err := a.parseMaildirMessage(raw, mb.Address)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	msg.MailboxID = mb.ID
 	msg.FolderID = folder.ID
@@ -640,23 +694,21 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 	if msg.Snippet == "" {
 		msg.Snippet = snippetFrom(msg.BodyText, msg.BodyHTML)
 	}
-	if handled, err := a.handleOwnOrphanedMaildirFile(ctx, mb.ID, folder.ID, path, msg.MessageID, msg.IsRead, msg.IsStarred, raw); err != nil {
-		return false, err
+	if handled, changed, err := a.handleOwnOrphanedMaildirFile(ctx, mb.ID, folder.ID, path, msg.MessageID, msg.IsRead, msg.IsStarred, raw); err != nil {
+		return false, false, err
 	} else if handled {
-		return false, nil
+		return false, changed, nil
 	}
 	if exists, err := a.maildirMessageExists(ctx, mb.ID, folder.ID, path, msg.MessageID); err != nil {
-		return false, err
+		return false, false, err
 	} else if exists {
-		if _, err := a.syncExistingMaildirMessageState(ctx, mb.ID, folder.ID, path, msg.MessageID, msg.IsRead, msg.IsStarred); err != nil {
-			return false, err
-		}
-		return false, nil
+		changed, err := a.syncExistingMaildirMessageState(ctx, mb.ID, folder.ID, path, msg.MessageID, msg.IsRead, msg.IsStarred)
+		return false, changed, err
 	}
 	if handled, err := a.syncExistingMaildirMessageState(ctx, mb.ID, folder.ID, path, msg.MessageID, msg.IsRead, msg.IsStarred); err != nil {
-		return false, err
+		return false, false, err
 	} else if handled {
-		return false, nil
+		return false, true, nil
 	}
 	id, err := a.insertMessage(ctx, msg, attachments)
 	if err == nil {
@@ -674,7 +726,7 @@ func (a *App) syncMaildirFile(ctx context.Context, mb maildirMailbox, folder mai
 			a.applyInboundControls(ctx, id, mb.ID, msg.From, msg.Subject)
 		}
 	}
-	return err == nil, err
+	return err == nil, false, err
 }
 
 // ownMaildirMessageIDPattern 匹配我们自己的写入路径生成的文件名：
@@ -697,28 +749,31 @@ var ownMaildirMessageIDPattern = regexp.MustCompile(`\.(mail_[A-Za-z0-9_-]+)\.`)
 // 三种情况：库里的文件还在且内容一致 → 删掉副本（DB 是真相，内容没丢）；
 // 库里的文件已经不在了 → 认领这份副本；内容不一致 → 留在磁盘上并告警，
 // 不导入也不删除（可能是人工恢复的中间状态，不能替用户做决定）。
-func (a *App) handleOwnOrphanedMaildirFile(ctx context.Context, mailboxID, folderID, path, messageID string, read, starred bool, raw []byte) (bool, error) {
+//
+// changed 只在「认领副本并改写了库里的行」时为 true——外部 MUA 给我们自己
+// 写出的文件改 flag（:2,S → :2,）走的就是这条路，调用方要据此通知客户端。
+func (a *App) handleOwnOrphanedMaildirFile(ctx context.Context, mailboxID, folderID, path, messageID string, read, starred bool, raw []byte) (handled bool, changed bool, err error) {
 	match := ownMaildirMessageIDPattern.FindStringSubmatch(filepath.Base(path))
 	if len(match) != 2 {
-		return false, nil
+		return false, false, nil
 	}
 	id := match[1]
 	var tracked string
-	err := a.db.QueryRowContext(ctx, `SELECT COALESCE(raw_path,'') FROM messages WHERE id=? AND mailbox_id=?`, id, mailboxID).Scan(&tracked)
+	err = a.db.QueryRowContext(ctx, `SELECT COALESCE(raw_path,'') FROM messages WHERE id=? AND mailbox_id=?`, id, mailboxID).Scan(&tracked)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if tracked == path {
-		return false, nil
+		return false, false, nil
 	}
 	if tracked != "" {
 		if _, statErr := os.Stat(tracked); statErr == nil {
 			trackedRaw, readErr := os.ReadFile(tracked)
 			if readErr != nil {
-				return false, readErr
+				return false, false, readErr
 			}
 			if bytes.Equal(trackedRaw, raw) {
 				if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -726,23 +781,23 @@ func (a *App) handleOwnOrphanedMaildirFile(ctx context.Context, mailboxID, folde
 				} else {
 					a.log.Info("removed duplicated maildir copy left by interrupted write", "path", path, "message", id)
 				}
-				return true, nil
+				return true, false, nil
 			}
 			a.log.Warn("maildir copy with our message id differs from the tracked file; leaving it in place", "path", path, "tracked", tracked, "message", id)
-			return true, nil
+			return true, false, nil
 		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return false, statErr
+			return false, false, statErr
 		}
 	}
 	// 库指向的文件已经不在了（或这一行还没有文件）：认领这份副本。
-	handled, err := a.syncExistingMaildirMessageState(ctx, mailboxID, folderID, path, messageID, read, starred)
+	handled, err = a.syncExistingMaildirMessageState(ctx, mailboxID, folderID, path, messageID, read, starred)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if handled {
 		a.log.Info("adopted maildir copy left by interrupted write", "path", path, "message", id)
 	}
-	return handled, nil
+	return handled, handled, nil
 }
 
 func (a *App) maildirMessageExists(ctx context.Context, mailboxID, folderID, rawPath, messageID string) (bool, error) {
@@ -905,10 +960,18 @@ func (a *App) syncExistingMaildirMessageState(ctx context.Context, mailboxID, fo
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(folder_id,'') FROM messages WHERE id=?`, chosen.ID).Scan(&previousFolderID); err != nil {
 		return false, err
 	}
-	if previousFolderID != "" && previousFolderID != folderID {
-		if _, err := a.bumpFolderModSeq(ctx, previousFolderID); err != nil {
+	if previousFolderID == "" || previousFolderID == folderID {
+		// 同一文件夹内改名（外部 MUA 改已读/星标）不是新邮件：保留 uid，只
+		// bump modseq，否则 IMAP 客户端把它当新邮件重拉、旧 uid 凭空消失。
+		modSeq, err := a.bumpFolderModSeq(ctx, folderID)
+		if err != nil {
 			return false, err
 		}
+		_, err = a.db.ExecContext(ctx, `UPDATE messages SET folder_id=?,raw_path=?,is_read=?,is_starred=?,imap_modseq=?,updated_at=? WHERE id=?`, folderID, rawPath, boolInt(read), boolInt(starred), modSeq, now, chosen.ID)
+		return err == nil, err
+	}
+	if _, err := a.bumpFolderModSeq(ctx, previousFolderID); err != nil {
+		return false, err
 	}
 	meta, err := a.nextIMAPMetadata(ctx, a.db, folderID)
 	if err != nil {

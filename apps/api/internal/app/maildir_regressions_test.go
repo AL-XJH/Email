@@ -250,3 +250,87 @@ func TestUnregisteredCatchAllAdoptsRenamedFile(t *testing.T) {
 		t.Fatalf("raw_path=%q, want %q", stored, newPath)
 	}
 }
+
+// 外部 MUA / Dovecot 把 cur/…:2,S 改名成 cur/…:2,（去掉 \\Seen）后，同步必须既改库、
+// 又把这次变化算成「客户端可见」——否则 publishSyncEventForCounts 不会推事件，
+// 开着网页的用户要等整页刷新才看到未读状态。
+func TestExternalSeenFlagChangeIsClientVisible(t *testing.T) {
+	a := newTestApp(t)
+	a.updateConfig(func(cfg *Config) { cfg.MaildirRoot = t.TempDir() })
+	ctx := context.Background()
+	mailboxID := adminMailboxIDForTest(t, a)
+	mb, err := a.mailboxByID(ctx, mailboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err := a.ensureFolder(ctx, mailboxID, "Inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := a.now().UTC()
+	msg := storedMessage{
+		MailboxID:  mailboxID,
+		FolderID:   inboxID,
+		MessageUID: newID("uid"),
+		MessageID:  "<ext-seen@example.test>",
+		Subject:    "ext",
+		From:       mb.Address,
+		To:         []string{"person@example.test"},
+		SentAt:     now,
+		ReceivedAt: now,
+		BodyText:   "body",
+		IsRead:     true,
+	}
+	id, err := a.insertMessage(ctx, msg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.writeStoredMessageToMaildir(ctx, id, msg, nil); err != nil {
+		t.Fatal(err)
+	}
+	var rawPath string
+	if err := a.db.QueryRow(`SELECT COALESCE(raw_path,'') FROM messages WHERE id=?`, id).Scan(&rawPath); err != nil {
+		t.Fatal(err)
+	}
+	if rawPath == "" {
+		t.Fatal("no raw_path")
+	}
+	// 第一轮：让同步把这条文件登记为 known。
+	if _, err := a.syncMaildirOnceDetailed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(rawPath, ":2,S") && !strings.HasSuffix(rawPath, ":2,FS") {
+		t.Fatalf("expected Seen flag in name, got %s", rawPath)
+	}
+	var uidBefore int64
+	if err := a.db.QueryRow(`SELECT COALESCE(imap_uid,0) FROM messages WHERE id=?`, id).Scan(&uidBefore); err != nil {
+		t.Fatal(err)
+	}
+	// Dovecot 把 S 去掉。
+	renamed := strings.Replace(rawPath, ":2,S", ":2,", 1)
+	if err := os.Rename(rawPath, renamed); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := a.syncMaildirOnceDetailed(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var isRead int
+	var dbPath string
+	var uidAfter int64
+	if err := a.db.QueryRow(`SELECT is_read,COALESCE(raw_path,''),COALESCE(imap_uid,0) FROM messages WHERE id=?`, id).Scan(&isRead, &dbPath, &uidAfter); err != nil {
+		t.Fatal(err)
+	}
+	if isRead != 0 {
+		t.Fatalf("db still says read after external flag change")
+	}
+	if dbPath != renamed {
+		t.Fatalf("raw_path not updated to renamed file: %q != %q", dbPath, renamed)
+	}
+	if uidBefore != 0 && uidAfter != uidBefore {
+		t.Fatalf("flag change rotated IMAP uid: %d -> %d (clients would refetch the message)", uidBefore, uidAfter)
+	}
+	if counts.clientVisibleChanges() == 0 {
+		t.Fatalf("external flag change not client-visible, no sync event would be published: %+v", counts)
+	}
+}
