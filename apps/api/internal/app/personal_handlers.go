@@ -739,6 +739,58 @@ func (a *App) handleDeleteAllowedSender(w http.ResponseWriter, r *http.Request) 
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// MailStatsSummary 是列表页用的轻量统计：邮件页只需要星标数等几个计数，
+// 却不必为此拉整个「按文件夹」聚合（5000 封时那部分占 /me/stats 一半时间）。
+type MailStatsSummary struct {
+	TotalMessages   int64   `json:"totalMessages"`
+	UnreadMessages  int64   `json:"unreadMessages"`
+	StarredMessages int64   `json:"starredMessages"`
+	StorageBytes    int64   `json:"storageBytes"`
+	QuotaBytes      int64   `json:"quotaBytes"`
+	QuotaUsedPct    float64 `json:"quotaUsedPct"`
+}
+
+func (a *App) handleMailStatsSummary(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	mailboxID := strings.TrimSpace(r.URL.Query().Get("mailboxId"))
+	var out MailStatsSummary
+	if mailboxID != "" {
+		if _, err := a.mailboxForCurrentUserWithID(r, mailboxID); err != nil {
+			respondError(w, http.StatusNotFound, "mailbox not found")
+			return
+		}
+		totals, err := a.loadMailboxTotals(r.Context(), mailboxID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load stats")
+			return
+		}
+		out.TotalMessages, out.UnreadMessages = totals.TotalMessages, totals.UnreadMessages
+		out.StarredMessages, out.StorageBytes = totals.StarredMessages, totals.StorageBytes
+		var quotaMB int64
+		if err := a.db.QueryRowContext(r.Context(), `SELECT quota_mb FROM mailboxes WHERE id=? AND user_id=?`, mailboxID, user.ID).Scan(&quotaMB); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load quota")
+			return
+		}
+		out.QuotaBytes = quotaMB * 1024 * 1024
+		if out.QuotaBytes > 0 {
+			out.QuotaUsedPct = float64(out.StorageBytes) / float64(out.QuotaBytes) * 100
+		}
+	} else {
+		err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(m.id),
+			COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN m.is_starred=1 THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(m.size_bytes),0)
+			FROM mailboxes mb LEFT JOIN messages m ON m.mailbox_id=mb.id`+externalLocalMessageJoin+`
+			WHERE mb.user_id=? AND ex.local_message_id IS NULL`, user.ID).
+			Scan(&out.TotalMessages, &out.UnreadMessages, &out.StarredMessages, &out.StorageBytes)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load stats")
+			return
+		}
+	}
+	respondJSON(w, http.StatusOK, out)
+}
+
 func (a *App) handleMailStats(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	mailboxID := strings.TrimSpace(r.URL.Query().Get("mailboxId"))

@@ -98,6 +98,7 @@ func (a *App) Router() http.Handler {
 		r.With(a.requireAuth, a.requirePermission(PermissionMailBlocked)).Post("/me/allowed-senders", a.handleCreateAllowedSender)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailBlocked)).Delete("/me/allowed-senders/{id}", a.handleDeleteAllowedSender)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailStats)).Get("/me/stats", a.handleMailStats)
+		r.With(a.requireAuth, a.requirePermission(PermissionMailStats)).Get("/me/stats/summary", a.handleMailStatsSummary)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailOrganize)).Post("/me/cleanup", a.handleMailCleanup)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Get("/me/external-imap-accounts", a.handleListExternalIMAPAccounts)
 		r.With(a.requireAuth, a.requirePermission(PermissionMailAccess), a.requireExternalIMAPEnabled).Post("/me/external-imap-accounts", a.handleCreateExternalIMAPAccount)

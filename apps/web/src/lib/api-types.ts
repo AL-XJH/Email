@@ -475,6 +475,14 @@ export type AllowedSender = {
   reason: string
   createdAt: string
 }
+export type MailStatsSummary = {
+  totalMessages: number
+  unreadMessages: number
+  starredMessages: number
+  storageBytes: number
+  quotaBytes: number
+  quotaUsedPct: number
+}
 export type MailStats = {
   totalMessages: number
   unreadMessages: number

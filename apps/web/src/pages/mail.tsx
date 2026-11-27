@@ -446,7 +446,7 @@ export function MailPage() {
     (mailView === "starred" && !!selectedMailbox?.shareIncludesStarred)
   const mailStats = useQuery({
     queryKey: ["mail-stats", activeMailboxId],
-    queryFn: () => api.mailStats(activeMailboxId),
+    queryFn: () => api.mailStatsSummary(activeMailboxId),
     enabled: !!activeMailboxId && selectedMailboxOwned && hasPermission(user, "mail.stats.view"),
   })
   const scheduledSends = useQuery({

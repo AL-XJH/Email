@@ -299,6 +299,17 @@ func BenchmarkHotEndpoints(b *testing.B) {
 			}
 		}
 	})
+	b.Run("stats_summary", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rec := httptest.NewRecorder()
+			req := benchHandlerReq(b, user, "/api/me/stats/summary?mailboxId="+mailboxID)
+			a.handleMailStatsSummary(rec, req)
+			if rec.Code != http.StatusOK {
+				b.Fatalf("status=%d", rec.Code)
+			}
+		}
+	})
 	b.Run("folders", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {

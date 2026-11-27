@@ -329,9 +329,12 @@ export function ProfilePage() {
     enabled: !!activeMailboxId && canManageRules && (canReadMail || canManageLabels),
   })
   const stats = useQuery({
-    queryKey: ["mail-stats", activeMailboxId],
+    // 完整统计（含按文件夹明细）只有本页用；邮件页走 /me/stats/summary。
+    // 两者不再共用一个 key，进页面时强制取新，避免读到上次的旧明细。
+    queryKey: ["mail-stats-full", activeMailboxId],
     queryFn: () => api.mailStats(activeMailboxId),
     enabled: !!activeMailboxId && canViewStats,
+    refetchOnMount: "always",
   })
 
   const profile = useMutation({

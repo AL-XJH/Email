@@ -40,6 +40,7 @@ import type {
   BlockedSender,
   AllowedSender,
   MailStats,
+  MailStatsSummary,
   ExternalImapAccount,
   ExternalImapAccountPayload,
   ExternalImapFolder,
@@ -317,6 +318,11 @@ export const api = {
   mailStats: (mailboxId?: string) =>
     request<MailStats>(
       `/api/me/stats${mailboxId ? `?mailboxId=${encodeURIComponent(mailboxId)}` : ""}`
+    ),
+  // 列表页只要星标/未读这些计数：不拉按文件夹聚合，省掉一半以上的统计查询时间。
+  mailStatsSummary: (mailboxId?: string) =>
+    request<MailStatsSummary>(
+      `/api/me/stats/summary${mailboxId ? `?mailboxId=${encodeURIComponent(mailboxId)}` : ""}`
     ),
   cleanupMail: (payload: {
     mailboxId: string
