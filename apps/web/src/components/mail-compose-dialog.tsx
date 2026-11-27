@@ -319,6 +319,15 @@ export function ComposeDialog({
       draftIdRef.current = saved.id
       setDraftId(saved.id)
       lastSavedPayloadRef.current = JSON.stringify({ ...latest.payload, draftId: saved.id })
+      // 附件这一刻已经随着草稿落到服务端了：把「动过附件」的标记清掉，之后只改正文
+      // 的保存就省略 attachments 字段（服务端保留原附件）。不清的话每敲几个字都会把
+      // 整份附件重新 base64 编码再 POST 一遍——10 MB 附件就是每次十几 MB。
+      if (
+        latest.attachmentFiles &&
+        latestDraftRef.current?.attachmentFiles === latest.attachmentFiles
+      ) {
+        setAttachmentsTouched(false)
+      }
       lastSavedFilesRef.current = latest.attachmentFiles
       setLastSavedAt(new Date())
       setDraftStatus("saved")
