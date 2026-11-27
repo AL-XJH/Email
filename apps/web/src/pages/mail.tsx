@@ -1539,11 +1539,26 @@ export function MailPage() {
   )
   const externalAccountItems = externalImapEnabled ? externalMailAccounts.data?.items || [] : []
   const externalFolderItems = externalImapEnabled ? externalFolders.data?.items || [] : []
+  // 标题要跟侧栏一致：远端原名（[Gmail]/垃圾邮件）只用于接口参数，展示走 displayName。
+  const selectedExternalFolderItem = externalFolderItems.find(
+    (item) => item.name === externalFolder
+  )
+  const externalFolderTitle = (() => {
+    if (selectedExternalFolderItem) {
+      const label =
+        folderLabels[selectedExternalFolderItem.role] ||
+        folderLabels[selectedExternalFolderItem.name]
+      return label
+        ? uiText(label)
+        : selectedExternalFolderItem.displayName || selectedExternalFolderItem.name
+    }
+    return folderLabels[externalFolder] ? uiText(folderLabels[externalFolder]) : externalFolder
+  })()
   const labelItems = labels.data?.items || []
   const selectedLabel = labelItems.find((item) => item.id === selectedLabelId)
   const viewTitle =
     mailView === "external"
-      ? `${selectedExternalAccount?.name || uiText("外部邮箱")} · ${folderLabels[externalFolder] ? uiText(folderLabels[externalFolder]) : externalFolder}`
+      ? `${selectedExternalAccount?.name || uiText("外部邮箱")} · ${externalFolderTitle}`
       : mailView === "sendQueue"
         ? uiText("发送队列")
         : mailView === "scheduled"
