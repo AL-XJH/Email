@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -14,9 +15,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/quotedprintable"
 	"net"
 	"net/http"
+	"net/mail"
 	"os"
 	"sort"
 	"strconv"
@@ -1808,6 +1811,7 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 	// 几十个文件夹，每轮都在超时内也可能跑很久。这里按 context 的 deadline 在文件夹之间
 	// 主动收手，别让 worker 的一个账号卡住整条定时链路。
 	deadlineHit := false
+	var firstFolderErr error
 	hidden := a.externalIMAPHiddenFolderSet(ctx, account.ID)
 	for _, folder := range folders {
 		if hidden[folder.Name] {
@@ -1825,12 +1829,25 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 		run.Failed += failed
 		if err != nil {
 			run.Failed++
+			if firstFolderErr == nil {
+				firstFolderErr = fmt.Errorf("%s: %w", folder.Name, err)
+			}
 			a.log.Warn("external imap folder sync failed", "account", account.ID, "folder", folder.Name, "error", err)
 		}
 	}
 	status := "ok"
 	if run.Failed > 0 || deadlineHit {
 		status = "partial"
+	}
+	// partial 也要把原因写到账号上：否则 UI 只显示「部分成功」，用户没有任何线索。
+	if firstFolderErr != nil {
+		return a.finishExternalIMAPRun(ctx, run, status, firstFolderErr)
+	}
+	if deadlineHit {
+		return a.finishExternalIMAPRun(ctx, run, status, errors.New("同步时间用尽，剩余邮件下一轮继续"))
+	}
+	if run.Failed > 0 {
+		return a.finishExternalIMAPRun(ctx, run, status, fmt.Errorf("%d 封邮件导入失败，详见日志", run.Failed))
 	}
 	return a.finishExternalIMAPRun(ctx, run, status, nil)
 }
@@ -2656,7 +2673,7 @@ func (a *App) openExternalIMAPClient(ctx context.Context, account externalIMAPAc
 			return nil, err
 		}
 	}
-	return &goExternalIMAPClient{client: c, maxMessageBytes: a.externalIMAPMaxMessageBytes()}, nil
+	return &goExternalIMAPClient{client: c, maxMessageBytes: a.externalIMAPMaxMessageBytes(), headerOnly: externalIMAPNeedsHeaderFetch(account.Host)}, nil
 }
 
 type externalIMAPXOAUTH2Client struct {
@@ -2727,6 +2744,10 @@ func (a *App) externalIMAPOAuthAccessToken(ctx context.Context, account external
 
 type goExternalIMAPClient struct {
 	client *imapclient.Client
+	// headerOnly 为 true 时不再请求 ENVELOPE，改用 BODY.PEEK[HEADER.FIELDS ...]。
+	// 腾讯 QQ 的 ENVELOPE 里带未转义的引号/控制字符，go-imap 解析会报
+	// "expected ')', got ..." 并直接废掉整条连接。
+	headerOnly bool
 	// 单封邮件允许整封载入内存的上限。UI 的 FetchRaw/FetchPart 也要走这个闸门：
 	// 只给同步循环加限制挡不住「打开一封 2GB 的远端邮件」。
 	maxMessageBytes int64
@@ -2954,7 +2975,14 @@ func (c *goExternalIMAPClient) FetchNew(ctx context.Context, folder string, afte
 	set.AddNum(uids...)
 	// 先只拉元数据（含 RFC822Size），再决定哪些信整封下载。
 	// 以前这里对整批 100 封直接 BODY.PEEK[]，碰上大附件就是几百 MB 同时驻留。
-	meta, err := c.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true}).Collect()
+	headerSection := &imap.FetchItemBodySection{Peek: true, Specifier: imap.PartSpecifierHeader, HeaderFields: []string{"From", "To", "Cc", "Subject", "Date", "Message-ID"}}
+	metaOptions := &imap.FetchOptions{UID: true, Flags: true, InternalDate: true, RFC822Size: true}
+	if c.headerOnly {
+		metaOptions.BodySection = []*imap.FetchItemBodySection{headerSection}
+	} else {
+		metaOptions.Envelope = true
+	}
+	meta, err := c.client.Fetch(set, metaOptions).Collect()
 	if err != nil {
 		return nil, err
 	}
@@ -2975,6 +3003,10 @@ func (c *goExternalIMAPClient) FetchNew(ctx context.Context, folder string, afte
 	out := []externalIMAPRemoteMessage{}
 	for _, message := range meta {
 		// 超过阈值的信这里不带正文，同步循环会用 FetchRaw 一封一封取。
+		if c.headerOnly {
+			out = append(out, fetchBufferHeadersToExternalMessage(folder, selected.UIDValidity, message, message.FindBodySection(headerSection)))
+			continue
+		}
 		out = append(out, fetchBufferToExternalMessage(folder, selected.UIDValidity, message, bodies[message.UID]))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UID < out[j].UID })
@@ -3122,7 +3154,11 @@ func (c *goExternalIMAPClient) FetchRaw(ctx context.Context, folder string, uid 
 		}
 	}
 	bodySection := &imap.FetchItemBodySection{Peek: true}
-	messages, err := collectFetchBuffersLimited(c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{UID: true, Flags: true, Envelope: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}), c.maxMessageBytes)
+	fetchOptions := &imap.FetchOptions{UID: true, Flags: true, InternalDate: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{bodySection}}
+	if !c.headerOnly {
+		fetchOptions.Envelope = true
+	}
+	messages, err := collectFetchBuffersLimited(c.client.Fetch(imap.UIDSetNum(imap.UID(uid)), fetchOptions), c.maxMessageBytes)
 	if err != nil {
 		return nil, externalIMAPRemoteMessage{}, err
 	}
@@ -3216,6 +3252,63 @@ func (c *goExternalIMAPClient) SetRead(ctx context.Context, folder string, uid u
 		op = imap.StoreFlagsAdd
 	}
 	return c.client.Store(imap.UIDSetNum(imap.UID(uid)), &imap.StoreFlags{Op: op, Flags: []imap.Flag{imap.FlagSeen}, Silent: true}, nil).Close()
+}
+
+// externalIMAPNeedsHeaderFetch：这些服务端的 ENVELOPE 不可靠，改拉头部字段。
+func externalIMAPNeedsHeaderFetch(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, suffix := range []string{"qq.com", "163.com", "126.com", "yeah.net"} {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchBufferHeadersToExternalMessage(folder string, uidValidity uint32, msg *imapclient.FetchMessageBuffer, header []byte) externalIMAPRemoteMessage {
+	out := externalIMAPRemoteMessage{Folder: folder, UIDValidity: uidValidity, UID: uint32(msg.UID), ReceivedAt: time.Now().UTC()}
+	if !msg.InternalDate.IsZero() {
+		out.ReceivedAt = msg.InternalDate
+	}
+	out.SizeBytes = msg.RFC822Size
+	for _, flag := range msg.Flags {
+		if flag == imap.FlagSeen {
+			out.IsRead = true
+			break
+		}
+	}
+	if len(header) > 0 {
+		if parsed, err := mail.ReadMessage(bytes.NewReader(header)); err == nil {
+			decoder := new(mime.WordDecoder)
+			if subject, err := decoder.DecodeHeader(parsed.Header.Get("Subject")); err == nil {
+				out.Subject = subject
+			} else {
+				out.Subject = parsed.Header.Get("Subject")
+			}
+			out.MessageID = strings.Trim(strings.TrimSpace(parsed.Header.Get("Message-ID")), "<>")
+			if sent, err := parsed.Header.Date(); err == nil {
+				out.SentAt = sent
+			}
+			if from, err := parsed.Header.AddressList("From"); err == nil && len(from) > 0 {
+				out.From = normalizeEmail(from[0].Address)
+				out.FromName = from[0].Name
+			}
+			if to, err := parsed.Header.AddressList("To"); err == nil {
+				for _, addr := range to {
+					out.To = append(out.To, normalizeEmail(addr.Address))
+				}
+			}
+			if cc, err := parsed.Header.AddressList("Cc"); err == nil {
+				for _, addr := range cc {
+					out.CC = append(out.CC, normalizeEmail(addr.Address))
+				}
+			}
+		}
+	}
+	if out.SentAt.IsZero() {
+		out.SentAt = out.ReceivedAt
+	}
+	return out
 }
 
 func fetchBufferToExternalMessage(folder string, uidValidity uint32, msg *imapclient.FetchMessageBuffer, raw []byte) externalIMAPRemoteMessage {
