@@ -760,6 +760,9 @@ export function MailPage() {
     },
     onSuccess: async (_, variables) => {
       await qc.invalidateQueries({ queryKey: ["messages"] })
+      // 外部本地视图用的是 ["external-messages"]，不失效它就只能等后台轮询。
+      await qc.invalidateQueries({ queryKey: ["external-messages"] })
+      await qc.invalidateQueries({ queryKey: ["mail-external-folders"] })
       await qc.invalidateQueries({ queryKey: ["message", variables.id] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
       await qc.invalidateQueries({ queryKey: ["labels"] })
@@ -971,6 +974,8 @@ export function MailPage() {
       setSelectedId(null)
       setPendingConfirm(null)
       await qc.invalidateQueries({ queryKey: ["messages"] })
+      await qc.invalidateQueries({ queryKey: ["external-messages"] })
+      await qc.invalidateQueries({ queryKey: ["mail-external-folders"] })
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
       await qc.invalidateQueries({ queryKey: ["labels"] })
@@ -983,6 +988,8 @@ export function MailPage() {
     onSuccess: async () => {
       setSelectedId(null)
       await qc.invalidateQueries({ queryKey: ["messages"] })
+      await qc.invalidateQueries({ queryKey: ["external-messages"] })
+      await qc.invalidateQueries({ queryKey: ["mail-external-folders"] })
       await qc.invalidateQueries({ queryKey: ["folders"] })
       await qc.invalidateQueries({ queryKey: ["mail-stats"] })
       await qc.invalidateQueries({ queryKey: ["labels"] })
