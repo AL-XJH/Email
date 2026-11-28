@@ -1881,7 +1881,9 @@ export function MailPage() {
     setMobileSidebarOpen(false)
   }
   function openMessageContextMenu(event: React.MouseEvent, message: MailMessage) {
-    if (mailView === "external") return
+    // 远端直连模式的 id 是服务端 UID，删除/移动这些本地接口处理不了；
+    // 本地存储模式导入的邮件就是普通本地邮件，右键菜单要能用。
+    if (mailView === "external" && !externalMessagesStoredLocally) return
     event.preventDefault()
     event.stopPropagation()
     if (message.folder !== "Drafts") setSelectedId(message.id)

@@ -572,3 +572,63 @@ func TestPruneOrphanExternalIMAPResetsOnlyAffectedFolder(t *testing.T) {
 		t.Fatalf("Archive cursor=%d, must stay 500", archiveUID)
 	}
 }
+
+// 删除只是把本地邮件移进 Trash，映射还指向 INBOX；列表必须按当前文件夹过滤，
+// 否则删完还在原地，用户得点好几次（第二次才是彻底删除）。
+func TestExternalIMAPLocalFolderListHidesMovedMessages(t *testing.T) {
+	a := newTestApp(t)
+	a.updateConfig(func(cfg *Config) { cfg.ExternalIMAPEnabled = true })
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	accountID := "ximap_list_scope"
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "scope", "imap.example.test", 993, externalIMAPTLS, "scope@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err := a.ensureFolder(ctx, mailbox.ID, "外部 · Gmail · INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trashID, err := a.ensureFolder(ctx, mailbox.ID, "Trash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
+		accountID, "INBOX", inboxID, 1, 100, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO messages(id,mailbox_id,folder_id,recipient_addr,message_uid,message_id,subject,from_addr,from_name,to_addrs,cc_addrs,bcc_addrs,sent_at,received_at,snippet,body_text,body_html,is_read,is_starred,has_attachments,size_bytes,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "msg_scope", mailbox.ID, inboxID, "", "uid-scope", "<scope@example.test>", "scope", "a@example.test", "", "[]", "[]", "[]", now, now, "", "", "", 0, 0, 0, 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,local_message_id,is_read,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`, accountID, "INBOX", 1, 100, "<scope@example.test>", "msg_scope", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+	admin := &testClient{t: t, server: ts}
+	if code := admin.do("POST", "/api/auth/login", map[string]string{"email": "admin@lanqin.local", "password": "ChangeMe123!"}, nil); code != http.StatusOK {
+		t.Fatalf("login code=%d", code)
+	}
+	var listed struct {
+		Items      []MailMessage `json:"items"`
+		TotalCount int           `json:"totalCount"`
+	}
+	if code := admin.do("GET", "/api/mail/external-accounts/"+accountID+"/messages?folder=INBOX", nil, &listed); code != http.StatusOK {
+		t.Fatalf("list code=%d", code)
+	}
+	if len(listed.Items) != 1 {
+		t.Fatalf("items=%d, want 1 before delete", len(listed.Items))
+	}
+	if _, err := a.db.ExecContext(ctx, `UPDATE messages SET folder_id=? WHERE id='msg_scope'`, trashID); err != nil {
+		t.Fatal(err)
+	}
+	if code := admin.do("GET", "/api/mail/external-accounts/"+accountID+"/messages?folder=INBOX", nil, &listed); code != http.StatusOK {
+		t.Fatalf("list after move code=%d", code)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("items=%d after moving to Trash, want 0", len(listed.Items))
+	}
+}

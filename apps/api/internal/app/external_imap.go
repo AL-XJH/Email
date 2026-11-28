@@ -762,10 +762,14 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		if account.StorageMode == externalIMAPStorageLocal {
+			// 计数口径要和列表一致：只算仍在这个镜像文件夹里的邮件，已移走的
+			//（删到 Trash、归档到别处）不再计入。
 			var total, unread int
 			_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0)
-				FROM external_imap_messages em JOIN messages m ON m.id=em.local_message_id
-				WHERE em.account_id=? AND em.remote_folder=? AND m.mailbox_id=?`, account.ID, folder.Name, account.MailboxID).Scan(&total, &unread)
+				FROM external_imap_messages em
+				JOIN messages m ON m.id=em.local_message_id
+				JOIN external_imap_folder_states fs ON fs.account_id=em.account_id AND fs.remote_folder=em.remote_folder
+				WHERE em.account_id=? AND em.remote_folder=? AND m.mailbox_id=? AND m.folder_id=fs.local_folder_id`, account.ID, folder.Name, account.MailboxID).Scan(&total, &unread)
 			folder.TotalCount = total
 			folder.UnreadCount = unread
 		}
@@ -809,10 +813,26 @@ func (a *App) handleExternalIMAPMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if account.StorageMode == externalIMAPStorageLocal {
+		// 必须按「当前所在的本地文件夹」过滤，不能只看映射里的 remote_folder：
+		// 删除只是把本地邮件移进 Trash，映射仍指向 INBOX，只按映射过滤会让删掉的
+		// 邮件继续留在列表里，用户以为没删掉、反复点删除。
 		access := &mailboxReadAccess{Mailbox: &Mailbox{ID: account.MailboxID, UserID: account.UserID}, Owner: true}
+		// 「所有邮件」跨文件夹去重后，一封邮件只有一份本地副本，不能按 folder_id
+		// 过滤；但它也不该显示已经删进 Trash/Spam 的邮件。
+		if externalIMAPFolderIsAllMail(externalIMAPRemoteFolder{Name: folder}) {
+			a.respondMailMessageListInternal(w, r, access,
+				`m.mailbox_id=? AND m.folder_id NOT IN (SELECT id FROM folders WHERE mailbox_id=? AND lower(name) IN ('trash','spam')) AND EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id AND em.account_id=?)`,
+				[]any{account.MailboxID, account.MailboxID, account.ID}, true, account.ID)
+			return
+		}
+		localFolderID := a.externalIMAPLocalFolderID(r.Context(), account.ID, folder)
+		if localFolderID == "" {
+			respondJSON(w, http.StatusOK, map[string]any{"items": []MailMessage{}, "nextCursor": "", "totalCount": 0})
+			return
+		}
 		a.respondMailMessageListInternal(w, r, access,
-			`m.mailbox_id=? AND EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id AND em.account_id=? AND em.remote_folder=?)`,
-			[]any{account.MailboxID, account.ID, folder}, true, account.ID)
+			`m.mailbox_id=? AND m.folder_id=? AND EXISTS (SELECT 1 FROM external_imap_messages em WHERE em.local_message_id=m.id AND em.account_id=?)`,
+			[]any{account.MailboxID, localFolderID, account.ID}, true, account.ID)
 		return
 	}
 	client, err := a.externalIMAP.openExternalIMAPClient(r.Context(), account)
@@ -1506,6 +1526,15 @@ func (a *App) replaceExternalIMAPHiddenFolders(ctx context.Context, accountID st
 		}
 	}
 	return tx.Commit()
+}
+
+// externalIMAPLocalFolderID 取某远端文件夹对应的本地镜像文件夹 id。
+func (a *App) externalIMAPLocalFolderID(ctx context.Context, accountID, remoteFolder string) string {
+	var folderID string
+	if err := a.db.QueryRowContext(ctx, `SELECT local_folder_id FROM external_imap_folder_states WHERE account_id=? AND remote_folder=?`, accountID, remoteFolder).Scan(&folderID); err != nil {
+		return ""
+	}
+	return folderID
 }
 
 // externalIMAPFolderOrder 返回用户保存的文件夹顺序（按 position 升序）。
