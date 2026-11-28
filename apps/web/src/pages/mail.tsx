@@ -152,11 +152,21 @@ import { hasPermission } from "@/lib/permissions"
 // 标签颜色优先用服务端存的值（seek.li 就是这么做的），缺失时才按名字哈希兜底。
 const folderIcons: Record<string, React.ReactNode> = {
   inbox: <Inbox className="h-4 w-4" />,
+  收件箱: <Inbox className="h-4 w-4" />,
   sent: <Send className="h-4 w-4" />,
+  已发送: <Send className="h-4 w-4" />,
+  已发邮件: <Send className="h-4 w-4" />,
   drafts: <Pencil className="h-4 w-4" />,
+  草稿: <Pencil className="h-4 w-4" />,
+  草稿箱: <Pencil className="h-4 w-4" />,
   archive: <Archive className="h-4 w-4" />,
+  存档: <Archive className="h-4 w-4" />,
+  归档: <Archive className="h-4 w-4" />,
   spam: <Ban className="h-4 w-4" />,
+  垃圾邮件: <Ban className="h-4 w-4" />,
   trash: <Trash2 className="h-4 w-4" />,
+  已删除: <Trash2 className="h-4 w-4" />,
+  已删除邮件: <Trash2 className="h-4 w-4" />,
 }
 const folderLabels: Record<string, string> = {
   Inbox: "收件箱",
@@ -3383,7 +3393,7 @@ function buildMailMenuItems(
     folderId: item.id,
     folderName: item.name,
     label: folderLabels[item.name] ? uiText(folderLabels[item.name]) : item.name,
-    icon: folderIcons[item.role] || <Inbox className="h-4 w-4" />,
+    icon: folderIcons[(item.role || "").toLowerCase()] || <Inbox className="h-4 w-4" />,
     count: item.name === "Drafts" ? item.totalCount : item.unreadCount,
     custom: isCustomMailFolder(item),
     order: isCustomMailFolder(item) ? item.sortOrder || 100000 : menuAnchorOrder(item.name),
@@ -4617,7 +4627,7 @@ function MessageContextMenu({
                 className={itemClass}
                 onClick={() => moveToFolder(folder.name)}
               >
-                {folderIcons[folder.role] || <Inbox className="h-4 w-4" />}
+                {folderIcons[(folder.role || "").toLowerCase()] || <Inbox className="h-4 w-4" />}
                 <span className="min-w-0 flex-1 truncate text-left">
                   {folderLabels[folder.name] ? uiText(folderLabels[folder.name]) : folder.name}
                 </span>

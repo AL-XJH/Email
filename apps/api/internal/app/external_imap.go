@@ -2442,19 +2442,51 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// externalIMAPStripFolderPrefix 去掉 Gmail 的 [Gmail]/[Google Mail] 层级前缀。
+// 显示名早就在剥，但 Role 判定以前直接拿原名比，导致 [Gmail]/垃圾邮件 被当成
+// 普通自定义文件夹，侧栏图标退化成默认图标。
+func externalIMAPStripFolderPrefix(name string) string {
+	for _, prefix := range []string{"[Gmail]/", "[Google Mail]/"} {
+		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+			return strings.TrimSpace(name[len(prefix):])
+		}
+	}
+	return name
+}
+
+// externalIMAPFolderRoleFromAttrs 优先用 SPECIAL-USE 属性定角色。
+// 属性比名字可靠：中文界面/本地化文件夹名不会影响 \Junk、\Trash 等标记。
+func externalIMAPFolderRoleFromAttrs(attrs []imap.MailboxAttr) string {
+	for _, attr := range attrs {
+		switch attr {
+		case imap.MailboxAttrJunk:
+			return "Spam"
+		case imap.MailboxAttrTrash:
+			return "Trash"
+		case imap.MailboxAttrSent:
+			return "Sent"
+		case imap.MailboxAttrDrafts:
+			return "Drafts"
+		case imap.MailboxAttrArchive:
+			return "Archive"
+		}
+	}
+	return ""
+}
+
 func normalizeExternalIMAPFolderName(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "inbox":
+	case "inbox", "收件箱":
 		return "Inbox"
-	case "sent", "sent items", "sent messages":
+	case "sent", "sent items", "sent messages", "已发送", "已发邮件", "已发送邮件":
 		return "Sent"
-	case "drafts", "draft":
+	case "drafts", "draft", "草稿", "草稿箱":
 		return "Drafts"
-	case "archive", "archives":
+	case "archive", "archives", "存档", "归档", "已归档":
 		return "Archive"
-	case "spam", "junk", "junk email":
+	case "spam", "junk", "junk email", "垃圾邮件", "垃圾箱", "广告邮件":
 		return "Spam"
-	case "trash", "deleted", "deleted items":
+	case "trash", "deleted", "deleted items", "已删除", "已删除邮件", "回收站":
 		return "Trash"
 	default:
 		folder, err := normalizeCustomFolderName(name)
@@ -2784,7 +2816,11 @@ func (c *goExternalIMAPClient) ListFolders(ctx context.Context) ([]externalIMAPR
 		if strings.TrimSpace(item.Mailbox) == "" || mailboxHasNoSelect(item.Attrs) {
 			continue
 		}
-		f := externalIMAPRemoteFolder{Name: item.Mailbox, Role: normalizeExternalIMAPFolderName(item.Mailbox)}
+		f := externalIMAPRemoteFolder{Name: item.Mailbox, Role: externalIMAPFolderRoleFromAttrs(item.Attrs)}
+		if f.Role == "" {
+			// Gmail 的垃圾邮件叫 [Gmail]/垃圾邮件，名字归一化认不出来；先剥前缀。
+			f.Role = normalizeExternalIMAPFolderName(externalIMAPStripFolderPrefix(item.Mailbox))
+		}
 		// Gmail 的 \All（「所有邮件」）把 INBOX/Sent 的邮件再列一遍，
 		// 导入时必须跨文件夹按 Message-ID 去重，否则每封本地存两份。
 		if mailboxHasAttr(item.Attrs, imap.MailboxAttrAll) || externalIMAPFolderIsAllMail(f) {
