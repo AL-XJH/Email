@@ -3290,6 +3290,73 @@ func (c *goExternalIMAPClient) SetRead(ctx context.Context, folder string, uid u
 	return c.client.Store(imap.UIDSetNum(imap.UID(uid)), &imap.StoreFlags{Op: op, Flags: []imap.Flag{imap.FlagSeen}, Silent: true}, nil).Close()
 }
 
+// MoveMessage 在远端把一封邮件移到 dest，返回新 UID（服务端支持 UIDPLUS 时）。
+// go-imap 在不支持 MOVE 的服务端会自动降级 COPY + STORE \Deleted + EXPUNGE。
+func (c *goExternalIMAPClient) MoveMessage(ctx context.Context, folder string, uid uint32, dest string) (uint32, uint32, bool, error) {
+	if _, err := c.client.Select(folder, nil).Wait(); err != nil {
+		return 0, 0, false, err
+	}
+	data, err := c.client.Move(imap.UIDSetNum(imap.UID(uid)), dest).Wait()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if data != nil {
+		if uidSet, ok := data.DestUIDs.(imap.UIDSet); ok {
+			if nums, ok := uidSet.Nums(); ok && len(nums) > 0 {
+				return uint32(nums[0]), data.UIDValidity, true, nil
+			}
+		}
+	}
+	return 0, 0, false, nil
+}
+
+// MoveMessages 批量移动同文件夹的多封邮件，返回目标文件夹里的新 UID（顺序与
+// 输入一致，服务端给 COPYUID 时才拿得到）。
+func (c *goExternalIMAPClient) MoveMessages(ctx context.Context, folder string, uids []uint32, dest string) ([]uint32, uint32, error) {
+	if len(uids) == 0 {
+		return nil, 0, nil
+	}
+	if _, err := c.client.Select(folder, nil).Wait(); err != nil {
+		return nil, 0, err
+	}
+	imapUIDs := make([]imap.UID, 0, len(uids))
+	for _, uid := range uids {
+		imapUIDs = append(imapUIDs, imap.UID(uid))
+	}
+	data, err := c.client.Move(imap.UIDSetNum(imapUIDs...), dest).Wait()
+	if err != nil {
+		return nil, 0, err
+	}
+	if data != nil {
+		if uidSet, ok := data.DestUIDs.(imap.UIDSet); ok {
+			if nums, ok := uidSet.Nums(); ok {
+				out := make([]uint32, 0, len(nums))
+				for _, uid := range nums {
+					out = append(out, uint32(uid))
+				}
+				return out, data.UIDValidity, nil
+			}
+		}
+	}
+	return nil, 0, nil
+}
+
+// DeleteMessage 从远端彻底删掉一封邮件：打 \Deleted 再 EXPUNGE。有 UIDPLUS
+// 就用 UID EXPUNGE，避免把同文件夹里别的客户端标删的邮件一起清掉。
+func (c *goExternalIMAPClient) DeleteMessage(ctx context.Context, folder string, uid uint32) error {
+	if _, err := c.client.Select(folder, nil).Wait(); err != nil {
+		return err
+	}
+	set := imap.UIDSetNum(imap.UID(uid))
+	if err := c.client.Store(set, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		return err
+	}
+	if c.client.Caps().Has(imap.CapUIDPlus) {
+		return c.client.UIDExpunge(set).Close()
+	}
+	return c.client.Expunge().Close()
+}
+
 // externalIMAPMirrorFolderNameForRole 把「Spam/Trash/Archive」这种系统角色换成
 // 外部账号镜像出来的本地文件夹名。外部视图里点「移入垃圾邮件」如果直接建一个
 // 叫 Spam 的普通文件夹，邮件就会掉进外部视图看不到的地方：列表只认镜像文件夹。

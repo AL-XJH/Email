@@ -2421,6 +2421,10 @@ func (a *App) handleMove(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.applyMessageMove(r.Context(), msg, req.Folder); err != nil {
+		if isExternalIMAPRemoteMutationError(err) {
+			respondError(w, http.StatusBadGateway, err.Error())
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "failed to move message")
 		return
 	}
@@ -2503,6 +2507,10 @@ func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.applyMessageDelete(r.Context(), msg); err != nil {
+		if isExternalIMAPRemoteMutationError(err) {
+			respondError(w, http.StatusBadGateway, err.Error())
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "failed to delete message")
 		return
 	}

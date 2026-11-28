@@ -49,6 +49,11 @@ func (a *App) applyMessageMove(ctx context.Context, msg *MailMessage, folder str
 	if err != nil {
 		return err
 	}
+	// 外部账号导入件：先把远端也移过去，成功才动本地。远端失败就整体失败，
+	// 避免本地显示已移动、邮箱那边还在原地。
+	if err := a.externalIMAPMoveOnServer(ctx, msg, folderID, name); err != nil {
+		return err
+	}
 	return a.moveMessageMaildir(ctx, msg.ID, folderID)
 }
 
@@ -113,6 +118,26 @@ func (a *App) otherMessageCopies(ctx context.Context, mailboxID, messageID, excl
 }
 
 func (a *App) applyMessageDeleteOne(ctx context.Context, msg *MailMessage) error {
+	// 外部导入件要跟着邮箱一起动：第一下移到远端回收站，回收站里再删就是
+	// 远端 \Deleted + EXPUNGE。本地也放进镜像回收站，外部视图才看得到。
+	if mappings, mapErr := a.externalIMAPMappingsForMessage(ctx, msg.ID); mapErr != nil {
+		a.log.Warn("failed to load external imap mapping for delete", "message", msg.ID, "error", mapErr)
+	} else if len(mappings) > 0 {
+		accountID := mappings[0].AccountID
+		if strings.EqualFold(msg.Folder, "Trash") {
+			if err := a.externalIMAPDeleteOnServer(ctx, msg); err != nil {
+				return err
+			}
+		} else {
+			trashID, hasMirror := a.externalIMAPMirrorFolderIDForRole(ctx, accountID, "Trash")
+			if err := a.externalIMAPMoveOnServer(ctx, msg, trashID, "Trash"); err != nil {
+				return err
+			}
+			if hasMirror {
+				return a.moveMessageMaildir(ctx, msg.ID, trashID)
+			}
+		}
+	}
 	if strings.EqualFold(msg.Folder, "Trash") {
 		// 文件删不掉就不能删库里的行：否则下一轮 maildir 同步会把文件
 		// 当成新邮件重新导入，「清空垃圾箱」5 秒后自己撤销。
@@ -246,10 +271,35 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// 外部映射件的移动先把远端批量做完（每账号/源文件夹一条连接），本地
+	// 循环里就只挪 maildir，不然 200 封会开 200 次 IMAP。删除不在这里批，
+	// 它有自己的两段语义（先进回收站、再彻底删）。
+	remoteFailed := map[string]error{}
+	folderIDs := map[string]string{}
+	if mirrorFolder != "" && len(externalMapped) > 0 && action != "delete" {
+		byMailbox := map[string][]*MailMessage{}
+		for id := range externalMapped {
+			if msg := owned[id]; msg != nil {
+				byMailbox[msg.MailboxID] = append(byMailbox[msg.MailboxID], msg)
+			}
+		}
+		for mailboxID, list := range byMailbox {
+			targetID, err := a.ensureFolder(r.Context(), mailboxID, mirrorFolder)
+			if err != nil {
+				for _, msg := range list {
+					remoteFailed[msg.ID] = err
+				}
+				continue
+			}
+			folderIDs[mailboxID] = targetID
+			for id, itemErr := range a.externalIMAPMoveManyOnServer(r.Context(), list, targetID, mirrorFolder) {
+				remoteFailed[id] = itemErr
+			}
+		}
+	}
 	updated := 0
 	missing := make([]string, 0)
 	failed := make([]string, 0)
-	folderIDs := map[string]string{}
 	for _, id := range ids {
 		msg := owned[id]
 		if msg == nil {
@@ -271,6 +321,10 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		case "delete":
 			itemErr = a.applyMessageDelete(r.Context(), msg)
 		default:
+			if err := remoteFailed[msg.ID]; err != nil {
+				itemErr = err
+				break
+			}
 			targetFolder := normalizedFolder
 			if mirrorFolder != "" && externalMapped[msg.ID] {
 				targetFolder = mirrorFolder
