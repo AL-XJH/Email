@@ -144,6 +144,7 @@ type externalIMAPRemoteWriter interface {
 	MoveMessage(ctx context.Context, folder string, uid uint32, dest string) (newUID uint32, uidValidity uint32, hasNewUID bool, err error)
 	MoveMessages(ctx context.Context, folder string, uids []uint32, dest string) (newUIDs []uint32, uidValidity uint32, err error)
 	DeleteMessage(ctx context.Context, folder string, uid uint32) error
+	DeleteMessages(ctx context.Context, folder string, uids []uint32) error
 }
 
 func (a *App) openExternalIMAPWriter(ctx context.Context, accountID string) (externalIMAPRemoteWriter, func(), error) {
@@ -285,14 +286,14 @@ func (a *App) externalIMAPMoveManyOnServer(ctx context.Context, messages []*Mail
 	return failed
 }
 
-// externalIMAPDeleteOnServer 真正从远端删掉一封邮件。
-func (a *App) externalIMAPDeleteOnServer(ctx context.Context, msg *MailMessage) error {
+// externalIMAPDeleteMapping 选一封邮件该从哪个远端文件夹彻底删除。
+// 当前在远端回收站里就从回收站删（Gmail 的「所有邮件」不含回收站里的邮件，
+// 拿旧 UID 去 EXPUNGE 是空操作）；否则优先「所有邮件」，一次清干净。
+func (a *App) externalIMAPDeleteMapping(ctx context.Context, msg *MailMessage) (externalIMAPRemoteMapping, bool) {
 	mappings, err := a.externalIMAPMappingsForMessage(ctx, msg.ID)
 	if err != nil || len(mappings) == 0 {
-		return err
+		return externalIMAPRemoteMapping{}, false
 	}
-	// 当前在远端回收站里就从回收站删（Gmail 的「所有邮件」不含回收站里的邮件，
-	// 拿旧 UID 去 EXPUNGE 是空操作）；否则优先「所有邮件」，一次清干净。
 	primary := a.externalIMAPPrimaryMapping(ctx, msg, mappings)
 	chosen := mappings[0]
 	if primary != nil {
@@ -305,6 +306,67 @@ func (a *App) externalIMAPDeleteOnServer(ctx context.Context, msg *MailMessage) 
 				break
 			}
 		}
+	}
+	return chosen, true
+}
+
+// externalIMAPDeleteManyOnServer 批量彻底删除：同账号同远端文件夹一条连接、
+// 一条 STORE + UID EXPUNGE。返回按消息 ID 记的失败原因。
+func (a *App) externalIMAPDeleteManyOnServer(ctx context.Context, messages []*MailMessage) map[string]error {
+	failed := map[string]error{}
+	type group struct {
+		accountID string
+		folder    string
+		items     []struct {
+			msg     *MailMessage
+			mapping externalIMAPRemoteMapping
+		}
+	}
+	groups := map[string]*group{}
+	for _, msg := range messages {
+		mapping, ok := a.externalIMAPDeleteMapping(ctx, msg)
+		if !ok {
+			continue
+		}
+		key := mapping.AccountID + "\x00" + mapping.RemoteFolder
+		item, exists := groups[key]
+		if !exists {
+			item = &group{accountID: mapping.AccountID, folder: mapping.RemoteFolder}
+			groups[key] = item
+		}
+		item.items = append(item.items, struct {
+			msg     *MailMessage
+			mapping externalIMAPRemoteMapping
+		}{msg: msg, mapping: mapping})
+	}
+	for _, item := range groups {
+		writer, closeFn, err := a.openExternalIMAPWriter(ctx, item.accountID)
+		if err != nil {
+			for _, entry := range item.items {
+				failed[entry.msg.ID] = err
+			}
+			continue
+		}
+		uids := make([]uint32, 0, len(item.items))
+		for _, entry := range item.items {
+			uids = append(uids, entry.mapping.UID)
+		}
+		err = writer.DeleteMessages(ctx, item.folder, uids)
+		closeFn()
+		if err != nil {
+			for _, entry := range item.items {
+				failed[entry.msg.ID] = err
+			}
+		}
+	}
+	return failed
+}
+
+// externalIMAPDeleteOnServer 真正从远端删掉一封邮件。
+func (a *App) externalIMAPDeleteOnServer(ctx context.Context, msg *MailMessage) error {
+	chosen, ok := a.externalIMAPDeleteMapping(ctx, msg)
+	if !ok {
+		return nil
 	}
 	writer, closeFn, err := a.openExternalIMAPWriter(ctx, chosen.AccountID)
 	if err != nil {

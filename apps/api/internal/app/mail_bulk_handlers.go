@@ -138,6 +138,12 @@ func (a *App) applyMessageDeleteOne(ctx context.Context, msg *MailMessage) error
 			}
 		}
 	}
+	return a.applyMessageDeleteLocal(ctx, msg)
+}
+
+// applyMessageDeleteLocal 只动本地：Trash 里的彻底删文件+记墓碑，否则移进
+// 本地 Trash。远端操作由调用方先做（单封逐条、批量按文件夹合并）。
+func (a *App) applyMessageDeleteLocal(ctx context.Context, msg *MailMessage) error {
 	if strings.EqualFold(msg.Folder, "Trash") {
 		// 文件删不掉就不能删库里的行：否则下一轮 maildir 同步会把文件
 		// 当成新邮件重新导入，「清空垃圾箱」5 秒后自己撤销。
@@ -271,11 +277,45 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// 外部映射件的移动先把远端批量做完（每账号/源文件夹一条连接），本地
-	// 循环里就只挪 maildir，不然 200 封会开 200 次 IMAP。删除不在这里批，
-	// 它有自己的两段语义（先进回收站、再彻底删）。
+	// 外部映射件的移动/删除先把远端批量做完（每账号/源文件夹一条连接），
+	// 本地循环里就只挪 maildir，不然 200 封会开 200 次 IMAP。
 	remoteFailed := map[string]error{}
+	batchDeleted := map[string]bool{}
 	folderIDs := map[string]string{}
+	if action == "delete" && len(ids) > 0 {
+		marks := make([]string, 0, len(ids))
+		args := make([]any, 0, len(ids))
+		for _, id := range ids {
+			marks = append(marks, "?")
+			args = append(args, id)
+		}
+		rows, err := a.db.QueryContext(r.Context(), `SELECT DISTINCT local_message_id FROM external_imap_messages WHERE local_message_id IN (`+strings.Join(marks, ",")+`)`, args...)
+		if err == nil {
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					externalMapped[id] = true
+				}
+			}
+			rows.Close()
+		}
+		var trashMessages []*MailMessage
+		for id := range externalMapped {
+			if msg := owned[id]; msg != nil && strings.EqualFold(msg.Folder, "Trash") {
+				trashMessages = append(trashMessages, msg)
+			}
+		}
+		if len(trashMessages) > 0 {
+			for id, itemErr := range a.externalIMAPDeleteManyOnServer(r.Context(), trashMessages) {
+				remoteFailed[id] = itemErr
+			}
+			for _, msg := range trashMessages {
+				if remoteFailed[msg.ID] == nil {
+					batchDeleted[msg.ID] = true
+				}
+			}
+		}
+	}
 	if mirrorFolder != "" && len(externalMapped) > 0 && action != "delete" {
 		byMailbox := map[string][]*MailMessage{}
 		for id := range externalMapped {
@@ -319,7 +359,11 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		case "unstar":
 			itemErr = a.applyMessageStar(r.Context(), msg, false)
 		case "delete":
-			itemErr = a.applyMessageDelete(r.Context(), msg)
+			if batchDeleted[msg.ID] {
+				itemErr = a.applyMessageDeleteLocal(r.Context(), msg)
+			} else {
+				itemErr = a.applyMessageDelete(r.Context(), msg)
+			}
 		default:
 			if err := remoteFailed[msg.ID]; err != nil {
 				itemErr = err

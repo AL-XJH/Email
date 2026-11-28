@@ -3341,6 +3341,28 @@ func (c *goExternalIMAPClient) MoveMessages(ctx context.Context, folder string, 
 	return nil, 0, nil
 }
 
+// DeleteMessages 批量彻底删除同文件夹的多封邮件。
+func (c *goExternalIMAPClient) DeleteMessages(ctx context.Context, folder string, uids []uint32) error {
+	if len(uids) == 0 {
+		return nil
+	}
+	if _, err := c.client.Select(folder, nil).Wait(); err != nil {
+		return err
+	}
+	imapUIDs := make([]imap.UID, 0, len(uids))
+	for _, uid := range uids {
+		imapUIDs = append(imapUIDs, imap.UID(uid))
+	}
+	set := imap.UIDSetNum(imapUIDs...)
+	if err := c.client.Store(set, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		return err
+	}
+	if c.client.Caps().Has(imap.CapUIDPlus) {
+		return c.client.UIDExpunge(set).Close()
+	}
+	return c.client.Expunge().Close()
+}
+
 // DeleteMessage 从远端彻底删掉一封邮件：打 \Deleted 再 EXPUNGE。有 UIDPLUS
 // 就用 UID EXPUNGE，避免把同文件夹里别的客户端标删的邮件一起清掉。
 func (c *goExternalIMAPClient) DeleteMessage(ctx context.Context, folder string, uid uint32) error {
