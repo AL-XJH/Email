@@ -75,11 +75,11 @@ type externalIMAPAccountRecord struct {
 }
 
 type externalIMAPRemoteFolder struct {
-	Name        string
-	Role        string
-	UnreadCount int
-	TotalCount  int
-	UIDValidity uint32
+	Name        string `json:"name"`
+	Role        string `json:"role,omitempty"`
+	UnreadCount int    `json:"unreadCount,omitempty"`
+	TotalCount  int    `json:"totalCount,omitempty"`
+	UIDValidity uint32 `json:"uidValidity,omitempty"`
 }
 
 type externalIMAPRemoteMessage struct {
@@ -267,6 +267,7 @@ func (a *App) handleCreateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 	}
 	// 先真连一次再落库：账号存进去才发现连不上，用户看到的是「添加成功但用不了」。
 	// LANQIN_EXTERNAL_IMAP_VERIFY_ON_CREATE=0 可关掉（测试/内网环境）。
+	var createdProbeFolders []externalIMAPRemoteFolder
 	if a.config().ExternalIMAPVerifyOnCreate {
 		probeCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
@@ -291,12 +292,14 @@ func (a *App) handleCreateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 			respondError(w, http.StatusBadRequest, "连接失败："+err.Error())
 			return
 		}
-		if _, err := probeClient.ListFolders(probeCtx); err != nil {
+		probeFolders, err := probeClient.ListFolders(probeCtx)
+		if err != nil {
 			probeClient.Close()
 			respondError(w, http.StatusBadRequest, "连接失败："+err.Error())
 			return
 		}
 		probeClient.Close()
+		createdProbeFolders = probeFolders
 	}
 
 	now := a.now().UTC().Format(time.RFC3339Nano)
@@ -305,6 +308,10 @@ func (a *App) handleCreateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, user.ID, normalized.MailboxID, normalized.Name, normalized.Host, normalized.Port, normalized.TLSMode, normalized.Username, ciphertext, normalized.StorageMode, boolInt(*normalized.SyncReadState), boolInt(*normalized.Enabled), "idle", now, now); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create external account")
 		return
+	}
+	// 探活已经 LIST 过一遍，顺手存成快照：用户加完账号立刻展开下拉不用再等一次现连。
+	if len(createdProbeFolders) > 0 {
+		a.saveExternalIMAPFolderSnapshot(r.Context(), id, createdProbeFolders)
 	}
 	account, err := a.externalIMAPAccountForUser(r.Context(), user.ID, id)
 	if err != nil {
@@ -737,21 +744,72 @@ func (a *App) handleMailExternalAccounts(w http.ResponseWriter, r *http.Request)
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// externalIMAPFolderSnapshotTTL 决定文件夹快照多久后重新向服务端 LIST。
+// 定时同步每轮都会刷新快照，所以正常情况下这里几乎不会触发现连。
+const externalIMAPFolderSnapshotTTL = 30 * time.Minute
+
+func (a *App) saveExternalIMAPFolderSnapshot(ctx context.Context, accountID string, folders []externalIMAPRemoteFolder) {
+	payload, err := json.Marshal(folders)
+	if err != nil {
+		return
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_folder_snapshots(account_id,payload,fetched_at) VALUES(?,?,?)
+		ON CONFLICT(account_id) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at`, accountID, string(payload), now); err != nil {
+		a.log.Debug("external imap folder snapshot save failed", "account", accountID, "error", err)
+	}
+}
+
+func (a *App) loadExternalIMAPFolderSnapshot(ctx context.Context, accountID string) ([]externalIMAPRemoteFolder, time.Time, bool) {
+	var payload, fetched string
+	if err := a.db.QueryRowContext(ctx, `SELECT payload,fetched_at FROM external_imap_folder_snapshots WHERE account_id=?`, accountID).Scan(&payload, &fetched); err != nil {
+		return nil, time.Time{}, false
+	}
+	var folders []externalIMAPRemoteFolder
+	if err := json.Unmarshal([]byte(payload), &folders); err != nil {
+		return nil, time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, fetched)
+	if err != nil {
+		return nil, time.Time{}, false
+	}
+	return folders, at, true
+}
+
 func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) {
 	account, ok := a.externalIMAPAccountForMailRequest(w, r)
 	if !ok {
 		return
 	}
-	client, err := a.externalIMAP.openExternalIMAPClient(r.Context(), account)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "connection failed: "+err.Error())
-		return
-	}
-	defer client.Close()
-	folders, err := client.ListFolders(r.Context())
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "failed to list folders")
-		return
+	// 列文件夹要新建一条 IMAP 连接并 LIST，Gmail/Outlook 这类海外服务单程就要
+	// 几百毫秒到几秒；下拉菜单每展开一次都现连，用户体感就是卡。本地存储模式的
+	// 账号同步时已经 LIST 过一遍，这里优先用快照，没有或过期才现连。
+	folders, fetchedAt, hasSnapshot := a.loadExternalIMAPFolderSnapshot(r.Context(), account.ID)
+	fresh := hasSnapshot && a.now().Sub(fetchedAt) < externalIMAPFolderSnapshotTTL
+	if !fresh {
+		client, err := a.externalIMAP.openExternalIMAPClient(r.Context(), account)
+		if err != nil {
+			if hasSnapshot {
+				a.log.Warn("external imap folders live list failed, serving stale snapshot", "account", account.ID, "error", err)
+			} else {
+				respondError(w, http.StatusBadRequest, "connection failed: "+err.Error())
+				return
+			}
+		} else {
+			live, listErr := client.ListFolders(r.Context())
+			_ = client.Close()
+			if listErr != nil {
+				if hasSnapshot {
+					a.log.Warn("external imap folders live list failed, serving stale snapshot", "account", account.ID, "error", listErr)
+				} else {
+					respondError(w, http.StatusBadRequest, "failed to list folders")
+					return
+				}
+			} else {
+				folders = live
+				a.saveExternalIMAPFolderSnapshot(r.Context(), account.ID, folders)
+			}
+		}
 	}
 	// 默认只回可见文件夹；设置页要用 ?all=1 拿全集，才能把隐藏的再打开。
 	showAll := strings.TrimSpace(r.URL.Query().Get("all")) == "1" || strings.EqualFold(r.URL.Query().Get("all"), "true")
@@ -1696,6 +1754,7 @@ func (a *App) syncExternalIMAPAccount(ctx context.Context, accountID string) (Ex
 	if err != nil {
 		return a.finishExternalIMAPRun(ctx, run, "failed", err)
 	}
+	a.saveExternalIMAPFolderSnapshot(ctx, account.ID, folders)
 	// 客户端自己带命令级超时（响应 30s、字面量 5min、写 30s），但一次同步可能遍历
 	// 几十个文件夹，每轮都在超时内也可能跑很久。这里按 context 的 deadline 在文件夹之间
 	// 主动收手，别让 worker 的一个账号卡住整条定时链路。

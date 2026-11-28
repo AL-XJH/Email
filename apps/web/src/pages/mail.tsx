@@ -394,6 +394,7 @@ export function MailPage() {
     queryKey: ["mail-external-accounts"],
     queryFn: api.externalMailAccounts,
     enabled: canAccessMail && canReadMail && externalImapEnabled,
+    staleTime: 60_000,
   })
   const selectedExternalAccount = React.useMemo(
     () =>
@@ -406,6 +407,8 @@ export function MailPage() {
     queryKey: ["mail-external-folders", selectedExternalAccountId],
     queryFn: () => api.externalFolders(selectedExternalAccountId),
     enabled: !!selectedExternalAccountId && canReadMail && externalImapEnabled,
+    // 下拉菜单反复展开/切换时别每次都重新拉：服务端有快照，客户端也留一分钟。
+    staleTime: 60_000,
   })
   const externalMessagesStoredLocally = selectedExternalAccount?.storageMode === "local"
   const selectedMailbox = React.useMemo(() => {
