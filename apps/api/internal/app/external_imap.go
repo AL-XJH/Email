@@ -265,6 +265,39 @@ func (a *App) handleCreateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 先真连一次再落库：账号存进去才发现连不上，用户看到的是「添加成功但用不了」。
+	// LANQIN_EXTERNAL_IMAP_VERIFY_ON_CREATE=0 可关掉（测试/内网环境）。
+	if a.config().ExternalIMAPVerifyOnCreate {
+		probeCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		probe := externalIMAPAccountRecord{
+			ExternalIMAPAccount: ExternalIMAPAccount{
+				ID:          "probe",
+				MailboxID:   normalized.MailboxID,
+				Name:        normalized.Name,
+				Host:        normalized.Host,
+				Port:        normalized.Port,
+				TLSMode:     normalized.TLSMode,
+				Username:    normalized.Username,
+				AuthMode:    externalIMAPAuthPassword,
+				StorageMode: normalized.StorageMode,
+				Enabled:     true,
+			},
+			PasswordCiphertext: ciphertext,
+		}
+		probeClient, err := a.externalIMAP.openExternalIMAPClient(probeCtx, probe)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "连接失败："+err.Error())
+			return
+		}
+		if _, err := probeClient.ListFolders(probeCtx); err != nil {
+			probeClient.Close()
+			respondError(w, http.StatusBadRequest, "连接失败："+err.Error())
+			return
+		}
+		probeClient.Close()
+	}
+
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	id := newID("ximap")
 	if _, err := a.db.ExecContext(r.Context(), `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
@@ -532,7 +565,13 @@ func (a *App) handleStartExternalIMAPOAuth(w http.ResponseWriter, r *http.Reques
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   10 * 60,
 	})
-	respondJSON(w, http.StatusOK, map[string]any{"url": conf.AuthCodeURL(stateValue, oauth2.AccessTypeOffline)})
+	// 必须显式 prompt=consent：Google 只在「首次同意」返回 refresh_token，
+	// 之前授权过的账号再走一遍只会拿到一次性 access token，一小时后同步就废了。
+	respondJSON(w, http.StatusOK, map[string]any{"url": conf.AuthCodeURL(stateValue,
+		oauth2.AccessTypeOffline,
+		oauth2.SetAuthURLParam("prompt", "consent"),
+		oauth2.SetAuthURLParam("include_granted_scopes", "false"),
+	)})
 }
 
 func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -574,13 +613,16 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	refreshCipher := ""
-	if token.RefreshToken != "" {
-		refreshCipher, err = a.encryptExternalIMAPPassword(token.RefreshToken)
-		if err != nil {
-			respondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	// 没有 refresh token 的账号只有 1 小时寿命（access token 一过期就再也续不上），
+	// 与其存进去过一小时再报错，不如当场拒绝，让用户重新授权。
+	if strings.TrimSpace(token.RefreshToken) == "" {
+		respondError(w, http.StatusBadRequest, "服务商未返回 refresh token，请重新授权（授权页需勾选全部权限）")
+		return
+	}
+	refreshCipher, err := a.encryptExternalIMAPPassword(token.RefreshToken)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	name := state.Name
 	if name == "" {
@@ -612,7 +654,7 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusInternalServerError, "failed to save oauth account")
 		return
 	}
-	http.Redirect(w, r, strings.TrimRight(a.config().PublicBaseURL, "/")+"/profile?tab=mailboxes", http.StatusFound)
+	http.Redirect(w, r, strings.TrimRight(a.config().PublicBaseURL, "/")+"/profile?tab=mailboxes&externalImapOauth=ok", http.StatusFound)
 }
 
 func (a *App) handleMailExternalAccounts(w http.ResponseWriter, r *http.Request) {

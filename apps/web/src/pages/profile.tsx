@@ -193,6 +193,34 @@ export function ProfilePage() {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const { toast } = useToast()
+
+  // OAuth 授权回来会带 externalImapOauth=ok：立刻重拉账号列表，别让用户以为没添加上。
+  // 另外浏览器可能整页从 bfcache 恢复，pageshow(persisted) 也要补一次。
+  React.useEffect(() => {
+    function refreshAfterOAuth() {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get("externalImapOauth") !== "ok") return
+      params.delete("externalImapOauth")
+      const query = params.toString()
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${query ? `?${query}` : ""}`
+      )
+      qc.invalidateQueries({ queryKey: ["external-imap-accounts"] })
+      qc.invalidateQueries({ queryKey: ["mail-external-accounts"] })
+      toast({ title: "外部邮箱已添加" })
+    }
+    refreshAfterOAuth()
+    function onPageShow(event: PageTransitionEvent) {
+      if (event.persisted) {
+        qc.invalidateQueries({ queryKey: ["external-imap-accounts"] })
+        qc.invalidateQueries({ queryKey: ["mail-external-accounts"] })
+      }
+    }
+    window.addEventListener("pageshow", onPageShow)
+    return () => window.removeEventListener("pageshow", onPageShow)
+  }, [qc, toast])
   const passwordFormRef = React.useRef<HTMLFormElement>(null)
   const twoFactorFormRef = React.useRef<HTMLFormElement>(null)
   const sidebarPanelRef = React.useRef<PanelImperativeHandle>(null)

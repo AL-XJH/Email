@@ -69,6 +69,8 @@ func newTestApp(t *testing.T) *App {
 		PublicBaseURL:     "http://localhost:5173",
 		AllowInsecureHTTP: true,
 		AuthPolicySecret:  "test-auth-policy-secret",
+		// 单测不联网：建号探活默认关掉，单独有测试打开验证失败路径。
+		ExternalIMAPVerifyOnCreate: false,
 	}
 	return newTestAppWithConfig(t, cfg)
 }

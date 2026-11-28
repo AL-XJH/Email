@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -170,12 +172,12 @@ func TestExternalIMAPAllMailFolderDeduplicatesAcrossFolders(t *testing.T) {
 // 侧栏不该出现「[Gmail]/已删除邮件」这种带层级前缀的名字。
 func TestExternalIMAPFolderDisplayName(t *testing.T) {
 	cases := map[string]string{
-		"[Gmail]/已删除邮件":        "已删除邮件",
-		"[Gmail]/All Mail":       "所有邮件",
+		"[Gmail]/已删除邮件":           "已删除邮件",
+		"[Gmail]/All Mail":        "所有邮件",
 		"[Google Mail]/Sent Mail": "已发邮件",
-		"[Gmail]/Spam":           "垃圾邮件",
-		"INBOX":                  "INBOX",
-		"Notes":                  "Notes",
+		"[Gmail]/Spam":            "垃圾邮件",
+		"INBOX":                   "INBOX",
+		"Notes":                   "Notes",
 		"自定义标签":                   "自定义标签",
 	}
 	for in, want := range cases {
@@ -326,5 +328,44 @@ func TestExternalIMAPCrossFolderDedupeBothDirections(t *testing.T) {
 	}
 	if copies != 1 {
 		t.Fatalf("expected exactly one stored copy, got %d", copies)
+	}
+}
+
+// 建号前必须先连一次：连不上就 400，不要把坏账号写进库再让用户自己发现。
+func TestCreateExternalIMAPAccountValidatesConnection(t *testing.T) {
+	dir := newTestDir(t)
+	a := newTestAppWithConfig(t, Config{
+		Addr:                          ":0",
+		DBPath:                        filepath.Join(dir, "lanqin.db"),
+		DataDir:                       filepath.Join(dir, "data"),
+		CookieName:                    "lanqin_test",
+		SessionTTLHours:               24,
+		AdminEmail:                    "admin@lanqin.local",
+		AdminPassword:                 "ChangeMe123!",
+		PublicHostname:                "mail.example.test",
+		PublicBaseURL:                 "http://localhost:5173",
+		AllowInsecureHTTP:             true,
+		ExternalIMAPEnabled:           true,
+		ExternalIMAPSecretKey:         "test-secret",
+		ExternalIMAPAllowPrivateHosts: true,
+		ExternalIMAPVerifyOnCreate:    true,
+	})
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+	admin := &testClient{t: t, server: ts}
+	if code := admin.do("POST", "/api/auth/login", map[string]string{"email": "admin@lanqin.local", "password": "ChangeMe123!"}, nil); code != http.StatusOK {
+		t.Fatalf("login code=%d", code)
+	}
+	_, mb := defaultAdminUserAndMailbox(t, a)
+	payload := map[string]any{"mailboxId": mb.ID, "name": "dead", "host": "127.0.0.1", "port": 1, "tlsMode": "tls", "username": "user@example.test", "password": "pw", "storageMode": "remote", "syncReadState": true, "enabled": true}
+	if code := admin.do("POST", "/api/me/external-imap-accounts", payload, nil); code != http.StatusBadRequest {
+		t.Fatalf("unreachable account must be rejected with 400, got %d", code)
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM external_imap_accounts`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("failed account must not be saved, rows=%d", count)
 	}
 }

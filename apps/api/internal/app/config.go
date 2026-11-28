@@ -73,7 +73,9 @@ type Config struct {
 	MailTranslateMaxChars           int
 	NotificationSecretKey           string
 	// 补同步/历史导入进来的旧邮件不该再推 Telegram；0 表示不限制。
-	TelegramNotifyMaxAgeMinutes    int
+	TelegramNotifyMaxAgeMinutes int
+	// 新建外部 IMAP 账号前先真连一次，避免存进去才发现连不上。
+	ExternalIMAPVerifyOnCreate     bool
 	BackupSecretKey                string
 	BackupArtifactDir              string
 	BackupWorkspace                string
@@ -155,6 +157,7 @@ func LoadConfig() Config {
 		MailTranslateMaxChars:           getenvInt("LANQIN_MAIL_TRANSLATE_MAX_CHARS", 8000),
 		NotificationSecretKey:           getenv("LANQIN_NOTIFICATION_SECRET_KEY", ""),
 		TelegramNotifyMaxAgeMinutes:     getenvInt("LANQIN_TELEGRAM_NOTIFY_MAX_AGE_MINUTES", 60),
+		ExternalIMAPVerifyOnCreate:      getenvBool("LANQIN_EXTERNAL_IMAP_VERIFY_ON_CREATE", true),
 		BackupSecretKey:                 getenv("LANQIN_BACKUP_SECRET_KEY", ""),
 		BackupArtifactDir:               getenv("LANQIN_BACKUP_ARTIFACT_DIR", ""),
 		BackupWorkspace:                 getenv("LANQIN_BACKUP_WORKSPACE", ""),
