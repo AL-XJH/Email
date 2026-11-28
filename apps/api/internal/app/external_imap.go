@@ -771,6 +771,24 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 		}
 		items = append(items, ExternalIMAPFolder{Name: folder.Name, DisplayName: externalIMAPFolderDisplayName(folder.Name), Hidden: isHidden, Role: folder.Role, UnreadCount: folder.UnreadCount, TotalCount: folder.TotalCount})
 	}
+	// 用户在「文件夹显示」里拖出来的顺序优先，没排过的保持服务端顺序排后面。
+	if order := a.externalIMAPFolderOrder(r.Context(), account.ID); len(order) > 0 {
+		position := make(map[string]int, len(order))
+		for index, remoteFolder := range order {
+			position[remoteFolder] = index
+		}
+		sort.SliceStable(items, func(i, j int) bool {
+			left, leftOK := position[items[i].Name]
+			right, rightOK := position[items[j].Name]
+			if leftOK != rightOK {
+				return leftOK
+			}
+			if leftOK && left != right {
+				return left < right
+			}
+			return false
+		})
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -1402,6 +1420,16 @@ func (a *App) migrateExternalIMAP(ctx context.Context) error {
 	)`); err != nil {
 		return err
 	}
+	// 用户手动拖出来的文件夹顺序，未记录的排在后面。
+	if _, err := a.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS external_imap_folder_order (
+		account_id TEXT NOT NULL,
+		remote_folder TEXT NOT NULL,
+		position INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY(account_id, remote_folder)
+	)`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1466,6 +1494,122 @@ func (a *App) replaceExternalIMAPHiddenFolders(ctx context.Context, accountID st
 		}
 	}
 	return tx.Commit()
+}
+
+// externalIMAPFolderOrder 返回用户保存的文件夹顺序（按 position 升序）。
+func (a *App) externalIMAPFolderOrder(ctx context.Context, accountID string) []string {
+	rows, err := a.db.QueryContext(ctx, `SELECT remote_folder FROM external_imap_folder_order WHERE account_id=? ORDER BY position,created_at`, accountID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// replaceExternalIMAPFolderOrder 覆盖式保存顺序；本地存储模式顺带把镜像文件夹的
+// sort_order 按同一顺序重排，侧栏才会跟着变。
+func (a *App) replaceExternalIMAPFolderOrder(ctx context.Context, account externalIMAPAccountRecord, folders []string) error {
+	normalized := make([]string, 0, len(folders))
+	seen := map[string]bool{}
+	for _, name := range folders {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		normalized = append(normalized, name)
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM external_imap_folder_order WHERE account_id=?`, account.ID); err != nil {
+		return err
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	for index, name := range normalized {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO external_imap_folder_order(account_id,remote_folder,position,created_at) VALUES(?,?,?,?)`, account.ID, name, index, now); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if account.StorageMode == externalIMAPStorageLocal {
+		a.reorderExternalIMAPLocalFolders(ctx, account, normalized)
+	}
+	return nil
+}
+
+// reorderExternalIMAPLocalFolders 只在这些镜像文件夹原本占用的 sort_order 值之间
+// 互换，不把外部文件夹整体挪到侧栏最前/最后。
+func (a *App) reorderExternalIMAPLocalFolders(ctx context.Context, account externalIMAPAccountRecord, ordered []string) {
+	if len(ordered) == 0 {
+		return
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT fs.remote_folder,f.id,f.sort_order FROM external_imap_folder_states fs
+		JOIN folders f ON f.id=fs.local_folder_id WHERE fs.account_id=?`, account.ID)
+	if err != nil {
+		return
+	}
+	localByRemote := map[string]string{}
+	orders := []int{}
+	for rows.Next() {
+		var remote, folderID string
+		var sortOrder int
+		if err := rows.Scan(&remote, &folderID, &sortOrder); err != nil {
+			continue
+		}
+		localByRemote[remote] = folderID
+		orders = append(orders, sortOrder)
+	}
+	rows.Close()
+	if len(localByRemote) == 0 {
+		return
+	}
+	sort.Ints(orders)
+	for index, remote := range ordered {
+		folderID, ok := localByRemote[remote]
+		if !ok || index >= len(orders) {
+			continue
+		}
+		_, _ = a.db.ExecContext(ctx, `UPDATE folders SET sort_order=? WHERE id=?`, orders[index], folderID)
+	}
+}
+
+// handleSetExternalIMAPFolderOrder 保存用户拖出来的文件夹顺序。
+func (a *App) handleSetExternalIMAPFolderOrder(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	accountID := chi.URLParam(r, "id")
+	account, err := a.externalIMAPAccountForUser(r.Context(), user.ID, accountID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "external account not found")
+		return
+	}
+	var req struct {
+		Folders []string `json:"folders"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if len(req.Folders) > 500 {
+		badRequest(w, errors.New("too many folders"))
+		return
+	}
+	if err := a.replaceExternalIMAPFolderOrder(r.Context(), account, req.Folders); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to save folder order")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "folders": req.Folders})
 }
 
 func (a *App) handleSetExternalIMAPHiddenFolders(w http.ResponseWriter, r *http.Request) {
@@ -1785,25 +1929,49 @@ func externalIMAPFolderDisplayName(remoteFolder string) string {
 			break
 		}
 	}
-	switch strings.ToLower(name) {
-	case "all mail":
-		return "所有邮件"
-	case "sent mail", "sent messages", "sent items":
-		return "已发邮件"
-	case "drafts", "draft":
-		return "草稿"
-	case "spam", "junk e-mail", "junk email":
-		return "垃圾邮件"
-	case "trash", "deleted items", "bin":
-		return "已删除邮件"
-	case "starred":
-		return "已加星标"
-	case "important":
-		return "重要"
-	case "archive":
-		return "归档"
+	// 逐段翻译：Outlook 返回的是 INBOX/Junk/Sent/Trash/Deleted/Outbox/Notes
+	// 这类英文系统名，Gmail 中文界面则已经给中文；自定义子文件夹保持原样。
+	segments := strings.Split(name, "/")
+	for i, segment := range segments {
+		if label, ok := externalIMAPSystemFolderNames[strings.ToLower(strings.TrimSpace(segment))]; ok {
+			segments[i] = label
+		}
 	}
-	return name
+	return strings.Join(segments, "/")
+}
+
+// externalIMAPSystemFolderNames 各家 IMAP 服务端对系统文件夹的叫法不统一，
+// 统一翻成中文，免得设置页里出现 Junk/Sent/Trash 混排。
+var externalIMAPSystemFolderNames = map[string]string{
+	"inbox":                  "收件箱",
+	"all mail":               "所有邮件",
+	"sent":                   "已发送",
+	"sent mail":              "已发送",
+	"sent messages":          "已发送",
+	"sent items":             "已发送",
+	"drafts":                 "草稿",
+	"draft":                  "草稿",
+	"spam":                   "垃圾邮件",
+	"junk":                   "垃圾邮件",
+	"junk e-mail":            "垃圾邮件",
+	"junk email":             "垃圾邮件",
+	"trash":                  "已删除邮件",
+	"deleted":                "已删除邮件",
+	"deleted items":          "已删除邮件",
+	"deleted messages":       "已删除邮件",
+	"bin":                    "已删除邮件",
+	"outbox":                 "发件箱",
+	"notes":                  "备忘录",
+	"starred":                "已加星标",
+	"important":              "重要",
+	"archive":                "归档",
+	"journal":                "日记",
+	"conversation history":   "会话历史",
+	"synchronization issues": "同步问题",
+	"sync issues":            "同步问题",
+	"conflicts":              "冲突",
+	"server failures":        "服务器故障",
+	"local failures":         "本地故障",
 }
 
 // externalIMAPLocalFolderName 起一个能认出来的本地文件夹名。

@@ -23,6 +23,7 @@ import {
   Contact,
   Copy,
   Eye,
+  GripVertical,
   History,
   Info,
   KeyRound,
@@ -324,10 +325,12 @@ export function ProfilePage() {
   // 服务端只在 OAuth 客户端 ID 与密钥都配好时返回 true；未配置则按钮置灰并说明原因。
   const externalGmailOAuthConfigured = publicSettings.data?.externalImapGmailOAuth ?? false
   const externalOutlookOAuthConfigured = publicSettings.data?.externalImapOutlookOAuth ?? false
+  // 外部 IMAP 账号按用户列，不跟「设为当前邮箱」联动：切换当前邮箱只是换发件身份，
+  // 不该让已接入的外部邮箱整块消失。
   const externalImapAccounts = useQuery({
-    queryKey: ["external-imap-accounts", activeMailboxId],
-    queryFn: () => api.externalImapAccounts(activeMailboxId),
-    enabled: !!activeMailboxId && canAccessMail && externalImapEnabled,
+    queryKey: ["external-imap-accounts"],
+    queryFn: () => api.externalImapAccounts(),
+    enabled: canAccessMail && externalImapEnabled,
   })
   React.useEffect(() => {
     if (!externalRunAccountId) return
@@ -1901,143 +1904,143 @@ function MailboxManagement({
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {!selectedMailbox && <EmptyState text={uiText("请先选择一个本地邮箱")} />}
-            {selectedMailbox && externalAccounts.length === 0 && (
-              <EmptyState text={uiText("暂无外部 IMAP 账号")} />
-            )}
-            {selectedMailbox &&
-              externalAccounts.map((account) => {
-                const selectedForRuns = selectedExternalRunAccountId === account.id
-                return (
-                  <div key={account.id} className="space-y-3 rounded-lg border p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="truncate font-medium">{account.name}</div>
-                          <Badge variant={account.enabled ? "secondary" : "outline"}>
-                            {account.enabled ? uiText("已启用") : uiText("已停用")}
-                          </Badge>
-                          <Badge variant="outline">
-                            {account.storageMode === "local"
-                              ? uiText("本地存储")
-                              : uiText("远端直连")}
-                          </Badge>
-                        </div>
+            {externalAccounts.length === 0 && <EmptyState text={uiText("暂无外部 IMAP 账号")} />}
+            {externalAccounts.map((account) => {
+              const selectedForRuns = selectedExternalRunAccountId === account.id
+              return (
+                <div key={account.id} className="space-y-3 rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="truncate font-medium">{account.name}</div>
+                        <Badge variant={account.enabled ? "secondary" : "outline"}>
+                          {account.enabled ? uiText("已启用") : uiText("已停用")}
+                        </Badge>
+                        <Badge variant="outline">
+                          {account.storageMode === "local"
+                            ? uiText("本地存储")
+                            : uiText("远端直连")}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 truncate text-xs text-muted-foreground">
+                        {account.username} · {account.host}:{uiText("{0}", [account.port])} ·{" "}
+                        {account.tlsMode.toUpperCase()}
+                        {account.authMode === "oauth2"
+                          ? ` · ${externalOAuthProviderLabel(account.oauthProvider)}`
+                          : ""}
+                      </div>
+                      {mailboxes.length > 1 && (
                         <div className="mt-1 truncate text-xs text-muted-foreground">
-                          {account.username} · {account.host}:{uiText("{0}", [account.port])} ·{" "}
-                          {account.tlsMode.toUpperCase()}
-                          {account.authMode === "oauth2"
-                            ? ` · ${externalOAuthProviderLabel(account.oauthProvider)}`
-                            : ""}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {uiText("状态：{0}{1}{2}", [
-                            uiText(externalStatusLabel(account.lastStatus)),
-                            account.lastSyncAt
-                              ? uiText(" · 最近同步 {0}", [formatDateTime(account.lastSyncAt)])
-                              : "",
-                            account.lastError
-                              ? ` · ${uiText(errorMessage(account.lastError))}`
-                              : "",
+                          {uiText("归属邮箱：{0}", [
+                            mailboxes.find((item) => item.id === account.mailboxId)?.address ||
+                              account.mailboxId,
                           ])}
                         </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={externalPending}
-                          onClick={() => onTestExternal(account.id)}
-                        >
-                          <Link2 className="h-4 w-4" />
-                          {uiText("测试")}
-                        </Button>
-                        {account.storageMode === "local" && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={externalPending}
-                            onClick={() => onSyncExternal(account.id)}
-                          >
-                            <RefreshCcw
-                              className={cn(
-                                "h-4 w-4",
-                                externalSyncingId === account.id && "animate-spin"
-                              )}
-                            />
-                            {externalSyncingId === account.id
-                              ? uiText("同步中...")
-                              : uiText("同步")}
-                          </Button>
-                        )}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={externalPending}
-                          onClick={() => setFolderVisibilityTarget(account)}
-                        >
-                          <Eye className="h-4 w-4" />
-                          {uiText("文件夹显示")}
-                        </Button>
-                        {account.storageMode === "local" && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              onSelectExternalRunAccount(selectedForRuns ? "" : account.id)
-                            }
-                          >
-                            {uiText("历史")}
-                          </Button>
-                        )}
-                        <ExternalImapDialog
-                          account={account}
-                          mailboxId={selectedMailboxId}
-                          pending={externalPending}
-                          onSubmit={(payload) => onUpdateExternal(account.id, payload)}
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={externalPending}
-                          onClick={() =>
-                            onUpdateExternal(account.id, {
-                              ...externalPayloadFromAccount(account),
-                              enabled: !account.enabled,
-                            })
-                          }
-                        >
-                          {account.enabled ? uiText("停用") : uiText("启用")}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="sm"
-                          disabled={externalPending}
-                          onClick={() => setDeleteExternalTarget(account)}
-                        >
-                          {uiText("删除")}
-                        </Button>
+                      )}
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {uiText("状态：{0}{1}{2}", [
+                          uiText(externalStatusLabel(account.lastStatus)),
+                          account.lastSyncAt
+                            ? uiText(" · 最近同步 {0}", [formatDateTime(account.lastSyncAt)])
+                            : "",
+                          account.lastError ? ` · ${uiText(errorMessage(account.lastError))}` : "",
+                        ])}
                       </div>
                     </div>
-                    {selectedForRuns && (
-                      <ExternalImapSyncPanel
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={externalPending}
+                        onClick={() => onTestExternal(account.id)}
+                      >
+                        <Link2 className="h-4 w-4" />
+                        {uiText("测试")}
+                      </Button>
+                      {account.storageMode === "local" && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={externalPending}
+                          onClick={() => onSyncExternal(account.id)}
+                        >
+                          <RefreshCcw
+                            className={cn(
+                              "h-4 w-4",
+                              externalSyncingId === account.id && "animate-spin"
+                            )}
+                          />
+                          {externalSyncingId === account.id ? uiText("同步中...") : uiText("同步")}
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={externalPending}
+                        onClick={() => setFolderVisibilityTarget(account)}
+                      >
+                        <Eye className="h-4 w-4" />
+                        {uiText("文件夹显示")}
+                      </Button>
+                      {account.storageMode === "local" && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            onSelectExternalRunAccount(selectedForRuns ? "" : account.id)
+                          }
+                        >
+                          {uiText("历史")}
+                        </Button>
+                      )}
+                      <ExternalImapDialog
                         account={account}
-                        folders={externalRunFolders}
-                        runs={externalSyncRuns}
+                        mailboxId={selectedMailboxId}
                         pending={externalPending}
-                        syncing={externalFolderSyncingId === account.id}
-                        onSyncFolder={onSyncExternalFolder}
+                        onSubmit={(payload) => onUpdateExternal(account.id, payload)}
                       />
-                    )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={externalPending}
+                        onClick={() =>
+                          onUpdateExternal(account.id, {
+                            ...externalPayloadFromAccount(account),
+                            enabled: !account.enabled,
+                          })
+                        }
+                      >
+                        {account.enabled ? uiText("停用") : uiText("启用")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={externalPending}
+                        onClick={() => setDeleteExternalTarget(account)}
+                      >
+                        {uiText("删除")}
+                      </Button>
+                    </div>
                   </div>
-                )
-              })}
+                  {selectedForRuns && (
+                    <ExternalImapSyncPanel
+                      account={account}
+                      folders={externalRunFolders}
+                      runs={externalSyncRuns}
+                      pending={externalPending}
+                      syncing={externalFolderSyncingId === account.id}
+                      onSyncFolder={onSyncExternalFolder}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </CardContent>
         </Card>
       )}
@@ -2492,6 +2495,8 @@ function ExternalFolderVisibilityDialog({
   const { toast } = useToast()
   useUiLanguage()
   const [hidden, setHidden] = React.useState<string[]>([])
+  const [order, setOrder] = React.useState<string[]>([])
+  const [dragging, setDragging] = React.useState("")
   const [loadedFor, setLoadedFor] = React.useState("")
   const folders = useQuery({
     queryKey: ["external-imap-folder-settings", account?.id || ""],
@@ -2502,14 +2507,21 @@ function ExternalFolderVisibilityDialog({
     if (!account) {
       setLoadedFor("")
       setHidden([])
+      setOrder([])
       return
     }
     if (loadedFor === account.id || !folders.data) return
-    setHidden((folders.data.items || []).filter((item) => item.hidden).map((item) => item.name))
+    const list = folders.data.items || []
+    setHidden(list.filter((item) => item.hidden).map((item) => item.name))
+    setOrder(list.map((item) => item.name))
     setLoadedFor(account.id)
   }, [account, folders.data, loadedFor])
   const save = useMutation({
-    mutationFn: () => api.setExternalHiddenFolders(account!.id, hidden),
+    mutationFn: async () => {
+      const names = order.length > 0 ? order : (folders.data?.items || []).map((item) => item.name)
+      await api.setExternalFolderOrder(account!.id, names)
+      await api.setExternalHiddenFolders(account!.id, hidden)
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["external-imap-accounts"] })
       qc.invalidateQueries({ queryKey: ["mail-external-accounts"] })
@@ -2523,13 +2535,37 @@ function ExternalFolderVisibilityDialog({
     onError: (err: Error) =>
       toast({ title: errorMessage(err.message) || err.message, variant: "destructive" }),
   })
-  const items = folders.data?.items || []
+  const allItems = React.useMemo(() => folders.data?.items || [], [folders.data])
+  // 顺序以本地 order 为准，没排过的接在后面。
+  const items = React.useMemo(() => {
+    const byName = new Map(allItems.map((item) => [item.name, item]))
+    const ordered = order
+      .map((name) => byName.get(name))
+      .filter((item): item is ExternalImapFolder => !!item)
+    const rest = allItems.filter((item) => !order.includes(item.name))
+    return [...ordered, ...rest]
+  }, [allItems, order])
+  function moveFolder(from: string, to: string) {
+    if (!from || from === to) return
+    setOrder((prev) => {
+      const current = prev.length > 0 ? [...prev] : allItems.map((item) => item.name)
+      const fromIndex = current.indexOf(from)
+      const toIndex = current.indexOf(to)
+      if (fromIndex < 0 || toIndex < 0) return prev
+      current.splice(fromIndex, 1)
+      current.splice(toIndex, 0, from)
+      return current
+    })
+  }
   return (
     <Dialog open={!!account} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{uiText("文件夹显示")}</DialogTitle>
         </DialogHeader>
+        <div className="text-xs text-muted-foreground">
+          {uiText("拖动左侧手柄调整顺序，顺序会同步到侧栏；关掉的开关只是隐藏，不会删邮件。")}
+        </div>
         <div className="max-h-[50vh] space-y-2 overflow-y-auto py-1">
           {folders.isLoading && (
             <div className="py-4 text-sm text-muted-foreground">{uiText("加载中...")}</div>
@@ -2540,11 +2576,24 @@ function ExternalFolderVisibilityDialog({
           {items.map((item) => {
             const visible = !hidden.includes(item.name)
             return (
-              <label
+              <div
                 key={item.name}
-                className="flex cursor-pointer items-center justify-between gap-3 rounded-md border px-3 py-2"
+                draggable
+                onDragStart={(event) => {
+                  setDragging(item.name)
+                  event.dataTransfer.effectAllowed = "move"
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  moveFolder(dragging, item.name)
+                }}
+                onDragEnd={() => setDragging("")}
+                className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 ${
+                  dragging === item.name ? "opacity-50" : ""
+                }`}
               >
-                <span className="min-w-0">
+                <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground" />
+                <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm">{item.displayName || item.name}</span>
                   {item.displayName && item.displayName !== item.name && (
                     <span className="block truncate text-xs text-muted-foreground">
@@ -2560,7 +2609,7 @@ function ExternalFolderVisibilityDialog({
                     )
                   }
                 />
-              </label>
+              </div>
             )
           })}
         </div>

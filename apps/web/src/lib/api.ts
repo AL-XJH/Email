@@ -793,6 +793,11 @@ export const api = {
       `/api/me/external-imap-accounts/${id}/hidden-folders`,
       { method: "POST", body: JSON.stringify({ folders }) }
     ),
+  setExternalFolderOrder: (id: string, folders: string[]) =>
+    request<{ ok: boolean; folders: string[] }>(
+      `/api/me/external-imap-accounts/${id}/folder-order`,
+      { method: "POST", body: JSON.stringify({ folders }) }
+    ),
   externalMessages: (id: string, folder: string, cursor = "", q = "", limit = 30) => {
     const params = new URLSearchParams({ folder, cursor, q })
     params.set("limit", String(limit))

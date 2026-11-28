@@ -176,10 +176,10 @@ func TestExternalIMAPFolderDisplayName(t *testing.T) {
 	cases := map[string]string{
 		"[Gmail]/已删除邮件":           "已删除邮件",
 		"[Gmail]/All Mail":        "所有邮件",
-		"[Google Mail]/Sent Mail": "已发邮件",
+		"[Google Mail]/Sent Mail": "已发送",
 		"[Gmail]/Spam":            "垃圾邮件",
-		"INBOX":                   "INBOX",
-		"Notes":                   "Notes",
+		"INBOX":                   "收件箱",
+		"Notes":                   "备忘录",
 		"自定义标签":                   "自定义标签",
 	}
 	for in, want := range cases {
@@ -427,5 +427,70 @@ func TestPickExternalIMAPOAuthUsernameFallsBackToPrimary(t *testing.T) {
 	if _, err := a.pickExternalIMAPOAuthUsername(context.Background(), externalIMAPOAuthOutlook,
 		externalIMAPOAuthProvider{Host: "outlook.office365.com", Port: 993}, []string{"xjh@alxjh.cn"}, "access", "refresh"); err == nil {
 		t.Fatal("expected error when no candidate can log in")
+	}
+}
+
+// 文件夹顺序：保存后列表按 position 返回；本地模式还要把镜像文件夹的 sort_order
+// 在原有取值之间互换，侧栏顺序才跟着变。
+func TestExternalIMAPFolderOrderAppliesToLocalFolders(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	accountID := "ximap_folder_order"
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "order", "imap.example.test", 993, externalIMAPTLS, "order@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	insertFolder := func(id, name string, order int) {
+		if _, err := a.db.ExecContext(ctx, `INSERT INTO folders(id,mailbox_id,name,role,sort_order,uid_validity,uid_next,highest_modseq,created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+			id, mailbox.ID, name, "", order, 1, 1, 1, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_folder_states(account_id,remote_folder,local_folder_id,uid_validity,last_uid,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
+			accountID, name, id, 1, 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertFolder("fld_order_a", "INBOX", 30)
+	insertFolder("fld_order_b", "Junk", 40)
+	account, err := a.externalIMAPAccountByID(ctx, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.replaceExternalIMAPFolderOrder(ctx, account, []string{"Junk", "INBOX"}); err != nil {
+		t.Fatalf("save order: %v", err)
+	}
+	if got := a.externalIMAPFolderOrder(ctx, accountID); len(got) != 2 || got[0] != "Junk" || got[1] != "INBOX" {
+		t.Fatalf("order = %v, want [Junk INBOX]", got)
+	}
+	var inboxOrder, junkOrder int
+	if err := a.db.QueryRowContext(ctx, `SELECT sort_order FROM folders WHERE id='fld_order_a'`).Scan(&inboxOrder); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRowContext(ctx, `SELECT sort_order FROM folders WHERE id='fld_order_b'`).Scan(&junkOrder); err != nil {
+		t.Fatal(err)
+	}
+	if junkOrder != 30 || inboxOrder != 40 {
+		t.Fatalf("local sort_order inbox=%d junk=%d, want swapped 40/30", inboxOrder, junkOrder)
+	}
+}
+
+// Outlook 的系统文件夹是英文短名，设置页要显示中文。
+func TestExternalIMAPFolderDisplayNameTranslatesOutlookNames(t *testing.T) {
+	cases := map[string]string{
+		"INBOX":                            "收件箱",
+		"Junk":                             "垃圾邮件",
+		"Sent":                             "已发送",
+		"Deleted":                          "已删除邮件",
+		"Outbox":                           "发件箱",
+		"Notes":                            "备忘录",
+		"Synchronization Issues/Conflicts": "同步问题/冲突",
+		"我的文件夹":                            "我的文件夹",
+	}
+	for remote, want := range cases {
+		if got := externalIMAPFolderDisplayName(remote); got != want {
+			t.Errorf("displayName(%q)=%q, want %q", remote, got, want)
+		}
 	}
 }
