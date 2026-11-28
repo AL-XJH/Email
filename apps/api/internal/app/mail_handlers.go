@@ -116,6 +116,10 @@ func (a *App) handleMyMailboxes(w http.ResponseWriter, r *http.Request) {
 		m.CreatedAt = parseTime(created)
 		items = append(items, m)
 	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load mailboxes")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -602,7 +606,7 @@ func (a *App) respondMailMessageListInternal(w http.ResponseWriter, r *http.Requ
 		args = append(args, cursorReceivedAt, cursorID)
 	}
 	args = append(args, limit+1)
-	query := `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(CASE WHEN m.thread_id='' THEN 0 ELSE (SELECT COUNT(*) FROM messages mt WHERE mt.mailbox_id=m.mailbox_id AND mt.thread_id=m.thread_id) END)
+	query := `SELECT m.id,m.mailbox_id,m.folder_id,COALESCE(f.name,''),m.message_uid,m.imap_uid,m.imap_modseq,m.message_id,COALESCE(m.thread_id,''),m.subject,m.from_addr,COALESCE(m.from_name,''),m.to_addrs,m.cc_addrs,m.bcc_addrs,m.sent_at,m.received_at,m.snippet,m.is_read,m.is_starred,m.has_attachments,m.size_bytes,substr(COALESCE(m.body_text,''),1,8000),(CASE WHEN m.thread_id='' THEN 0 ELSE (SELECT COUNT(*) FROM messages mtt WHERE mtt.mailbox_id=m.mailbox_id AND mtt.thread_id=m.thread_id) END)
 		FROM messages m LEFT JOIN folders f ON f.id=m.folder_id WHERE ` + where + ` ORDER BY m.received_at DESC,m.id DESC LIMIT ?`
 	if offset > 0 {
 		query += ` OFFSET ?`

@@ -175,6 +175,10 @@ func (a *App) handleListContacts(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load items")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -249,6 +253,10 @@ func (a *App) handleListSignatures(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load items")
+		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -447,6 +455,10 @@ func (a *App) handleListRules(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load items")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -605,6 +617,10 @@ func (a *App) handleListBlockedSenders(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load items")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -680,6 +696,10 @@ func (a *App) handleListAllowedSenders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load items")
+		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -867,6 +887,10 @@ func (a *App) handleMailStats(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			stats.ByFolder = append(stats.ByFolder, item)
+		}
+		if err := rows.Err(); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to load folder stats")
+			return
 		}
 	}
 	respondJSON(w, http.StatusOK, stats)

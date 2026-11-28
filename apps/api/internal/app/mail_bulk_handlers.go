@@ -65,7 +65,13 @@ func (a *App) applyMessageDelete(ctx context.Context, msg *MailMessage) error {
 	if !external || strings.TrimSpace(msg.MessageID) == "" {
 		return nil
 	}
-	for _, twin := range a.otherMessageCopies(ctx, msg.MailboxID, msg.MessageID, msg.ID) {
+	twins, twinErr := a.otherMessageCopies(ctx, msg.MailboxID, msg.MessageID, msg.ID)
+	if twinErr != nil {
+		// 找同 Message-ID 副本失败不该阻断主删除，但得留下痕迹：否则「所有邮件删了
+		// 收件箱还在」这类问题会再次无声复发。
+		a.log.Warn("failed to find duplicate message copies", "message", msg.ID, "error", twinErr)
+	}
+	for _, twin := range twins {
 		if twinErr := a.applyMessageDeleteOne(ctx, twin); twinErr != nil {
 			a.log.Warn("failed to delete duplicate external message copy", "message", twin.ID, "message_id", msg.MessageID, "error", twinErr)
 		}
@@ -79,24 +85,31 @@ func (a *App) messageHasExternalMapping(ctx context.Context, messageID string) b
 }
 
 // otherMessageCopies 找同邮箱里 Message-ID 相同的其它本地副本。
-func (a *App) otherMessageCopies(ctx context.Context, mailboxID, messageID, excludeID string) []*MailMessage {
+func (a *App) otherMessageCopies(ctx context.Context, mailboxID, messageID, excludeID string) ([]*MailMessage, error) {
+	if messageID == "" {
+		return nil, nil
+	}
 	rows, err := a.db.QueryContext(ctx, `SELECT m.id,m.mailbox_id,COALESCE(m.folder_id,''),COALESCE(f.name,''),m.is_read,m.is_starred,m.message_id
 		FROM messages m LEFT JOIN folders f ON f.id=m.folder_id
 		WHERE m.mailbox_id=? AND m.message_id=? AND m.id<>?`, mailboxID, messageID, excludeID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	out := []*MailMessage{}
 	for rows.Next() {
 		var item MailMessage
 		var read, starred int
-		if err := rows.Scan(&item.ID, &item.MailboxID, &item.FolderID, &item.Folder, &read, &starred, &item.MessageID); err == nil {
-			item.IsRead, item.IsStarred = intBool(read), intBool(starred)
-			out = append(out, &item)
+		if err := rows.Scan(&item.ID, &item.MailboxID, &item.FolderID, &item.Folder, &read, &starred, &item.MessageID); err != nil {
+			return nil, err
 		}
+		item.IsRead, item.IsStarred = intBool(read), intBool(starred)
+		out = append(out, &item)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (a *App) applyMessageDeleteOne(ctx context.Context, msg *MailMessage) error {

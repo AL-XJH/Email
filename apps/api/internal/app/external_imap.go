@@ -235,6 +235,10 @@ func (a *App) handleListExternalIMAPAccounts(w http.ResponseWriter, r *http.Requ
 		}
 		items = append(items, item.ExternalIMAPAccount)
 	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load external accounts")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -411,19 +415,23 @@ func (a *App) handleTestExternalIMAPAccount(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusNotFound, "external account not found")
 		return
 	}
-	client, err := a.externalIMAP.openExternalIMAPClient(r.Context(), account)
+	// 「测试连接」也要有上限：服务端不响应时别让请求无限挂着。
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	client, err := a.externalIMAP.openExternalIMAPClient(ctx, account)
 	if err != nil {
 		a.updateExternalIMAPStatus(r.Context(), account.ID, "error", err.Error())
 		respondError(w, http.StatusBadRequest, "connection failed: "+err.Error())
 		return
 	}
 	defer client.Close()
-	folders, err := client.ListFolders(r.Context())
+	folders, err := client.ListFolders(ctx)
 	if err != nil {
 		a.updateExternalIMAPStatus(r.Context(), account.ID, "error", err.Error())
 		respondError(w, http.StatusBadRequest, "list folders failed: "+err.Error())
 		return
 	}
+	a.saveExternalIMAPFolderSnapshot(ctx, account.ID, folders)
 	a.updateExternalIMAPStatus(r.Context(), account.ID, "ok", "")
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "folders": len(folders)})
 }
@@ -468,6 +476,10 @@ func (a *App) handleExternalIMAPSyncRuns(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		items = append(items, run)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load sync runs")
+		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -741,6 +753,10 @@ func (a *App) handleMailExternalAccounts(w http.ResponseWriter, r *http.Request)
 		}
 		items = append(items, item.ExternalIMAPAccount)
 	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load external accounts")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -787,8 +803,10 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 	folders, fetchedAt, hasSnapshot := a.loadExternalIMAPFolderSnapshot(r.Context(), account.ID)
 	fresh := hasSnapshot && a.now().Sub(fetchedAt) < externalIMAPFolderSnapshotTTL
 	if !fresh {
-		client, err := a.externalIMAP.openExternalIMAPClient(r.Context(), account)
+		listCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		client, err := a.externalIMAP.openExternalIMAPClient(listCtx, account)
 		if err != nil {
+			cancel()
 			if hasSnapshot {
 				a.log.Warn("external imap folders live list failed, serving stale snapshot", "account", account.ID, "error", err)
 			} else {
@@ -796,8 +814,9 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		} else {
-			live, listErr := client.ListFolders(r.Context())
+			live, listErr := client.ListFolders(listCtx)
 			_ = client.Close()
+			cancel()
 			if listErr != nil {
 				if hasSnapshot {
 					a.log.Warn("external imap folders live list failed, serving stale snapshot", "account", account.ID, "error", listErr)
@@ -814,6 +833,37 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 	// 默认只回可见文件夹；设置页要用 ?all=1 拿全集，才能把隐藏的再打开。
 	showAll := strings.TrimSpace(r.URL.Query().Get("all")) == "1" || strings.EqualFold(r.URL.Query().Get("all"), "true")
 	hidden := a.externalIMAPHiddenFolderSet(r.Context(), account.ID)
+	// 每个文件夹一条 COUNT 在这里会变成 N 次全表聚合；一次 GROUP BY 拿全，
+	// 文件夹多的时候（Gmail 十几个）差别很明显。
+	folderCounts := map[string][2]int{}
+	if account.StorageMode == externalIMAPStorageLocal {
+		rows, err := a.db.QueryContext(r.Context(), `SELECT em.remote_folder,COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0)
+			FROM external_imap_messages em
+			JOIN messages m ON m.id=em.local_message_id
+			JOIN external_imap_folder_states fs ON fs.account_id=em.account_id AND fs.remote_folder=em.remote_folder
+			WHERE em.account_id=? AND m.mailbox_id=? AND m.folder_id=fs.local_folder_id
+			GROUP BY em.remote_folder`, account.ID, account.MailboxID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to count external messages")
+			return
+		}
+		for rows.Next() {
+			var name string
+			var total, unread int
+			if err := rows.Scan(&name, &total, &unread); err != nil {
+				rows.Close()
+				respondError(w, http.StatusInternalServerError, "failed to count external messages")
+				return
+			}
+			folderCounts[name] = [2]int{total, unread}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			respondError(w, http.StatusInternalServerError, "failed to count external messages")
+			return
+		}
+		rows.Close()
+	}
 	items := make([]ExternalIMAPFolder, 0, len(folders))
 	for _, folder := range folders {
 		isHidden := hidden[folder.Name]
@@ -823,14 +873,11 @@ func (a *App) handleExternalIMAPFolders(w http.ResponseWriter, r *http.Request) 
 		if account.StorageMode == externalIMAPStorageLocal {
 			// 计数口径要和列表一致：只算仍在这个镜像文件夹里的邮件，已移走的
 			//（删到 Trash、归档到别处）不再计入。
-			var total, unread int
-			_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(m.id),COALESCE(SUM(CASE WHEN m.is_read=0 THEN 1 ELSE 0 END),0)
-				FROM external_imap_messages em
-				JOIN messages m ON m.id=em.local_message_id
-				JOIN external_imap_folder_states fs ON fs.account_id=em.account_id AND fs.remote_folder=em.remote_folder
-				WHERE em.account_id=? AND em.remote_folder=? AND m.mailbox_id=? AND m.folder_id=fs.local_folder_id`, account.ID, folder.Name, account.MailboxID).Scan(&total, &unread)
-			folder.TotalCount = total
-			folder.UnreadCount = unread
+			if counts, ok := folderCounts[folder.Name]; ok {
+				folder.TotalCount, folder.UnreadCount = counts[0], counts[1]
+			} else {
+				folder.TotalCount, folder.UnreadCount = 0, 0
+			}
 		}
 		items = append(items, ExternalIMAPFolder{Name: folder.Name, DisplayName: externalIMAPFolderDisplayName(folder.Name), Hidden: isHidden, Role: folder.Role, UnreadCount: folder.UnreadCount, TotalCount: folder.TotalCount})
 	}
@@ -1551,6 +1598,8 @@ func (a *App) externalIMAPHiddenFolderSet(ctx context.Context, accountID string)
 	out := map[string]bool{}
 	rows, err := a.db.QueryContext(ctx, `SELECT remote_folder FROM external_imap_hidden_folders WHERE account_id=?`, accountID)
 	if err != nil {
+		// 读不到隐藏列表就别当成「没有隐藏项」：那会把用户藏起来的文件夹重新同步进来。
+		a.log.Warn("external imap hidden folders read failed", "account", accountID, "error", err)
 		return out
 	}
 	defer rows.Close()
@@ -1840,6 +1889,8 @@ func (a *App) externalIMAPDeletedUIDs(ctx context.Context, accountID, folder str
 	rows, err := a.db.QueryContext(ctx, `SELECT uid FROM external_imap_deleted_messages
 		WHERE account_id=? AND remote_folder=? AND uid_validity=?`, accountID, folder, uidValidity)
 	if err != nil {
+		// 墓碑读失败会把已删邮件当成没导过，下一轮又拉回来。
+		a.log.Warn("external imap tombstones read failed", "account", accountID, "folder", folder, "error", err)
 		return out
 	}
 	defer rows.Close()

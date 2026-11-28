@@ -348,6 +348,7 @@ export function ProfilePage() {
       !!selectedExternalRunAccount &&
       canAccessMail &&
       externalImapEnabled,
+    staleTime: 60_000,
   })
   const externalSyncRuns = useQuery({
     queryKey: ["external-imap-sync-runs", externalRunAccountId],
@@ -2502,6 +2503,7 @@ function ExternalFolderVisibilityDialog({
     queryKey: ["external-imap-folder-settings", account?.id || ""],
     queryFn: () => api.externalFolders(account!.id, true),
     enabled: !!account,
+    staleTime: 60_000,
   })
   React.useEffect(() => {
     if (!account) {
