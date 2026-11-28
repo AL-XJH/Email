@@ -990,10 +990,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ read }),
     }),
-  bulkMessageAction: (ids: string[], action: BulkMessageAction) =>
+  bulkMessageAction: (ids: string[], action: BulkMessageAction, externalAccountId?: string) =>
     request<{ ok: boolean; updated: number; missing: string[]; failed: string[] }>(
       "/api/mail/messages/bulk",
-      { method: "POST", body: JSON.stringify({ ids, action }) }
+      {
+        method: "POST",
+        body: JSON.stringify(
+          externalAccountId ? { ids, action, externalAccountId } : { ids, action }
+        ),
+      }
     ),
   // 整个文件夹标为已读。服务端每次最多处理 500 封，返回 remaining，
   // 前端按 remaining 继续调用，避免一次请求里逐封重命名几千个 maildir 文件。
@@ -1016,10 +1021,10 @@ export const api = {
     request<{ labels: MailLabel[] }>(`/api/mail/messages/${id}/labels/${labelID}`, {
       method: "DELETE",
     }),
-  move: (id: string, folder: string) =>
+  move: (id: string, folder: string, externalAccountId?: string) =>
     request<{ ok: boolean }>(`/api/mail/messages/${id}/move`, {
       method: "POST",
-      body: JSON.stringify({ folder }),
+      body: JSON.stringify(externalAccountId ? { folder, externalAccountId } : { folder }),
     }),
   delete: (id: string) =>
     request<{ ok: boolean }>(`/api/mail/messages/${id}`, { method: "DELETE" }),

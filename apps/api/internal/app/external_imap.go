@@ -3290,6 +3290,33 @@ func (c *goExternalIMAPClient) SetRead(ctx context.Context, folder string, uid u
 	return c.client.Store(imap.UIDSetNum(imap.UID(uid)), &imap.StoreFlags{Op: op, Flags: []imap.Flag{imap.FlagSeen}, Silent: true}, nil).Close()
 }
 
+// externalIMAPMirrorFolderNameForRole 把「Spam/Trash/Archive」这种系统角色换成
+// 外部账号镜像出来的本地文件夹名。外部视图里点「移入垃圾邮件」如果直接建一个
+// 叫 Spam 的普通文件夹，邮件就会掉进外部视图看不到的地方：列表只认镜像文件夹。
+func (a *App) externalIMAPMirrorFolderNameForRole(ctx context.Context, accountID, role string) (string, bool) {
+	if strings.TrimSpace(accountID) == "" || strings.TrimSpace(role) == "" {
+		return "", false
+	}
+	folders, _, ok := a.loadExternalIMAPFolderSnapshot(ctx, accountID)
+	if !ok {
+		return "", false
+	}
+	for _, folder := range folders {
+		if !strings.EqualFold(folder.Role, role) {
+			continue
+		}
+		var localFolderID string
+		if err := a.db.QueryRowContext(ctx, `SELECT local_folder_id FROM external_imap_folder_states WHERE account_id=? AND remote_folder=?`, accountID, folder.Name).Scan(&localFolderID); err != nil || strings.TrimSpace(localFolderID) == "" {
+			continue
+		}
+		var name string
+		if err := a.db.QueryRowContext(ctx, `SELECT name FROM folders WHERE id=?`, localFolderID).Scan(&name); err == nil && strings.TrimSpace(name) != "" {
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // externalIMAPNeedsHeaderFetch：这些服务端的 ENVELOPE 不可靠，改拉头部字段。
 func externalIMAPNeedsHeaderFetch(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))

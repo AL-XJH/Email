@@ -139,8 +139,9 @@ func (a *App) applyMessageDeleteOne(ctx context.Context, msg *MailMessage) error
 func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	var req struct {
-		IDs    []string `json:"ids"`
-		Action string   `json:"action"`
+		IDs               []string `json:"ids"`
+		Action            string   `json:"action"`
+		ExternalAccountID string   `json:"externalAccountId"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, err)
@@ -220,6 +221,31 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 外部账号视图的批量「移入垃圾邮件/回收站」同样要落到镜像文件夹，
+	// 否则邮件会掉进外部列表看不见的普通系统文件夹。
+	mirrorFolder := ""
+	externalMapped := map[string]bool{}
+	if strings.TrimSpace(req.ExternalAccountID) != "" && folder != "" {
+		if mirror, ok := a.externalIMAPMirrorFolderNameForRole(r.Context(), req.ExternalAccountID, folder); ok {
+			mirrorFolder = mirror
+			marks := make([]string, 0, len(ids))
+			args := []any{req.ExternalAccountID}
+			for _, id := range ids {
+				marks = append(marks, "?")
+				args = append(args, id)
+			}
+			rows, err := a.db.QueryContext(r.Context(), `SELECT local_message_id FROM external_imap_messages WHERE account_id=? AND local_message_id IN (`+strings.Join(marks, ",")+`)`, args...)
+			if err == nil {
+				for rows.Next() {
+					var id string
+					if rows.Scan(&id) == nil {
+						externalMapped[id] = true
+					}
+				}
+				rows.Close()
+			}
+		}
+	}
 	updated := 0
 	missing := make([]string, 0)
 	failed := make([]string, 0)
@@ -245,9 +271,13 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		case "delete":
 			itemErr = a.applyMessageDelete(r.Context(), msg)
 		default:
+			targetFolder := normalizedFolder
+			if mirrorFolder != "" && externalMapped[msg.ID] {
+				targetFolder = mirrorFolder
+			}
 			folderID, ok := folderIDs[msg.MailboxID]
 			if !ok {
-				folderID, itemErr = a.ensureFolder(r.Context(), msg.MailboxID, normalizedFolder)
+				folderID, itemErr = a.ensureFolder(r.Context(), msg.MailboxID, targetFolder)
 				if itemErr == nil {
 					folderIDs[msg.MailboxID] = folderID
 				}

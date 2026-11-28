@@ -2397,7 +2397,8 @@ func (a *App) handleMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Folder string `json:"folder"`
+		Folder            string `json:"folder"`
+		ExternalAccountID string `json:"externalAccountId"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, err)
@@ -2406,6 +2407,18 @@ func (a *App) handleMove(w http.ResponseWriter, r *http.Request) {
 	if _, err := normalizeFolderNameForUser(req.Folder); err != nil {
 		badRequest(w, err)
 		return
+	}
+	// 外部账号视图里「移入垃圾邮件/回收站」要落到镜像文件夹，不能新建同名系统
+	// 文件夹：外部列表只认镜像文件夹，落到别处等于邮件消失。调用方带上
+	// externalAccountId 才走这条路径，普通视图行为不变。
+	if strings.TrimSpace(req.ExternalAccountID) != "" {
+		var mappedAccount string
+		_ = a.db.QueryRowContext(r.Context(), `SELECT account_id FROM external_imap_messages WHERE local_message_id=? LIMIT 1`, msg.ID).Scan(&mappedAccount)
+		if mappedAccount == req.ExternalAccountID {
+			if mirror, ok := a.externalIMAPMirrorFolderNameForRole(r.Context(), mappedAccount, req.Folder); ok {
+				req.Folder = mirror
+			}
+		}
 	}
 	if err := a.applyMessageMove(r.Context(), msg, req.Folder); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to move message")

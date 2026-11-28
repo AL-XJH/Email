@@ -997,7 +997,15 @@ export function MailPage() {
     onError: (error) => toast({ title: "删除失败", description: errorMessage(error) }),
   })
   const move = useMutation({
-    mutationFn: ({ id, folder }: { id: string; folder: string }) => api.move(id, folder),
+    mutationFn: ({
+      id,
+      folder,
+      externalAccountId,
+    }: {
+      id: string
+      folder: string
+      externalAccountId?: string
+    }) => api.move(id, folder, externalAccountId),
     onSuccess: async () => {
       setSelectedId(null)
       await qc.invalidateQueries({ queryKey: ["messages"] })
@@ -1704,7 +1712,11 @@ export function MailPage() {
     setBulkPending(true)
     try {
       // 一次请求处理整批：以前是每封一个 HTTP，勾 30 封就是 30 个请求排队。
-      const result = await api.bulkMessageAction(ids, action)
+      const result = await api.bulkMessageAction(
+        ids,
+        action,
+        mailView === "external" ? selectedExternalAccountId || "" : undefined
+      )
       if (selectedId && ids.includes(selectedId)) setSelectedId(null)
       setCompactSelectedIds([])
       setPendingConfirm(null)
@@ -2134,17 +2146,29 @@ export function MailPage() {
     }
     if (action === "archive") {
       if (mailView === "external" && !externalMessagesStoredLocally) return
-      move.mutate({ id: message.id, folder: message.folder === "Archive" ? "Inbox" : "Archive" })
+      move.mutate({
+        id: message.id,
+        folder: message.folder === "Archive" ? "Inbox" : "Archive",
+        externalAccountId: mailView === "external" ? selectedExternalAccountId || "" : undefined,
+      })
       return
     }
     if (action === "trash") {
       if (mailView === "external" && !externalMessagesStoredLocally) return
-      move.mutate({ id: message.id, folder: "Trash" })
+      move.mutate({
+        id: message.id,
+        folder: "Trash",
+        externalAccountId: mailView === "external" ? selectedExternalAccountId || "" : undefined,
+      })
       return
     }
     if (action === "spam") {
       if (mailView === "external" && !externalMessagesStoredLocally) return
-      move.mutate({ id: message.id, folder: "Spam" })
+      move.mutate({
+        id: message.id,
+        folder: "Spam",
+        externalAccountId: mailView === "external" ? selectedExternalAccountId || "" : undefined,
+      })
       return
     }
     if (mailView === "external" && !externalMessagesStoredLocally) return
