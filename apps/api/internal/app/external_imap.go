@@ -268,7 +268,7 @@ func (a *App) handleCreateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 	// 先真连一次再落库：账号存进去才发现连不上，用户看到的是「添加成功但用不了」。
 	// LANQIN_EXTERNAL_IMAP_VERIFY_ON_CREATE=0 可关掉（测试/内网环境）。
 	if a.config().ExternalIMAPVerifyOnCreate {
-		probeCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		probeCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		probe := externalIMAPAccountRecord{
 			ExternalIMAPAccount: ExternalIMAPAccount{
@@ -287,6 +287,7 @@ func (a *App) handleCreateExternalIMAPAccount(w http.ResponseWriter, r *http.Req
 		}
 		probeClient, err := a.externalIMAP.openExternalIMAPClient(probeCtx, probe)
 		if err != nil {
+			a.log.Warn("external imap create probe failed", "host", probe.Host, "port", probe.Port, "tls", probe.TLSMode, "error", err)
 			respondError(w, http.StatusBadRequest, "连接失败："+err.Error())
 			return
 		}
@@ -2517,6 +2518,12 @@ func (a *App) openExternalIMAPClient(ctx context.Context, account externalIMAPAc
 	}
 	if err != nil {
 		return nil, err
+	}
+	// 腾讯 QQ 邮箱的 IMAP（QQMail XMIMAP4Server）在 greeting 里已经带 CAPABILITY
+	// 时不会响应随后的第一个 LOGIN，连接就那样挂着直到超时；必须显式再发一次
+	// CAPABILITY 把命令通道打开。其它服务端多这一问也没坏处，失败就继续。
+	if _, capErr := c.Capability().Wait(); capErr != nil {
+		a.log.Debug("external imap capability probe failed", "host", account.Host, "error", capErr)
 	}
 	if account.AuthMode == externalIMAPAuthOAuth2 {
 		token, err := a.externalIMAPOAuthAccessToken(ctx, account)
