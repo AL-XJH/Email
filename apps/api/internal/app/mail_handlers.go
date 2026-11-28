@@ -3222,6 +3222,8 @@ func (a *App) deleteMessage(ctx context.Context, messageID string) error {
 	if err := a.deleteMessageMaildirFile(ctx, messageID); err != nil {
 		return err
 	}
+	// 外部导入件：先记远端 UID 墓碑并摘掉映射，防止同步把删掉的信拉回来。
+	a.recordExternalIMAPDeletion(ctx, messageID)
 	a.deleteMessageFiles(ctx, messageID)
 	if _, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, messageID); err != nil {
 		return err

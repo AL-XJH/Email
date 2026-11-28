@@ -61,6 +61,9 @@ func (a *App) applyMessageDelete(ctx context.Context, msg *MailMessage) error {
 			return fmt.Errorf("failed to remove maildir file: %w", err)
 		}
 		a.deleteMessageFiles(ctx, msg.ID)
+		// 外部导入件要留远端 UID 墓碑并摘掉映射，否则下一轮同步会把删掉的信
+		// 当成「没导入过」重新拉回来。
+		a.recordExternalIMAPDeletion(ctx, msg.ID)
 		if _, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE id=?`, msg.ID); err != nil {
 			return err
 		}

@@ -494,3 +494,81 @@ func TestExternalIMAPFolderDisplayNameTranslatesOutlookNames(t *testing.T) {
 		}
 	}
 }
+
+// 本地删掉外部导入件后必须留墓碑并摘掉映射：映射留着会被 prune 当孤儿，
+// 连带把游标归零，删掉的信又整批回来。
+func TestRecordExternalIMAPDeletionLeavesTombstone(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	accountID := "ximap_tombstone"
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "tombstone", "imap.example.test", 993, externalIMAPTLS, "tomb@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	folderID, err := a.ensureFolder(ctx, mailbox.ID, "外部 · Gmail · INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO messages(id,mailbox_id,folder_id,recipient_addr,message_uid,message_id,subject,from_addr,from_name,to_addrs,cc_addrs,bcc_addrs,sent_at,received_at,snippet,body_text,body_html,is_read,is_starred,has_attachments,size_bytes,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "msg_tombstone", mailbox.ID, folderID, "", "uid-1", "<tomb@example.test>", "tomb", "a@example.test", "", "[]", "[]", "[]", now, now, "", "", "", 0, 0, 0, 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,local_message_id,is_read,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`, accountID, "INBOX", 7, 42, "<tomb@example.test>", "msg_tombstone", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	a.recordExternalIMAPDeletion(ctx, "msg_tombstone")
+	var mappings int
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM external_imap_messages WHERE local_message_id='msg_tombstone'`).Scan(&mappings); err != nil {
+		t.Fatal(err)
+	}
+	if mappings != 0 {
+		t.Fatalf("mapping rows=%d, want 0", mappings)
+	}
+	deleted := a.externalIMAPDeletedUIDs(ctx, accountID, "INBOX", 7)
+	if !deleted[42] {
+		t.Fatalf("uid 42 must be tombstoned, got %v", deleted)
+	}
+	if other := a.externalIMAPDeletedUIDs(ctx, accountID, "INBOX", 8); len(other) != 0 {
+		t.Fatalf("tombstone must not leak into another UIDVALIDITY, got %v", other)
+	}
+}
+
+// 一个文件夹出现孤儿时，只重置这个文件夹的游标，别把其它文件夹也倒回去。
+func TestPruneOrphanExternalIMAPResetsOnlyAffectedFolder(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	accountID := "ximap_prune_scope"
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "prune", "imap.example.test", 993, externalIMAPTLS, "prune@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, folder := range []string{"INBOX", "Archive"} {
+		if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_folder_states(account_id,remote_folder,uid_validity,last_uid,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
+			accountID, folder, 1, 500, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,local_message_id,is_read,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`, accountID, "INBOX", 1, 10, "<gone@example.test>", "msg_gone", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	a.pruneOrphanExternalIMAPMessages(ctx, accountID)
+	var inboxUID, archiveUID int
+	if err := a.db.QueryRowContext(ctx, `SELECT last_uid FROM external_imap_folder_states WHERE account_id=? AND remote_folder='INBOX'`, accountID).Scan(&inboxUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRowContext(ctx, `SELECT last_uid FROM external_imap_folder_states WHERE account_id=? AND remote_folder='Archive'`, accountID).Scan(&archiveUID); err != nil {
+		t.Fatal(err)
+	}
+	if inboxUID != 0 {
+		t.Fatalf("INBOX cursor=%d, want reset to 0", inboxUID)
+	}
+	if archiveUID != 500 {
+		t.Fatalf("Archive cursor=%d, must stay 500", archiveUID)
+	}
+}

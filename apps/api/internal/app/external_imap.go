@@ -1420,6 +1420,18 @@ func (a *App) migrateExternalIMAP(ctx context.Context) error {
 	)`); err != nil {
 		return err
 	}
+	// 用户在本地删掉的外部邮件，记 UID 墓碑：同步游标被重置（自愈）时也不能
+	// 把这些信再拉回来。否则「删 50 封 → 下一轮同步全回来」。
+	if _, err := a.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS external_imap_deleted_messages (
+		account_id TEXT NOT NULL,
+		remote_folder TEXT NOT NULL,
+		uid_validity INTEGER NOT NULL DEFAULT 0,
+		uid INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY(account_id, remote_folder, uid_validity, uid)
+	)`); err != nil {
+		return err
+	}
 	// 用户手动拖出来的文件夹顺序，未记录的排在后面。
 	if _, err := a.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS external_imap_folder_order (
 		account_id TEXT NOT NULL,
@@ -1729,9 +1741,81 @@ func (a *App) syncExternalIMAPAccountFolder(ctx context.Context, accountID, fold
 	return a.finishExternalIMAPRun(ctx, run, status, err)
 }
 
+// externalIMAPDeletedUIDs 返回某文件夹在指定 UIDVALIDITY 下被本地删掉的 UID。
+// UIDVALIDITY 变了以后 UID 空间重建，旧墓碑不再适用。
+func (a *App) externalIMAPDeletedUIDs(ctx context.Context, accountID, folder string, uidValidity uint32) map[uint32]bool {
+	out := map[uint32]bool{}
+	if uidValidity == 0 {
+		return out
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT uid FROM external_imap_deleted_messages
+		WHERE account_id=? AND remote_folder=? AND uid_validity=?`, accountID, folder, uidValidity)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid uint32
+		if err := rows.Scan(&uid); err == nil {
+			out[uid] = true
+		}
+	}
+	return out
+}
+
+// recordExternalIMAPDeletion 在本地彻底删除一封外部导入的邮件时，把它的远端
+// UID 记成墓碑并移除映射。映射留着会在下一轮 prune 里被当成孤儿、连带把游标
+// 归零，已删的邮件就被重新导入了。本地删除不代表远端删除，墓碑只用于阻止回填。
+func (a *App) recordExternalIMAPDeletion(ctx context.Context, messageID string) {
+	rows, err := a.db.QueryContext(ctx, `SELECT account_id,remote_folder,uid_validity,uid FROM external_imap_messages WHERE local_message_id=?`, messageID)
+	if err != nil {
+		a.log.Warn("failed to load external imap mapping for deletion", "message", messageID, "error", err)
+		return
+	}
+	type tombstone struct {
+		accountID, folder string
+		uidValidity, uid  uint32
+	}
+	items := []tombstone{}
+	for rows.Next() {
+		var item tombstone
+		if err := rows.Scan(&item.accountID, &item.folder, &item.uidValidity, &item.uid); err == nil {
+			items = append(items, item)
+		}
+	}
+	rows.Close()
+	if len(items) == 0 {
+		return
+	}
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	for _, item := range items {
+		if _, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO external_imap_deleted_messages(account_id,remote_folder,uid_validity,uid,created_at) VALUES(?,?,?,?,?)`,
+			item.accountID, item.folder, item.uidValidity, item.uid, now); err != nil {
+			a.log.Warn("failed to record external imap tombstone", "message", messageID, "folder", item.folder, "uid", item.uid, "error", err)
+		}
+	}
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_messages WHERE local_message_id=?`, messageID); err != nil {
+		a.log.Warn("failed to drop external imap mapping after deletion", "message", messageID, "error", err)
+	}
+}
+
 func (a *App) pruneOrphanExternalIMAPMessages(ctx context.Context, accountID string) {
 	// 早先版本切换存储模式/换服务器时只删 messages 没删映射，这些 UID 之后
 	// 一直被当成「已导入」跳过，外部邮箱在本地模式下永远空白。同步前自愈。
+	folderRows, err := a.db.QueryContext(ctx, `SELECT DISTINCT remote_folder FROM external_imap_messages
+		WHERE account_id=? AND local_message_id<>'' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id=external_imap_messages.local_message_id)`, accountID)
+	if err != nil {
+		a.log.Warn("failed to inspect orphan external imap mappings", "account", accountID, "error", err)
+		return
+	}
+	orphanFolders := []string{}
+	for folderRows.Next() {
+		var folder string
+		if err := folderRows.Scan(&folder); err == nil && folder != "" {
+			orphanFolders = append(orphanFolders, folder)
+		}
+	}
+	folderRows.Close()
 	res, err := a.db.ExecContext(ctx, `DELETE FROM external_imap_messages WHERE account_id=? AND local_message_id<>'' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id=external_imap_messages.local_message_id)`, accountID)
 	if err != nil {
 		a.log.Warn("failed to prune orphan external imap mappings", "account", accountID, "error", err)
@@ -1741,12 +1825,14 @@ func (a *App) pruneOrphanExternalIMAPMessages(ctx context.Context, accountID str
 	if n == 0 {
 		return
 	}
-	// 映射删了但游标停在旧位置的话，这些邮件照样不会再拉下来；归零重扫，
-	// 已在库的邮件靠残留映射去重，不会重复导入。
-	if _, err := a.db.ExecContext(ctx, `UPDATE external_imap_folder_states SET last_uid=0 WHERE account_id=?`, accountID); err != nil {
-		a.log.Warn("failed to reset external imap folder cursor after prune", "account", accountID, "error", err)
+	// 只把真正有孤儿的文件夹游标归零重扫；以前是整账号重置，一个文件夹出问题
+	// 会把所有文件夹都倒回去重拉一遍。用户删掉的邮件已记墓碑，重扫也不会回来。
+	for _, folder := range orphanFolders {
+		if _, err := a.db.ExecContext(ctx, `UPDATE external_imap_folder_states SET last_uid=0 WHERE account_id=? AND remote_folder=?`, accountID, folder); err != nil {
+			a.log.Warn("failed to reset external imap folder cursor after prune", "account", accountID, "folder", folder, "error", err)
+		}
 	}
-	a.log.Info("pruned orphan external imap mappings", "account", accountID, "rows", n)
+	a.log.Info("pruned orphan external imap mappings", "account", accountID, "rows", n, "folders", len(orphanFolders))
 }
 
 func (a *App) externalIMAPAccountByID(ctx context.Context, id string) (externalIMAPAccountRecord, error) {
@@ -1790,6 +1876,7 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 		lastUID = 0
 	}
 	processed := 0
+	deletedUIDs := a.externalIMAPDeletedUIDs(ctx, account.ID, folder.Name, folder.UIDValidity)
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	for processed < externalIMAPSyncMaxPerRun {
 		batchLimit := min(externalIMAPSyncBatchSize, externalIMAPSyncMaxPerRun-processed)
@@ -1806,6 +1893,13 @@ func (a *App) syncExternalIMAPFolder(ctx context.Context, account externalIMAPAc
 		}
 		stop := false
 		for _, item := range remote {
+			// 本地删过的不再导回来；UIDVALIDITY 换了的话墓碑不适用（map 为空）。
+			if deletedUIDs[item.UID] {
+				skipped++
+				lastUID = item.UID
+				processed++
+				continue
+			}
 			if a.externalIMAPRemoteMessageExists(ctx, account.ID, folder.Name, item.UIDValidity, item.UID) {
 				skipped++
 				lastUID = item.UID
