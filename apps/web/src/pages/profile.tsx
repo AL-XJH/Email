@@ -2222,7 +2222,7 @@ function ExternalImapOAuthDialog({
           </Field>
           <div className="text-xs text-muted-foreground">
             {uiText(
-              "留空时会以 OAuth 服务商返回的真实授权邮箱为准；填写后，回调时会校验它和真实授权邮箱一致。"
+              "留空时用 OAuth 返回的授权身份。Outlook 建议填邮箱主地址（如 al-xjh@outlook.com）——微软返回的常常只是登录别名，别名连不上 IMAP；填了会优先用它登录。"
             )}
           </div>
           <Field label={uiText("存储模式")}>

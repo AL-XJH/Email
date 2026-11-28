@@ -574,6 +574,49 @@ func (a *App) handleStartExternalIMAPOAuth(w http.ResponseWriter, r *http.Reques
 	)})
 }
 
+// pickExternalIMAPOAuthUsername 用候选地址逐个试 XOAUTH2 登录，返回第一个能连上的。
+// 授权返回的身份可能是登录别名，IMAP 只认邮箱主地址（或 UPN），必须实测。
+func (a *App) pickExternalIMAPOAuthUsername(ctx context.Context, provider string, profile externalIMAPOAuthProvider, candidates []string, accessCipher, refreshCipher string) (string, error) {
+	seen := map[string]bool{}
+	var lastErr error
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[strings.ToLower(candidate)] {
+			continue
+		}
+		seen[strings.ToLower(candidate)] = true
+		account := externalIMAPAccountRecord{
+			ExternalIMAPAccount: ExternalIMAPAccount{
+				ID:            "probe-oauth",
+				Host:          profile.Host,
+				Port:          profile.Port,
+				TLSMode:       externalIMAPTLS,
+				Username:      candidate,
+				AuthMode:      externalIMAPAuthOAuth2,
+				OAuthProvider: provider,
+				Enabled:       true,
+			},
+			OAuthAccessTokenCiphertext:  accessCipher,
+			OAuthRefreshTokenCiphertext: refreshCipher,
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		client, err := a.externalIMAP.openExternalIMAPClient(probeCtx, account)
+		if err == nil {
+			_, err = client.ListFolders(probeCtx)
+			client.Close()
+		}
+		cancel()
+		if err == nil {
+			return candidate, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的邮箱地址")
+	}
+	return "", lastErr
+}
+
 func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	provider := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "provider")))
 	conf, profile, err := a.externalIMAPOAuthConfig(provider)
@@ -638,8 +681,24 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if state.Email != "" && !strings.EqualFold(normalizeEmail(state.Email), authorizedEmail) {
-		respondError(w, http.StatusBadRequest, "oauth account email does not match requested external email")
+	// 微软 id_token 里的 email/preferred_username 经常只是登录别名（例如登录名
+	// xjh@alxjh.cn，真正的邮箱是 al-xjh@outlook.com），拿它当 IMAP 用户名会得到
+	// "User is authenticated but not connected"。把用户填的地址排在前面，claims 兜底，
+	// 逐个用 XOAUTH2 真连一次，谁能登进去就用谁。
+	candidates := make([]string, 0, 2)
+	if state.Email != "" {
+		candidates = append(candidates, normalizeEmail(state.Email))
+	}
+	if authorizedEmail != "" {
+		candidates = append(candidates, normalizeEmail(authorizedEmail))
+	}
+	username, probeErr := a.pickExternalIMAPOAuthUsername(r.Context(), provider, profile, candidates, accessCipher, refreshCipher)
+	if username == "" {
+		msg := "授权成功但邮箱登录失败"
+		if probeErr != nil {
+			msg += "：" + probeErr.Error()
+		}
+		respondError(w, http.StatusBadRequest, msg)
 		return
 	}
 	// OAuth 窗口有 10 分钟：期间邮箱可能被转走，落库前再确认一次归属。
@@ -649,7 +708,7 @@ func (a *App) handleExternalIMAPOAuthCallback(w http.ResponseWriter, r *http.Req
 	}
 	id := newID("ximap")
 	_, err = a.db.ExecContext(r.Context(), `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,auth_mode,oauth_provider,oauth_email,oauth_access_token_ciphertext,oauth_refresh_token_ciphertext,oauth_expiry,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, state.UserID, state.MailboxID, name, profile.Host, profile.Port, externalIMAPTLS, authorizedEmail, "", externalIMAPAuthOAuth2, provider, authorizedEmail, accessCipher, refreshCipher, expiry, state.StorageMode, boolInt(state.SyncReadState), boolInt(state.Enabled), "idle", now, now)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, state.UserID, state.MailboxID, name, profile.Host, profile.Port, externalIMAPTLS, username, "", externalIMAPAuthOAuth2, provider, username, accessCipher, refreshCipher, expiry, state.StorageMode, boolInt(state.SyncReadState), boolInt(state.Enabled), "idle", now, now)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to save oauth account")
 		return

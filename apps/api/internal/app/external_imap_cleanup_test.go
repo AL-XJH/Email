@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -367,5 +369,63 @@ func TestCreateExternalIMAPAccountValidatesConnection(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("failed account must not be saved, rows=%d", count)
+	}
+}
+
+type pickUsernameFakeFactory struct {
+	ok map[string]bool
+}
+
+func (f pickUsernameFakeFactory) openExternalIMAPClient(ctx context.Context, account externalIMAPAccountRecord) (externalIMAPClient, error) {
+	return pickUsernameFakeClient{username: account.Username, ok: f.ok[strings.ToLower(account.Username)]}, nil
+}
+
+type pickUsernameFakeClient struct {
+	username string
+	ok       bool
+}
+
+func (c pickUsernameFakeClient) Close() error { return nil }
+func (c pickUsernameFakeClient) ListFolders(ctx context.Context) ([]externalIMAPRemoteFolder, error) {
+	if !c.ok {
+		return nil, errors.New("imap: NO User is authenticated but not connected.")
+	}
+	return []externalIMAPRemoteFolder{{Name: "INBOX", Role: "inbox"}}, nil
+}
+func (c pickUsernameFakeClient) FetchSummaries(ctx context.Context, folder string, query string, cursor string, limit int) ([]externalIMAPRemoteMessage, string, int, error) {
+	return nil, "", 0, nil
+}
+func (c pickUsernameFakeClient) FetchNew(ctx context.Context, folder string, afterUID uint32, limit int) ([]externalIMAPRemoteMessage, error) {
+	return nil, nil
+}
+func (c pickUsernameFakeClient) FetchRaw(ctx context.Context, folder string, uid uint32) ([]byte, externalIMAPRemoteMessage, error) {
+	return nil, externalIMAPRemoteMessage{}, nil
+}
+func (c pickUsernameFakeClient) FetchAttachments(ctx context.Context, folder string, uid uint32) ([]Attachment, error) {
+	return nil, nil
+}
+func (c pickUsernameFakeClient) FetchPart(ctx context.Context, folder string, uid uint32, partID string) ([]byte, Attachment, error) {
+	return nil, Attachment{}, nil
+}
+func (c pickUsernameFakeClient) SetRead(ctx context.Context, folder string, uid uint32, read bool) error {
+	return nil
+}
+
+// 微软授权返回的登录别名连不上时，要退到用户填的邮箱主地址。
+func TestPickExternalIMAPOAuthUsernameFallsBackToPrimary(t *testing.T) {
+	a := &App{}
+	a.externalIMAP = pickUsernameFakeFactory{ok: map[string]bool{"al-xjh@outlook.com": true}}
+	username, err := a.pickExternalIMAPOAuthUsername(context.Background(), externalIMAPOAuthOutlook,
+		externalIMAPOAuthProvider{Name: "Outlook", Host: "outlook.office365.com", Port: 993},
+		[]string{"al-xjh@outlook.com", "xjh@alxjh.cn"}, "access", "refresh")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if username != "al-xjh@outlook.com" {
+		t.Fatalf("username=%q, want primary mailbox", username)
+	}
+	if _, err := a.pickExternalIMAPOAuthUsername(context.Background(), externalIMAPOAuthOutlook,
+		externalIMAPOAuthProvider{Host: "outlook.office365.com", Port: 993}, []string{"xjh@alxjh.cn"}, "access", "refresh"); err == nil {
+		t.Fatal("expected error when no candidate can log in")
 	}
 }
