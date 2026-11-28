@@ -632,3 +632,49 @@ func TestExternalIMAPLocalFolderListHidesMovedMessages(t *testing.T) {
 		t.Fatalf("items=%d after moving to Trash, want 0", len(listed.Items))
 	}
 }
+
+// 去重修复前留下的同 Message-ID 副本：删一份必须连另一份一起删，否则收件箱
+// 里还留着一模一样的邮件。
+func TestApplyMessageDeleteRemovesExternalTwins(t *testing.T) {
+	a := newTestApp(t)
+	_, mailbox := defaultAdminUserAndMailbox(t, a)
+	ctx := context.Background()
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	accountID := "ximap_twins"
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_accounts(id,user_id,mailbox_id,name,host,port,tls_mode,username,password_ciphertext,storage_mode,sync_read_state,enabled,last_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, accountID, mailbox.UserID, mailbox.ID, "twins", "imap.example.test", 993, externalIMAPTLS, "twins@example.test", "ciphertext", externalIMAPStorageLocal, 1, 1, "idle", now, now); err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err := a.ensureFolder(ctx, mailbox.ID, "外部 · Gmail · 收件箱")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allID, err := a.ensureFolder(ctx, mailbox.ID, "外部 · Gmail · 所有邮件")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(id, folderID string) {
+		if _, err := a.db.ExecContext(ctx, `INSERT INTO messages(id,mailbox_id,folder_id,recipient_addr,message_uid,message_id,subject,from_addr,from_name,to_addrs,cc_addrs,bcc_addrs,sent_at,received_at,snippet,body_text,body_html,is_read,is_starred,has_attachments,size_bytes,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, mailbox.ID, folderID, "", "uid-"+id, "<twin@example.test>", "twin", "a@example.test", "", "[]", "[]", "[]", now, now, "", "", "", 0, 0, 0, 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("msg_twin_a", inboxID)
+	insert("msg_twin_b", allID)
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO external_imap_messages(account_id,remote_folder,uid_validity,uid,message_id,local_message_id,is_read,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?)`, accountID, "INBOX", 1, 7, "<twin@example.test>", "msg_twin_a", 0, now, now,
+		accountID, "[Gmail]/所有邮件", 1, 8, "<twin@example.test>", "msg_twin_b", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	msg := &MailMessage{ID: "msg_twin_a", MailboxID: mailbox.ID, FolderID: inboxID, Folder: "外部 · Gmail · 收件箱", MessageID: "<twin@example.test>"}
+	if err := a.applyMessageDelete(ctx, msg); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var remaining int
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND message_id='<twin@example.test>' AND COALESCE(folder_id,'') NOT IN (SELECT id FROM folders WHERE mailbox_id=? AND name='Trash')`, mailbox.ID, mailbox.ID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("remaining copies outside Trash = %d, want 0", remaining)
+	}
+}

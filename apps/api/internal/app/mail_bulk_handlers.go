@@ -54,6 +54,52 @@ func (a *App) applyMessageMove(ctx context.Context, msg *MailMessage, folder str
 
 // 已经在 Trash 里的再删就是彻底删除，否则先移进 Trash —— 与单封删除一致。
 func (a *App) applyMessageDelete(ctx context.Context, msg *MailMessage) error {
+	// 外部导入件在修复去重之前可能留下同一封邮件的多份本地副本（不同文件夹各
+	// 一行）。删除时只处理一行会让另一份继续留在收件箱里，看起来像没删掉。
+	// 这里把同 mailbox、同 Message-ID 的其它副本一起处理。
+	external := a.messageHasExternalMapping(ctx, msg.ID)
+	err := a.applyMessageDeleteOne(ctx, msg)
+	if err != nil {
+		return err
+	}
+	if !external || strings.TrimSpace(msg.MessageID) == "" {
+		return nil
+	}
+	for _, twin := range a.otherMessageCopies(ctx, msg.MailboxID, msg.MessageID, msg.ID) {
+		if twinErr := a.applyMessageDeleteOne(ctx, twin); twinErr != nil {
+			a.log.Warn("failed to delete duplicate external message copy", "message", twin.ID, "message_id", msg.MessageID, "error", twinErr)
+		}
+	}
+	return nil
+}
+
+func (a *App) messageHasExternalMapping(ctx context.Context, messageID string) bool {
+	var exists int
+	return a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM external_imap_messages WHERE local_message_id=?`, messageID).Scan(&exists) == nil && exists > 0
+}
+
+// otherMessageCopies 找同邮箱里 Message-ID 相同的其它本地副本。
+func (a *App) otherMessageCopies(ctx context.Context, mailboxID, messageID, excludeID string) []*MailMessage {
+	rows, err := a.db.QueryContext(ctx, `SELECT m.id,m.mailbox_id,COALESCE(m.folder_id,''),COALESCE(f.name,''),m.is_read,m.is_starred,m.message_id
+		FROM messages m LEFT JOIN folders f ON f.id=m.folder_id
+		WHERE m.mailbox_id=? AND m.message_id=? AND m.id<>?`, mailboxID, messageID, excludeID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []*MailMessage{}
+	for rows.Next() {
+		var item MailMessage
+		var read, starred int
+		if err := rows.Scan(&item.ID, &item.MailboxID, &item.FolderID, &item.Folder, &read, &starred, &item.MessageID); err == nil {
+			item.IsRead, item.IsStarred = intBool(read), intBool(starred)
+			out = append(out, &item)
+		}
+	}
+	return out
+}
+
+func (a *App) applyMessageDeleteOne(ctx context.Context, msg *MailMessage) error {
 	if strings.EqualFold(msg.Folder, "Trash") {
 		// 文件删不掉就不能删库里的行：否则下一轮 maildir 同步会把文件
 		// 当成新邮件重新导入，「清空垃圾箱」5 秒后自己撤销。
@@ -137,7 +183,7 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 		marks = append(marks, "?")
 		args = append(args, id)
 	}
-	query := `SELECT m.id,m.mailbox_id,COALESCE(m.folder_id,''),COALESCE(f.name,''),m.is_read,m.is_starred FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id LEFT JOIN folders f ON f.id=m.folder_id WHERE mb.user_id=? AND m.id IN (` + strings.Join(marks, ",") + `)`
+	query := `SELECT m.id,m.mailbox_id,COALESCE(m.folder_id,''),COALESCE(f.name,''),m.is_read,m.is_starred,COALESCE(m.message_id,'') FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id LEFT JOIN folders f ON f.id=m.folder_id WHERE mb.user_id=? AND m.id IN (` + strings.Join(marks, ",") + `)`
 	rows, err := a.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to load messages")
@@ -147,7 +193,7 @@ func (a *App) handleBulkMessageAction(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var msg MailMessage
 		var read, starred int
-		if err := rows.Scan(&msg.ID, &msg.MailboxID, &msg.FolderID, &msg.Folder, &read, &starred); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.MailboxID, &msg.FolderID, &msg.Folder, &read, &starred, &msg.MessageID); err != nil {
 			rows.Close()
 			respondError(w, http.StatusInternalServerError, "failed to load messages")
 			return
